@@ -313,6 +313,45 @@ test("CLI --json prints raw trace output", async () => {
   }
 });
 
+test("CLI suppresses known Gemini startup warnings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "gemini");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "process.stderr.write('(node:1) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.\\n');",
+          "process.stderr.write('(Use `node --trace-deprecation ...` to show where the warning was created)\\n');",
+          "process.stderr.write('YOLO mode is enabled. All tool calls will be automatically approved.\\n');",
+          "process.stderr.write('Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.\\n');",
+          "process.stderr.write('real gemini error\\n');",
+          "console.log(JSON.stringify({ type: 'model', content: { parts: [{ text: 'final answer' }] } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["gemini", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    assert.equal(stderr.join(""), "real gemini error\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI reports extraction failure for successful empty traces", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

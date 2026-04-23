@@ -196,7 +196,28 @@ interface ExecuteResult {
   stdout: string;
 }
 
+function suppressKnownStderr(agent: AgentName, text: string): string {
+  if (agent !== "gemini") {
+    return text;
+  }
+
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (trimmed.includes("[DEP0040] DeprecationWarning: The `punycode` module is deprecated")) return false;
+      if (trimmed.includes("Use `node --trace-deprecation ...` to show where the warning was created")) return false;
+      if (trimmed === "YOLO mode is enabled. All tool calls will be automatically approved.") return false;
+      if (trimmed === "Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.") return false;
+      return true;
+    })
+    .map((line) => `${line}\n`)
+    .join("");
+}
+
 async function executeCommand(
+  agent: AgentName,
   command: BuiltCommand,
   cwd: string | undefined,
   env: Env,
@@ -232,7 +253,10 @@ async function executeCommand(
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
-        stderr(chunk);
+        const filtered = suppressKnownStderr(agent, chunk);
+        if (filtered) {
+          stderr(filtered);
+        }
       });
       child.on("error", (error) => {
         stderr(`${error.message}\n`);
@@ -290,7 +314,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    const result = await executeCommand(command, cwd, env, stderr);
+    const result = await executeCommand(parsed.agent, command, cwd, env, stderr);
     if (parsed.json) {
       stdout(result.stdout);
       return result.code;
