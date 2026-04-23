@@ -15,6 +15,9 @@ export function quoteArg(value: string): string {
 
 export function quoteCommand(command: BuiltCommand): string {
   const parts = [command.command, ...command.args].map(quoteArg);
+  if (command.stdinText !== undefined) {
+    return ["printf", "%s", quoteArg(command.stdinText), "|", ...parts].join(" ");
+  }
   if (command.stdinFile) {
     parts.push("<", quoteArg(command.stdinFile));
   }

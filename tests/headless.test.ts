@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
 import { runCli } from "../src/cli.ts";
 import { quoteCommand } from "../src/shell.ts";
 
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
 test("lists all supported agents", () => {
   assert.deepEqual(listAgents(), ["claude", "codex", "cursor", "gemini", "opencode", "pi"]);
 });
 
-test("builds codex command with default model and prompt argument", () => {
+test("builds codex command with default model and prompt stdin", () => {
   const command = buildAgentCommand("codex", { prompt: "hello world" }, {});
 
   assert.deepEqual(command, {
@@ -24,8 +28,9 @@ test("builds codex command with default model and prompt argument", () => {
       "--json",
       "--dangerously-bypass-approvals-and-sandbox",
       "--skip-git-repo-check",
-      "hello world",
+      "-",
     ],
+    stdinText: "hello world",
   });
 });
 
@@ -33,6 +38,7 @@ test("builds codex command using CODEX_MODEL fallback", () => {
   const command = buildAgentCommand("codex", { prompt: "hello" }, { CODEX_MODEL: "gpt-next" });
 
   assert.equal(command.args[2], "gpt-next");
+  assert.equal(command.stdinText, "hello");
 });
 
 test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
@@ -166,6 +172,13 @@ test("quotes commands for print-command output", () => {
   );
 });
 
+test("quotes commands with stdin text for print-command output", () => {
+  assert.equal(
+    quoteCommand({ command: "codex", args: ["exec", "-"], stdinText: "hello world" }),
+    "printf %s hello\\ world | codex exec -",
+  );
+});
+
 test("CLI print-command reads argument-mode prompt files", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -194,6 +207,141 @@ test("CLI accepts stdin fallback", async () => {
 
   assert.equal(code, 0);
   assert.equal(stdout.join(""), "pi --no-session --mode json stdin\\ prompt\n");
+});
+
+test("CLI prints final assistant message by default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI does not pass inherited stdin to agent when prompt is an argument", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "stdin.txt");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const stdin = fs.readFileSync(0, 'utf8');",
+          "fs.writeFileSync(process.env.HEADLESS_STDIN_CAPTURE, stdin);",
+          "console.log(JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: {
+        ...process.env,
+        HEADLESS_STDIN_CAPTURE: captureFile,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => undefined,
+    });
+
+    assert.equal(code, 0);
+    assert.equal(readFileSync(captureFile, "utf8"), "");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json prints raw trace output", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const trace = `${JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+    })}\n`;
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          `process.stdout.write(${JSON.stringify(trace)});`,
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello", "--json"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), trace);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI reports extraction failure for successful empty traces", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'message', message: { role: 'toolresult', content: [{ type: 'text', text: 'tool output' }] } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+    });
+
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /could not extract final message/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("CLI reports invalid input", async () => {
@@ -258,4 +406,15 @@ test("CLI executes fake binaries and propagates exit codes", async () => {
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
+});
+
+test("CLI entrypoint runs when invoked as a script", () => {
+  const run = spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "--help"],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /Usage: headless <agent>/);
 });

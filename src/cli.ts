@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
-import { closeSync, existsSync, openSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, getAgentConfig, getAgentHarness, isAgentName, listAgents } from "./agents.js";
+import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
@@ -13,6 +15,7 @@ interface ParsedArgs {
   promptFile?: string;
   model?: string;
   workDir?: string;
+  json: boolean;
   printCommand: boolean;
   showConfig: boolean;
   help: boolean;
@@ -44,6 +47,7 @@ function usage(): string {
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
+    "  --json               Print raw agent JSON trace output.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
     "  -h, --help           Show this help.",
@@ -54,7 +58,7 @@ function usage(): string {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const parsed: ParsedArgs = { printCommand: false, showConfig: false, help: false };
+  const parsed: ParsedArgs = { json: false, printCommand: false, showConfig: false, help: false };
   const args = [...argv];
 
   if (args.length === 0) {
@@ -89,6 +93,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--work-dir":
       case "-C":
         parsed.workDir = takeValue(args, arg);
+        break;
+      case "--json":
+        parsed.json = true;
         break;
       case "--print-command":
         parsed.printCommand = true;
@@ -184,9 +191,23 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
   return workDir;
 }
 
-async function executeCommand(command: BuiltCommand, cwd: string | undefined, env: Env): Promise<number> {
+interface ExecuteResult {
+  code: number;
+  stdout: string;
+}
+
+async function executeCommand(
+  command: BuiltCommand,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<ExecuteResult> {
   let stdinFd: number | undefined;
-  const stdio: ["inherit" | number, "inherit", "inherit"] = ["inherit", "inherit", "inherit"];
+  const stdio: ["ignore" | "pipe" | number, "pipe", "pipe"] = [
+    command.stdinText !== undefined ? "pipe" : "ignore",
+    "pipe",
+    "pipe",
+  ];
 
   if (command.stdinFile) {
     stdinFd = openSync(command.stdinFile, "r");
@@ -194,23 +215,35 @@ async function executeCommand(command: BuiltCommand, cwd: string | undefined, en
   }
 
   try {
-    return await new Promise<number>((resolve) => {
+    return await new Promise<ExecuteResult>((resolve) => {
+      let capturedStdout = "";
       const child = spawn(command.command, command.args, {
         cwd,
         env: env as NodeJS.ProcessEnv,
         stdio,
       });
 
+      if (command.stdinText !== undefined) {
+        child.stdin?.end(command.stdinText);
+      }
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        capturedStdout += chunk;
+      });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        stderr(chunk);
+      });
       child.on("error", (error) => {
-        console.error(error.message);
-        resolve(127);
+        stderr(`${error.message}\n`);
+        resolve({ code: 127, stdout: capturedStdout });
       });
       child.on("close", (code, signal) => {
         if (signal) {
-          resolve(1);
+          resolve({ code: 1, stdout: capturedStdout });
           return;
         }
-        resolve(code ?? 1);
+        resolve({ code: code ?? 1, stdout: capturedStdout });
       });
     });
   } finally {
@@ -257,7 +290,22 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    return await executeCommand(command, cwd, env);
+    const result = await executeCommand(command, cwd, env, stderr);
+    if (parsed.json) {
+      stdout(result.stdout);
+      return result.code;
+    }
+
+    const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
+    if (finalMessage) {
+      stdout(`${finalMessage}\n`);
+      return result.code;
+    }
+    if (result.code === 0) {
+      stderr("headless: could not extract final message; rerun with --json for raw trace\n");
+      return 1;
+    }
+    return result.code;
   } catch (error) {
     if (error instanceof CliError) {
       stderr(`headless: ${error.message}\n`);
@@ -267,7 +315,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isCliEntrypoint(): boolean {
+  const argvPath = process.argv[1];
+  if (!argvPath) {
+    return false;
+  }
+  return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(argvPath);
+}
+
+if (isCliEntrypoint()) {
   const code = await runCli(process.argv.slice(2));
   process.exitCode = code;
 }

@@ -35,8 +35,8 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
     return { command: "codex", args, stdinFile: options.promptFile };
   }
 
-  args.push(options.prompt);
-  return { command: "codex", args };
+  args.push("-");
+  return { command: "codex", args, stdinText: options.prompt };
 }
 
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {

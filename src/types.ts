@@ -14,6 +14,7 @@ export interface BuiltCommand {
   command: string;
   args: string[];
   stdinFile?: string;
+  stdinText?: string;
 }
 
 export interface AgentConfig {
