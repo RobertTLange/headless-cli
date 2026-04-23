@@ -188,7 +188,39 @@ function collectCandidates(value: unknown, agent: AgentName): string[] {
   return candidates;
 }
 
+function flattenRecords(value: unknown): JsonRecord[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => flattenRecords(item));
+  }
+  const record = asRecord(value);
+  return Object.keys(record).length > 0 ? [record] : [];
+}
+
+function extractGeminiDeltaMessage(values: unknown[]): string {
+  let current = "";
+  let latest = "";
+
+  for (const record of values.flatMap(flattenRecords)) {
+    if (roleFromRecord(record) !== "assistant" || !record.delta) {
+      continue;
+    }
+
+    const text = candidateFromRecord(record, "gemini");
+    if (!text) continue;
+    current += text;
+    latest = current;
+  }
+
+  return latest.trim();
+}
+
 export function extractFinalMessage(agent: AgentName, stdout: string): string {
-  const candidates = parseJsonValues(stdout).flatMap((value) => collectCandidates(value, agent));
+  const values = parseJsonValues(stdout);
+  if (agent === "gemini") {
+    const deltaMessage = extractGeminiDeltaMessage(values);
+    if (deltaMessage) return deltaMessage;
+  }
+
+  const candidates = values.flatMap((value) => collectCandidates(value, agent));
   return candidates.at(-1)?.trim() ?? "";
 }

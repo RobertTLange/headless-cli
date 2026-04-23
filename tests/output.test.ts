@@ -97,6 +97,21 @@ test("extracts final Gemini assistant message from response JSON trace", () => {
   assert.equal(extractFinalMessage("gemini", trace), "final gemini response answer");
 });
 
+test("concatenates Gemini assistant delta messages", () => {
+  const trace = [
+    JSON.stringify({ type: "message", role: "assistant", content: "Hello! I", delta: true }),
+    JSON.stringify({
+      type: "message",
+      role: "assistant",
+      content: "'m ready to help.",
+      delta: true,
+    }),
+    JSON.stringify({ type: "result", status: "success" }),
+  ].join("\n");
+
+  assert.equal(extractFinalMessage("gemini", trace), "Hello! I'm ready to help.");
+});
+
 test("extracts final OpenCode assistant message from JSON event trace", () => {
   const trace = JSON.stringify({
     role: "assistant",
