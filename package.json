@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
     "test": "tsx --test tests/**/*.test.ts",
+    "test:agents": "tsx --test tests/agents-smoke.ts",
     "check": "npm run build && npm test"
   },
   "devDependencies": {
