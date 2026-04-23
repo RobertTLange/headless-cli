@@ -32,6 +32,7 @@ headless codex --prompt "Inspect this repository"
 ## 60-Second Usage
 
 ```bash
+headless --prompt "Inspect this repository"
 headless codex --prompt "Run the tests and fix failures" --model gpt-5.2
 headless claude --prompt-file prompt.md --work-dir /path/to/project
 headless opencode --show-config
@@ -57,11 +58,12 @@ printf "Review this diff" | headless pi --model claude-opus
 | `pi` | `pi --no-session --mode json ...` |
 
 By default, Headless prints the agent's final assistant message. Pass `--json` to print the raw native JSON trace.
+When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
 ## CLI Reference
 
 ```bash
-headless <agent> (--prompt <text> | --prompt-file <path>) [options]
+headless [agent] (--prompt <text> | --prompt-file <path>) [options]
 ```
 
 Options:

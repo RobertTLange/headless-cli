@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, getAgentConfig, getAgentHarness, isAgentName, listAgents } from "./agents.js";
@@ -38,7 +39,7 @@ class CliError extends Error {
 
 function usage(): string {
   return [
-    "Usage: headless <agent> (--prompt <text> | --prompt-file <path>) [options]",
+    "Usage: headless [agent] (--prompt <text> | --prompt-file <path>) [options]",
     "",
     `Agents: ${listAgents().join(", ")}`,
     "",
@@ -71,10 +72,17 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.help = true;
     return parsed;
   }
-  if (first === undefined || !isAgentName(first)) {
+  if (first === undefined) {
+    parsed.help = true;
+    return parsed;
+  }
+  if (isAgentName(first)) {
+    parsed.agent = first;
+  } else if (first.startsWith("-")) {
+    args.unshift(first);
+  } else {
     throw new CliError(`unsupported agent: ${first ?? ""}`);
   }
-  parsed.agent = first;
 
   while (args.length > 0) {
     const arg = args.shift();
@@ -191,6 +199,53 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
   return workDir;
 }
 
+const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "cursor"];
+
+function commandForAgent(agent: AgentName, env: Env): string {
+  if (agent === "cursor") {
+    return env.CURSOR_CLI_BIN || "agent";
+  }
+  if (agent === "pi") {
+    return env.PI_CODING_AGENT_BIN || "pi";
+  }
+  return agent;
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function commandExists(command: string, env: Env): boolean {
+  if (command.includes("/") || command.includes("\\")) {
+    return isExecutable(command);
+  }
+
+  const extensions = process.platform === "win32" ? (env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const extension of extensions) {
+      if (isExecutable(join(dir, `${command}${extension}`))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function selectDefaultAgent(env: Env): AgentName {
+  for (const agent of autoAgentPreference) {
+    if (commandExists(commandForAgent(agent, env), env)) {
+      return agent;
+    }
+  }
+  throw new CliError(`no supported agent found on PATH; checked: ${autoAgentPreference.join(", ")}`);
+}
+
 interface ExecuteResult {
   code: number;
   stdout: string;
@@ -290,7 +345,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
     if (!parsed.agent) {
-      throw new CliError("missing agent");
+      parsed.agent = selectDefaultAgent(env);
     }
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));

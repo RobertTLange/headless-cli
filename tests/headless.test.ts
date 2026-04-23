@@ -209,6 +209,69 @@ test("CLI accepts stdin fallback", async () => {
   assert.equal(stdout.join(""), "pi --no-session --mode json stdin\\ prompt\n");
 });
 
+test("CLI auto-selects the preferred installed agent when omitted", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      for (const name of ["claude", "codex", "pi"]) {
+        const binary = join(binDir, name);
+        await writeFile(binary, "#!/usr/bin/env node\n");
+        await chmod(binary, 0o755);
+      }
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--prompt", "hello", "--print-command"], {
+      env: { PATH: binDir },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^printf %s hello \| codex exec/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI auto-selection follows fallback order and env-backed binaries", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      for (const name of ["opencode", "pi-agent"]) {
+        const binary = join(binDir, name);
+        await writeFile(binary, "#!/usr/bin/env node\n");
+        await chmod(binary, 0o755);
+      }
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--prompt", "hello", "--print-command"], {
+      env: { PATH: binDir, PI_CODING_AGENT_BIN: "pi-agent" },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "pi-agent --no-session --mode json hello\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI reports when no installed agent can be auto-selected", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["--prompt", "hello"], {
+    env: { PATH: "" },
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /no supported agent found/);
+});
+
 test("CLI prints final assistant message by default", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -455,5 +518,5 @@ test("CLI entrypoint runs when invoked as a script", () => {
   );
 
   assert.equal(run.status, 0);
-  assert.match(run.stdout, /Usage: headless <agent>/);
+  assert.match(run.stdout, /Usage: headless \[agent\]/);
 });
