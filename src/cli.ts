@@ -5,6 +5,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -400,6 +401,25 @@ function trustClaudeWorkspace(cwd: string | undefined, env: Env): void {
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+function cursorProjectKey(workspace: string): string {
+  return workspace.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function trustCursorWorkspace(cwd: string | undefined, env: Env): void {
+  const homeDir = env.HOME;
+  if (!homeDir) {
+    throw new CliError("HOME is required to trust Cursor workspace");
+  }
+
+  const workspace = realpathSync(cwd ?? process.cwd());
+  const projectDir = join(homeDir, ".cursor", "projects", cursorProjectKey(workspace));
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    join(projectDir, ".workspace-trusted"),
+    `${JSON.stringify({ trustedAt: new Date().toISOString(), workspacePath: workspace }, null, 2)}\n`,
+  );
+}
+
 async function executeSimpleCommand(
   command: BuiltCommand,
   cwd: string | undefined,
@@ -480,6 +500,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
 
       if (parsed.agent === "claude") {
         trustClaudeWorkspace(cwd, env);
+      }
+      if (parsed.agent === "cursor") {
+        trustCursorWorkspace(cwd, env);
       }
 
       const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);

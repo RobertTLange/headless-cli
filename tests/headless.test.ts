@@ -505,6 +505,54 @@ test("CLI --tmux marks Claude workspaces trusted before launch", async () => {
   }
 });
 
+test("CLI --tmux marks Cursor workspaces trusted before launch", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const homeDir = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const projectDir = join(dir, "project");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const code = await runCli(["cursor", "--prompt", "hello", "--work-dir", projectDir, "--tmux"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HOME: homeDir,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => undefined,
+    });
+
+    const workspace = realpathSync(projectDir);
+    const projectKey = workspace.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const trustPath = join(homeDir, ".cursor", "projects", projectKey, ".workspace-trusted");
+    const trust = JSON.parse(readFileSync(trustPath, "utf8"));
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(code, 0);
+    assert.equal(trust.workspacePath, workspace);
+    assert.match(trust.trustedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.match(calls[0][6], /agent hello/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --tmux --print-command prints tmux commands without executing them", async () => {
   const stdout: string[] = [];
   const code = await runCli(["pi", "--prompt", "hello world", "--tmux", "--print-command"], {
