@@ -1,11 +1,29 @@
 #!/usr/bin/env node
 
-import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { spawn } from "node:child_process";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildAgentCommand, getAgentConfig, getAgentHarness, isAgentName, listAgents } from "./agents.js";
+import {
+  buildAgentCommand,
+  buildInteractiveAgentCommand,
+  getAgentConfig,
+  getAgentHarness,
+  isAgentName,
+  listAgents,
+} from "./agents.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
@@ -19,6 +37,8 @@ interface ParsedArgs {
   json: boolean;
   printCommand: boolean;
   showConfig: boolean;
+  list: boolean;
+  tmux: boolean;
   help: boolean;
 }
 
@@ -39,7 +59,7 @@ class CliError extends Error {
 
 function usage(): string {
   return [
-    "Usage: headless [agent] (--prompt <text> | --prompt-file <path>) [options]",
+    "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --list | --show-config) [options]",
     "",
     `Agents: ${listAgents().join(", ")}`,
     "",
@@ -49,6 +69,8 @@ function usage(): string {
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
     "  --json               Print raw agent JSON trace output.",
+    "  --tmux               Launch an interactive agent in a tmux session.",
+    "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
     "  -h, --help           Show this help.",
@@ -59,7 +81,14 @@ function usage(): string {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const parsed: ParsedArgs = { json: false, printCommand: false, showConfig: false, help: false };
+  const parsed: ParsedArgs = {
+    json: false,
+    printCommand: false,
+    showConfig: false,
+    list: false,
+    tmux: false,
+    help: false,
+  };
   const args = [...argv];
 
   if (args.length === 0) {
@@ -104,6 +133,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         parsed.json = true;
+        break;
+      case "--tmux":
+        parsed.tmux = true;
+        break;
+      case "--list":
+        parsed.list = true;
         break;
       case "--print-command":
         parsed.printCommand = true;
@@ -157,7 +192,11 @@ async function readStdin(): Promise<string> {
   return data;
 }
 
-async function resolvePrompt(parsed: ParsedArgs, deps: CliDeps): Promise<{ prompt: string; promptFile?: string }> {
+async function resolvePrompt(
+  parsed: ParsedArgs,
+  deps: CliDeps,
+  options: { forceText?: boolean } = {},
+): Promise<{ prompt: string; promptFile?: string }> {
   if (parsed.prompt && parsed.promptFile) {
     throw new CliError("use either --prompt or --prompt-file, not both");
   }
@@ -171,7 +210,7 @@ async function resolvePrompt(parsed: ParsedArgs, deps: CliDeps): Promise<{ promp
     if (!existsSync(parsed.promptFile) || !statSync(parsed.promptFile).isFile()) {
       throw new CliError(`prompt file not found: ${parsed.promptFile}`);
     }
-    if (harness.promptFileMode === "stdin") {
+    if (!options.forceText && harness.promptFileMode === "stdin") {
       return { prompt: "", promptFile: parsed.promptFile };
     }
     return { prompt: readFileSync(parsed.promptFile, "utf8") };
@@ -249,6 +288,28 @@ function selectDefaultAgent(env: Env): AgentName {
 interface ExecuteResult {
   code: number;
   stdout: string;
+}
+
+interface CaptureResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+interface TmuxCommands {
+  sessionName: string;
+  newSession: BuiltCommand;
+  postLaunch: TmuxPostLaunchCommand[];
+}
+
+interface TmuxPostLaunchCommand {
+  command: BuiltCommand;
+  delayMs: number;
+}
+
+interface HeadlessTmuxSession {
+  name: string;
+  agent: AgentName;
 }
 
 function suppressKnownStderr(agent: AgentName, text: string): string {
@@ -332,6 +393,234 @@ async function executeCommand(
   }
 }
 
+function buildTmuxCommands(
+  agent: AgentName,
+  command: BuiltCommand,
+  prompt: string,
+  cwd: string | undefined,
+  env: Env,
+): TmuxCommands {
+  const sessionName = `headless-${agent}-${process.pid}`;
+  const startDir = cwd ?? process.cwd();
+  const opencodeWakeDelayMs = parseDelayMs(
+    env.HEADLESS_TMUX_OPENCODE_WAKE_DELAY_MS ?? env.HEADLESS_TMUX_OPENCODE_ENTER_DELAY_MS,
+    4000,
+  );
+  const opencodePasteDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_PASTE_DELAY_MS, 1000);
+  const opencodeSubmitDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_SUBMIT_DELAY_MS, 1000);
+  const opencodePromptBuffer = `${sessionName}-prompt`;
+  return {
+    sessionName,
+    newSession: {
+      command: "tmux",
+      args: ["new-session", "-d", "-s", sessionName, "-c", startDir, quoteCommand(command)],
+    },
+    postLaunch:
+      agent === "opencode"
+        ? [
+            {
+              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
+              delayMs: opencodeWakeDelayMs,
+            },
+            {
+              command: { command: "tmux", args: ["set-buffer", "-b", opencodePromptBuffer, prompt] },
+              delayMs: opencodePasteDelayMs,
+            },
+            {
+              command: { command: "tmux", args: ["paste-buffer", "-d", "-b", opencodePromptBuffer, "-t", sessionName] },
+              delayMs: 0,
+            },
+            {
+              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
+              delayMs: opencodeSubmitDelayMs,
+            },
+          ]
+        : [],
+  };
+}
+
+function parseDelayMs(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+async function captureSimpleCommand(
+  command: BuiltCommand,
+  cwd: string | undefined,
+  env: Env,
+): Promise<CaptureResult> {
+  return await new Promise<CaptureResult>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(command.command, command.args, {
+      cwd,
+      env: env as NodeJS.ProcessEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      stderr += `${error.message}\n`;
+      resolve({ code: 127, stdout, stderr });
+    });
+    child.on("close", (code, signal) => {
+      resolve({ code: signal ? 1 : (code ?? 1), stdout, stderr });
+    });
+  });
+}
+
+function parseHeadlessTmuxSession(name: string): HeadlessTmuxSession | undefined {
+  const match = /^headless-([a-z]+)-\d+$/.exec(name);
+  if (!match) {
+    return undefined;
+  }
+  const agent = match[1];
+  if (!isAgentName(agent)) {
+    return undefined;
+  }
+  return { name, agent };
+}
+
+function renderHeadlessTmuxSessions(sessions: HeadlessTmuxSession[]): string {
+  if (sessions.length === 0) {
+    return "No active headless tmux sessions\n";
+  }
+  return sessions
+    .map((session) => `${session.name}\t${session.agent}\ttmux attach-session -t ${session.name}`)
+    .join("\n")
+    .concat("\n");
+}
+
+async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env): Promise<string> {
+  const result = await captureSimpleCommand(
+    { command: "tmux", args: ["list-sessions", "-F", "#{session_name}"] },
+    undefined,
+    env,
+  );
+
+  if (result.code !== 0) {
+    if (result.stderr.includes("no server running")) {
+      return renderHeadlessTmuxSessions([]);
+    }
+    throw new CliError(result.stderr.trim() || "could not list tmux sessions");
+  }
+
+  const sessions = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(parseHeadlessTmuxSession)
+    .filter((session): session is HeadlessTmuxSession => Boolean(session))
+    .filter((session) => agent === undefined || session.agent === agent);
+
+  return renderHeadlessTmuxSessions(sessions);
+}
+
+function trustClaudeWorkspace(cwd: string | undefined, env: Env): void {
+  const homeDir = env.HOME;
+  if (!homeDir) {
+    throw new CliError("HOME is required to trust Claude workspace");
+  }
+
+  const workspace = realpathSync(cwd ?? process.cwd());
+  const configPath = join(homeDir, ".claude.json");
+  const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+  const projects =
+    config.projects && typeof config.projects === "object" && !Array.isArray(config.projects) ? config.projects : {};
+  const project =
+    projects[workspace] && typeof projects[workspace] === "object" && !Array.isArray(projects[workspace])
+      ? projects[workspace]
+      : {};
+
+  projects[workspace] = { ...project, hasTrustDialogAccepted: true };
+  config.projects = projects;
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function cursorProjectKey(workspace: string): string {
+  return workspace.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function trustCursorWorkspace(cwd: string | undefined, env: Env): void {
+  const homeDir = env.HOME;
+  if (!homeDir) {
+    throw new CliError("HOME is required to trust Cursor workspace");
+  }
+
+  const workspace = realpathSync(cwd ?? process.cwd());
+  const projectDir = join(homeDir, ".cursor", "projects", cursorProjectKey(workspace));
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    join(projectDir, ".workspace-trusted"),
+    `${JSON.stringify({ trustedAt: new Date().toISOString(), workspacePath: workspace }, null, 2)}\n`,
+  );
+}
+
+async function executeSimpleCommand(
+  command: BuiltCommand,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    const child = spawn(command.command, command.args, {
+      cwd,
+      env: env as NodeJS.ProcessEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", () => undefined);
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => stderr(chunk));
+    child.on("error", (error) => {
+      stderr(`${error.message}\n`);
+      resolve(127);
+    });
+    child.on("close", (code, signal) => {
+      resolve(signal ? 1 : (code ?? 1));
+    });
+  });
+}
+
+async function waitForDelay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function executeTmuxCommands(
+  commands: TmuxCommands,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  const launchCode = await executeSimpleCommand(commands.newSession, cwd, env, stderr);
+  if (launchCode !== 0) {
+    return launchCode;
+  }
+
+  for (const postLaunch of commands.postLaunch) {
+    await waitForDelay(postLaunch.delayMs);
+    const code = await executeSimpleCommand(postLaunch.command, cwd, env, stderr);
+    if (code !== 0) {
+      return code;
+    }
+  }
+  return 0;
+}
+
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
@@ -344,8 +633,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       stdout(usage());
       return 0;
     }
+    if (parsed.list) {
+      stdout(await listHeadlessTmuxSessions(parsed.agent, env));
+      return 0;
+    }
     if (!parsed.agent) {
       parsed.agent = selectDefaultAgent(env);
+    }
+    if (parsed.tmux && parsed.json) {
+      throw new CliError("--json cannot be used with --tmux");
     }
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));
@@ -353,7 +649,42 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     const cwd = validateWorkDir(parsed.workDir);
-    const prompt = await resolvePrompt(parsed, deps);
+    const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux });
+
+    if (parsed.tmux) {
+      const tmuxCommand = buildInteractiveAgentCommand(
+        parsed.agent,
+        {
+          prompt: prompt.prompt,
+          model: parsed.model,
+        },
+        env,
+      );
+      const tmuxCommands = buildTmuxCommands(parsed.agent, tmuxCommand, prompt.prompt, cwd, env);
+
+      if (parsed.printCommand) {
+        stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
+        for (const postLaunch of tmuxCommands.postLaunch) {
+          stdout(`${quoteCommand(postLaunch.command)}\n`);
+        }
+        return 0;
+      }
+
+      if (parsed.agent === "claude") {
+        trustClaudeWorkspace(cwd, env);
+      }
+      if (parsed.agent === "cursor") {
+        trustCursorWorkspace(cwd, env);
+      }
+
+      const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
+      if (code === 0) {
+        stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
+        stdout(`attach: tmux attach-session -t ${tmuxCommands.sessionName}\n`);
+      }
+      return code;
+    }
+
     const command = buildAgentCommand(
       parsed.agent,
       {

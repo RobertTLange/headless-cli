@@ -27,4 +27,5 @@ export interface AgentConfig {
 
 export interface AgentHarness extends AgentConfig {
   buildCommand(options: BuildOptions, env: Env): BuiltCommand;
+  buildInteractiveCommand(options: BuildOptions, env: Env): BuiltCommand;
 }

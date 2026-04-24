@@ -11,6 +11,7 @@
 </p>
 
 Headless normalizes the small but annoying differences between coding-agent CLIs. It gives each agent the same prompt, model, workdir, dry-run, and config-inspection interface while preserving the native command flags needed for non-interactive execution.
+Pass `--tmux` when you want the same prompt launched in an interactive agent session instead.
 
 ## Quick Start
 
@@ -38,6 +39,8 @@ headless claude --prompt-file prompt.md --work-dir /path/to/project
 headless opencode --show-config
 headless gemini --prompt "Summarize the codebase" --print-command
 headless pi --prompt "Summarize this repo" --json
+headless codex --prompt "Fix the failing tests" --tmux
+headless --list
 ```
 
 Pipe a prompt over stdin:
@@ -60,10 +63,26 @@ printf "Review this diff" | headless pi --model claude-opus
 By default, Headless prints the agent's final assistant message. Pass `--json` to print the raw native JSON trace.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
+## Tmux Mode
+
+`--tmux` creates a detached tmux session named `headless-<agent>-<pid>`, starts the selected agent in interactive mode with the prompt as its initial message, prints an attach command, and exits.
+
+```bash
+headless claude --prompt-file task.md --work-dir /path/to/project --tmux
+tmux attach-session -t headless-claude-12345
+```
+
+`--json` is only for headless execution and cannot be combined with `--tmux`. Use `--print-command --tmux` to preview the tmux command without launching a session.
+Claude tmux launches include `--dangerously-skip-permissions` and pre-trust the launch directory so the detached session does not block on directory trust or permission prompts.
+Cursor tmux launches pre-trust the launch directory so the detached session does not block on workspace trust.
+Gemini tmux launches include `--skip-trust` so the detached session does not block on the folder trust prompt.
+OpenCode tmux launches start the TUI, wake it, paste the prompt through a tmux buffer, and then send `Enter` so the prompt is submitted after the TUI is ready.
+Use `headless --list` to list active tmux sessions created by Headless, or `headless codex --list` to list sessions for one agent.
+
 ## CLI Reference
 
 ```bash
-headless [agent] (--prompt <text> | --prompt-file <path>) [options]
+headless [agent] (--prompt <text> | --prompt-file <path> | --list | --show-config) [options]
 ```
 
 Options:
@@ -73,6 +92,8 @@ Options:
 - `--model`, `--agent-model`: model override passed to the agent CLI.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--json`: print the raw agent JSON trace instead of extracting the final message.
+- `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
+- `--list`: list active tmux sessions created by Headless.
 - `--print-command`: print the shell command without executing it.
 - `--show-config`: print config paths and auth seed paths for an agent.
 - `--help`: show usage.
