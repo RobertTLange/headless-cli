@@ -136,3 +136,12 @@ src/shell.ts    Shell-safe dry-run rendering
 src/types.ts    Shared TypeScript contracts
 tests/          CLI and command-builder coverage
 ```
+
+## Agent Execution References
+
+- [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/)
+- [Cursor headless CLI](https://cursor.com/docs/cli/headless)
+- [Codex CLI reference](https://developers.openai.com/codex/cli/reference)
+- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [OpenCode CLI docs](https://opencode.ai/docs/cli/)
+- [Pi coding agent RPC docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md)
