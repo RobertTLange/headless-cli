@@ -73,6 +73,7 @@ tmux attach-session -t headless-claude-12345
 
 `--json` is only for headless execution and cannot be combined with `--tmux`. Use `--print-command --tmux` to preview the tmux command without launching a session.
 Claude tmux launches include `--dangerously-skip-permissions` and pre-trust the launch directory so the detached session does not block on directory trust or permission prompts.
+Gemini tmux launches include `--skip-trust` so the detached session does not block on the folder trust prompt.
 
 ## CLI Reference
 

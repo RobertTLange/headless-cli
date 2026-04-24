@@ -90,6 +90,7 @@ function buildGemini(options: BuildOptions): BuiltCommand {
 
 function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
+  args.push("--skip-trust");
   args.push(options.prompt);
   return { command: "gemini", args };
 }

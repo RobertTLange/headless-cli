@@ -126,7 +126,7 @@ test("builds interactive commands for tmux mode", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
     command: "gemini",
-    args: ["--model", "gemini-model", "hello"],
+    args: ["--model", "gemini-model", "--skip-trust", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("opencode", { prompt: "hello", model: "oc-model" }, {}), {
