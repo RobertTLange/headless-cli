@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RobertTLange/headless.git"
+    "url": "git+https://github.com/RobertTLange/headless-cli.git"
   },
   "publishConfig": {
     "access": "public",
