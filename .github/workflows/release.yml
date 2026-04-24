@@ -39,7 +39,21 @@ jobs:
           npm pack --pack-destination /tmp
           npx -y --package /tmp/roberttlange-headless-*.tgz headless --help
 
+      - name: Read package version
+        id: package-version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm package version
+        id: npm-version
+        run: |
+          if npm view "@roberttlange/headless@${{ steps.package-version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.npm-version.outputs.published != 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
