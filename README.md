@@ -78,7 +78,7 @@ printf "Review this diff" | headless pi --model claude-opus
 
 Pass `--allow read-only` to use each agent's read-only/planning mode where available. Pass `--allow yolo` to explicitly request each agent's native auto-approve/bypass mode. When `--allow` is omitted, Headless preserves its existing default command shapes.
 
-By default, Headless prints the agent's final assistant message. Pass `--json` to print the raw native JSON trace.
+By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
 ## 3 Execution Modes
@@ -93,7 +93,7 @@ headless codex --prompt "Fix the failing tests"
 
 ### 2) JSON mode (`--json`)
 
-JSON mode runs headless in the current terminal and prints the agent's native JSON trace for scripting or post-processing.
+JSON mode runs headless in the current terminal and streams the agent's native JSON trace for scripting or post-processing.
 
 ```bash
 headless pi --prompt "Summarize this repo" --json
@@ -130,7 +130,7 @@ Options:
 - `--model`, `--agent-model`: model override passed to the agent CLI.
 - `--allow`: permission mode, either `read-only` or `yolo`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
-- `--json`: print the raw agent JSON trace instead of extracting the final message.
+- `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
 - `--check`: check which supported agent binaries are installed and print their versions.
 - `--list`: list active tmux sessions created by Headless.
