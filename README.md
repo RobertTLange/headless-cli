@@ -75,6 +75,7 @@ tmux attach-session -t headless-claude-12345
 Claude tmux launches include `--dangerously-skip-permissions` and pre-trust the launch directory so the detached session does not block on directory trust or permission prompts.
 Cursor tmux launches pre-trust the launch directory so the detached session does not block on workspace trust.
 Gemini tmux launches include `--skip-trust` so the detached session does not block on the folder trust prompt.
+OpenCode tmux launches start the TUI, wake it, paste the prompt through a tmux buffer, and then send `Enter` so the prompt is submitted after the TUI is ready.
 
 ## CLI Reference
 
