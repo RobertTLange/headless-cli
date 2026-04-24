@@ -35,6 +35,7 @@ interface ParsedArgs {
   allow?: AllowMode;
   workDir?: string;
   json: boolean;
+  debug: boolean;
   printCommand: boolean;
   showConfig: boolean;
   check: boolean;
@@ -70,7 +71,8 @@ function usage(): string {
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
-    "  --json               Print raw agent JSON trace output.",
+    "  --json               Stream raw agent JSON trace output.",
+    "  --debug              Stream raw trace and print extracted final message.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --check              Check installed agent binaries and versions.",
     "  --list               List active headless tmux sessions.",
@@ -86,6 +88,7 @@ function usage(): string {
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     json: false,
+    debug: false,
     printCommand: false,
     showConfig: false,
     check: false,
@@ -140,6 +143,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         parsed.json = true;
+        break;
+      case "--debug":
+        parsed.debug = true;
         break;
       case "--tmux":
         parsed.tmux = true;
@@ -297,6 +303,13 @@ interface HeadlessTmuxSession {
   agent: AgentName;
 }
 
+type StdoutHandling = "capture" | "stream" | "capture-and-stream";
+
+interface ExecuteCommandOptions {
+  stdoutHandling: StdoutHandling;
+  stdout: (text: string) => void;
+}
+
 function suppressKnownStderr(agent: AgentName, text: string): string {
   if (agent !== "gemini") {
     return text;
@@ -323,6 +336,7 @@ async function executeCommand(
   cwd: string | undefined,
   env: Env,
   stderr: (text: string) => void,
+  options: ExecuteCommandOptions,
 ): Promise<ExecuteResult> {
   let stdinFd: number | undefined;
   const stdio: ["ignore" | "pipe" | number, "pipe", "pipe"] = [
@@ -350,7 +364,12 @@ async function executeCommand(
       }
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
-        capturedStdout += chunk;
+        if (options.stdoutHandling !== "stream") {
+          capturedStdout += chunk;
+        }
+        if (options.stdoutHandling !== "capture") {
+          options.stdout(chunk);
+        }
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
@@ -632,6 +651,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
     }
+    if (parsed.debug && parsed.json) {
+      throw new CliError("--debug cannot be used with --json");
+    }
+    if (parsed.debug && parsed.tmux) {
+      throw new CliError("--debug cannot be used with --tmux");
+    }
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));
       return 0;
@@ -691,15 +716,29 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    const result = await executeCommand(parsed.agent, command, cwd, env, stderr);
+    const stdoutHandling: StdoutHandling = parsed.json
+      ? "stream"
+      : parsed.debug
+        ? "capture-and-stream"
+        : "capture";
+    const result = await executeCommand(parsed.agent, command, cwd, env, stderr, {
+      stdout,
+      stdoutHandling,
+    });
     if (parsed.json) {
-      stdout(result.stdout);
       return result.code;
     }
 
     const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
     if (finalMessage) {
-      stdout(`${finalMessage}\n`);
+      if (parsed.debug) {
+        if (!result.stdout.endsWith("\n")) {
+          stdout("\n");
+        }
+        stdout(`--- final message ---\n${finalMessage}\n`);
+      } else {
+        stdout(`${finalMessage}\n`);
+      }
       return result.code;
     }
     if (result.code === 0) {
