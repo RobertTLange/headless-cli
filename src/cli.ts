@@ -35,6 +35,7 @@ interface ParsedArgs {
   allow?: AllowMode;
   workDir?: string;
   json: boolean;
+  debug: boolean;
   printCommand: boolean;
   showConfig: boolean;
   check: boolean;
@@ -70,7 +71,8 @@ function usage(): string {
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
-    "  --json               Print raw agent JSON trace output.",
+    "  --json               Stream raw agent JSON trace output.",
+    "  --debug              Stream raw trace and print extracted final message.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --check              Check installed agent binaries and versions.",
     "  --list               List active headless tmux sessions.",
@@ -86,6 +88,7 @@ function usage(): string {
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     json: false,
+    debug: false,
     printCommand: false,
     showConfig: false,
     check: false,
@@ -140,6 +143,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         parsed.json = true;
+        break;
+      case "--debug":
+        parsed.debug = true;
         break;
       case "--tmux":
         parsed.tmux = true;
@@ -634,6 +640,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
     }
+    if (parsed.debug && parsed.json) {
+      throw new CliError("--debug cannot be used with --json");
+    }
+    if (parsed.debug && parsed.tmux) {
+      throw new CliError("--debug cannot be used with --tmux");
+    }
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));
       return 0;
@@ -693,14 +705,28 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    const result = await executeCommand(parsed.agent, command, cwd, env, stderr, parsed.json ? stdout : undefined);
+    const result = await executeCommand(
+      parsed.agent,
+      command,
+      cwd,
+      env,
+      stderr,
+      parsed.json || parsed.debug ? stdout : undefined,
+    );
     if (parsed.json) {
       return result.code;
     }
 
     const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
     if (finalMessage) {
-      stdout(`${finalMessage}\n`);
+      if (parsed.debug) {
+        if (!result.stdout.endsWith("\n")) {
+          stdout("\n");
+        }
+        stdout(`--- final message ---\n${finalMessage}\n`);
+      } else {
+        stdout(`${finalMessage}\n`);
+      }
       return result.code;
     }
     if (result.code === 0) {
