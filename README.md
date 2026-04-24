@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="Headless coding agent orchestration" width="320" />
+</p>
+
 <h1 align="center">Headless</h1>
 
 <p align="center">
