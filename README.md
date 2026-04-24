@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Headless coding agent orchestration" width="320" />
+  <img src="docs/logo.png" alt="Headless coding agent orchestration" width="280" style="border-radius: 24px;" />
 </p>
 
 <h1 align="center">Headless</h1>
