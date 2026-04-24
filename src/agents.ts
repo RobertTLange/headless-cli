@@ -161,6 +161,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     buildCommand: buildClaude,
     buildInteractiveCommand: (options) => {
       const args = withModel([], options.model);
+      args.push("--dangerously-skip-permissions");
       args.push(options.prompt);
       return { command: "claude", args };
     },

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -121,7 +121,7 @@ test("builds interactive commands for tmux mode", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "sonnet" }, {}), {
     command: "claude",
-    args: ["--model", "sonnet", "hello"],
+    args: ["--model", "sonnet", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
@@ -454,6 +454,52 @@ test("CLI --tmux launches an interactive tmux session and sends the prompt", asy
     ]);
     assert.match(sessionName, /^headless-codex-\d+$/);
     assert.match(stdout.join(""), new RegExp(`tmux attach-session -t ${sessionName}`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux marks Claude workspaces trusted before launch", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const homeDir = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const projectDir = join(dir, "project");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    writeFileSync(join(homeDir, ".claude.json"), JSON.stringify({ projects: { "/existing": { keep: true } } }));
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const code = await runCli(["claude", "--prompt", "hello", "--work-dir", projectDir, "--tmux"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HOME: homeDir,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => undefined,
+    });
+
+    const config = JSON.parse(readFileSync(join(homeDir, ".claude.json"), "utf8"));
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(code, 0);
+    assert.deepEqual(config.projects["/existing"], { keep: true });
+    assert.equal(config.projects[realpathSync(projectDir)].hasTrustDialogAccepted, true);
+    assert.match(calls[0][6], /claude .*--dangerously-skip-permissions .*hello/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

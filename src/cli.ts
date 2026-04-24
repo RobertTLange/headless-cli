@@ -9,6 +9,7 @@ import {
   readFileSync,
   realpathSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { delimiter, join } from "node:path";
@@ -378,6 +379,27 @@ function buildTmuxCommands(
   };
 }
 
+function trustClaudeWorkspace(cwd: string | undefined, env: Env): void {
+  const homeDir = env.HOME;
+  if (!homeDir) {
+    throw new CliError("HOME is required to trust Claude workspace");
+  }
+
+  const workspace = realpathSync(cwd ?? process.cwd());
+  const configPath = join(homeDir, ".claude.json");
+  const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+  const projects =
+    config.projects && typeof config.projects === "object" && !Array.isArray(config.projects) ? config.projects : {};
+  const project =
+    projects[workspace] && typeof projects[workspace] === "object" && !Array.isArray(projects[workspace])
+      ? projects[workspace]
+      : {};
+
+  projects[workspace] = { ...project, hasTrustDialogAccepted: true };
+  config.projects = projects;
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
 async function executeSimpleCommand(
   command: BuiltCommand,
   cwd: string | undefined,
@@ -454,6 +476,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.printCommand) {
         stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
         return 0;
+      }
+
+      if (parsed.agent === "claude") {
+        trustClaudeWorkspace(cwd, env);
       }
 
       const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
