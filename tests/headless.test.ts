@@ -9,8 +9,18 @@ import { fileURLToPath } from "node:url";
 import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
 import { runCli } from "../src/cli.ts";
 import { quoteCommand } from "../src/shell.ts";
+import type { AgentName } from "../src/types.ts";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+async function waitFor(assertion: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    if (assertion()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(assertion(), true);
+}
 
 test("lists all supported agents", () => {
   assert.deepEqual(listAgents(), ["claude", "codex", "cursor", "gemini", "opencode", "pi"]);
@@ -412,6 +422,58 @@ test("CLI --json prints raw trace output", async () => {
     assert.equal(stdout.join(""), trace);
   } finally {
     rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json streams raw trace output for every provider", async () => {
+  const providerBinaries: Record<AgentName, string> = {
+    claude: "claude",
+    codex: "codex",
+    cursor: "agent",
+    gemini: "gemini",
+    opencode: "opencode",
+    pi: "pi",
+  };
+
+  for (const [agent, binaryName] of Object.entries(providerBinaries) as [AgentName, string][]) {
+    const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+    try {
+      const binDir = join(dir, "bin");
+      const firstChunk = `${agent}:first\n`;
+      const secondChunk = `${agent}:second\n`;
+      await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+        await mkdir(binDir);
+        const binary = join(binDir, binaryName);
+        await writeFile(
+          binary,
+          [
+            "#!/usr/bin/env node",
+            `process.stdout.write(${JSON.stringify(firstChunk)});`,
+            `setTimeout(() => { process.stdout.write(${JSON.stringify(secondChunk)}); }, 120);`,
+            "",
+          ].join("\n"),
+        );
+        await chmod(binary, 0o755);
+      });
+
+      const stdout: string[] = [];
+      let completed = false;
+      const result = runCli([agent, "--prompt", "hello", "--json"], {
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      }).finally(() => {
+        completed = true;
+      });
+
+      await waitFor(() => stdout.join("") === firstChunk);
+      assert.equal(completed, false);
+
+      const code = await result;
+      assert.equal(code, 0);
+      assert.equal(stdout.join(""), `${firstChunk}${secondChunk}`);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
   }
 });
 

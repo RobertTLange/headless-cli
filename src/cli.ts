@@ -323,6 +323,7 @@ async function executeCommand(
   cwd: string | undefined,
   env: Env,
   stderr: (text: string) => void,
+  stdout?: (text: string) => void,
 ): Promise<ExecuteResult> {
   let stdinFd: number | undefined;
   const stdio: ["ignore" | "pipe" | number, "pipe", "pipe"] = [
@@ -351,6 +352,7 @@ async function executeCommand(
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
         capturedStdout += chunk;
+        stdout?.(chunk);
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
@@ -691,9 +693,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    const result = await executeCommand(parsed.agent, command, cwd, env, stderr);
+    const result = await executeCommand(parsed.agent, command, cwd, env, stderr, parsed.json ? stdout : undefined);
     if (parsed.json) {
-      stdout(result.stdout);
       return result.code;
     }
 
