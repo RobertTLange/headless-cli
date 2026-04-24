@@ -25,6 +25,13 @@ Pass `--tmux` when you want the same prompt launched in an interactive agent ses
 npx -y @roberttlange/headless codex --prompt "Inspect this repository" --print-command
 ```
 
+### Global install
+
+```bash
+npm install -g @roberttlange/headless
+headless codex --prompt "Inspect this repository" --print-command
+```
+
 ### From source
 
 ```bash
@@ -144,6 +151,17 @@ tests/          CLI and command-builder coverage
 ```
 
 ## Agent Execution References
+
+Install the agent CLIs you want Headless to drive:
+
+| Agent | Install | Binary used by Headless |
+| --- | --- | --- |
+| Codex | `npm install -g @openai/codex` | `codex` |
+| Claude Code | `npm install -g @anthropic-ai/claude-code` | `claude` |
+| Cursor | `curl https://cursor.com/install -fsS \| bash` | `agent`, or set `CURSOR_CLI_BIN=cursor-agent` |
+| Gemini CLI | `npm install -g @google/gemini-cli` | `gemini` |
+| OpenCode | `curl -fsSL https://opencode.ai/install \| bash` or `npm install -g opencode-ai` | `opencode` |
+| Pi | `npm install -g @mariozechner/pi-coding-agent` | `pi`, or set `PI_CODING_AGENT_BIN` |
 
 - [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/)
 - [Cursor headless CLI](https://cursor.com/docs/cli/headless)
