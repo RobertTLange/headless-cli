@@ -1,7 +1,6 @@
 import type { BuiltCommand } from "./types.js";
 
 const safeShellToken = /^[A-Za-z0-9_./:=@%+-]+$/;
-const shellSpecialChars = /([\\\s"'`$!&|;<>()[\]{}*?])/g;
 
 export function quoteArg(value: string): string {
   if (value === "") {
@@ -10,7 +9,7 @@ export function quoteArg(value: string): string {
   if (safeShellToken.test(value)) {
     return value;
   }
-  return value.replace(shellSpecialChars, "\\$1");
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function quoteCommand(command: BuiltCommand): string {

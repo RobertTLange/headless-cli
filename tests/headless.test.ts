@@ -207,14 +207,14 @@ test("exposes config metadata", () => {
 test("quotes commands for print-command output", () => {
   assert.equal(
     quoteCommand({ command: "codex", args: ["exec", "hello world"], stdinFile: "/tmp/prompt file.md" }),
-    "codex exec hello\\ world < /tmp/prompt\\ file.md",
+    "codex exec 'hello world' < '/tmp/prompt file.md'",
   );
 });
 
 test("quotes commands with stdin text for print-command output", () => {
   assert.equal(
     quoteCommand({ command: "codex", args: ["exec", "-"], stdinText: "hello world" }),
-    "printf %s hello\\ world | codex exec -",
+    "printf %s 'hello world' | codex exec -",
   );
 });
 
@@ -230,7 +230,7 @@ test("CLI print-command reads argument-mode prompt files", async () => {
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "opencode run --format json from\\ file\n");
+    assert.equal(stdout.join(""), "opencode run --format json 'from file'\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -245,7 +245,7 @@ test("CLI accepts stdin fallback", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "pi --no-session --mode json stdin\\ prompt\n");
+  assert.equal(stdout.join(""), "pi --no-session --mode json 'stdin prompt'\n");
 });
 
 test("CLI auto-selects the preferred installed agent when omitted", async () => {
@@ -450,10 +450,70 @@ test("CLI --tmux launches an interactive tmux session and sends the prompt", asy
     const sessionName = calls[0][3];
     assert.equal(code, 0);
     assert.deepEqual(calls, [
-      ["new-session", "-d", "-s", sessionName, "-c", dir, "codex --model gpt-next hello\\ world"],
+      ["new-session", "-d", "-s", sessionName, "-c", dir, "codex --model gpt-next 'hello world'"],
     ]);
     assert.match(sessionName, /^headless-codex-\d+$/);
     assert.match(stdout.join(""), new RegExp(`tmux attach-session -t ${sessionName}`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux preserves multiline prompt-file text through the tmux shell command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const agentCaptureFile = join(dir, "agent-argv.json");
+    const promptFile = join(dir, "prompt.md");
+    writeFileSync(promptFile, "line one\nline two");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      const codex = join(binDir, "codex");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const { spawnSync } = require('node:child_process');",
+          "const args = process.argv.slice(2);",
+          "if (args[0] !== 'new-session') process.exit(2);",
+          "const shellCommand = args[6];",
+          "const result = spawnSync('/bin/sh', ['-c', shellCommand], { cwd: args[5], env: process.env });",
+          "process.exit(result.status ?? 1);",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        codex,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.writeFileSync(process.env.HEADLESS_AGENT_CAPTURE, JSON.stringify(process.argv.slice(2)));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+      await chmod(codex, 0o755);
+    });
+
+    const code = await runCli(
+      ["codex", "--prompt-file", promptFile, "--model", "gpt-next", "--work-dir", dir, "--tmux"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_AGENT_CAPTURE: agentCaptureFile,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdout: () => undefined,
+      },
+    );
+
+    assert.equal(code, 0);
+    assert.deepEqual(JSON.parse(readFileSync(agentCaptureFile, "utf8")), [
+      "--model",
+      "gpt-next",
+      "line one\nline two",
+    ]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -635,7 +695,7 @@ test("CLI --tmux --print-command includes opencode Enter submit command", async 
   assert.equal(code, 0);
   assert.match(stdout.join(""), /^tmux new-session -d -s headless-opencode-\d+ -c /);
   assert.match(stdout.join(""), /\ntmux send-keys -t headless-opencode-\d+ Space BSpace\n/);
-  assert.match(stdout.join(""), /\ntmux set-buffer -b headless-opencode-\d+-prompt hello\\ world\n/);
+  assert.match(stdout.join(""), /\ntmux set-buffer -b headless-opencode-\d+-prompt 'hello world'\n/);
   assert.match(stdout.join(""), /\ntmux paste-buffer -d -b headless-opencode-\d+-prompt -t headless-opencode-\d+\n/);
   assert.match(stdout.join(""), /\ntmux send-keys -t headless-opencode-\d+ Enter\n$/);
 });
