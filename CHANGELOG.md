@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-04-24
+
 - Added `--debug` mode to stream the raw agent trace and append the extracted final assistant message.
 - Changed `--json` mode to stream raw agent trace output in real time instead of printing one final buffered dump.
 
