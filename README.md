@@ -132,23 +132,6 @@ npm run check
 
 `npm run check` builds the package and runs the TypeScript test suite. `npm run test:agents` is an optional real-agent smoke test; set `HEADLESS_AGENT_SMOKE=1` to run Codex, Claude, Pi, and Gemini with an example prompt. The package exports one binary, `headless`, from `dist/cli.js`.
 
-## Release
-
-GitHub Actions runs CI on pushes to `main` and pull requests. The release workflow publishes to npm when a GitHub release is published or when manually dispatched, and expects a repository secret named `NPM_TOKEN`.
-
-For a local first release with an exported `NPM_TOKEN`, run the check first and publish the scoped package as public:
-
-```bash
-npm run check
-npm publish --access public --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
-```
-
-After publish, the CLI should be runnable with:
-
-```bash
-npx -y @roberttlange/headless --help
-```
-
 ## Layout
 
 ```text
