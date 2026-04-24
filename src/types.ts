@@ -2,17 +2,21 @@ export type AgentName = "claude" | "codex" | "cursor" | "gemini" | "opencode" | 
 
 export type PromptFileMode = "argument" | "stdin";
 
+export type AllowMode = "read-only" | "yolo";
+
 export type Env = Record<string, string | undefined>;
 
 export interface BuildOptions {
   prompt: string;
   promptFile?: string;
   model?: string;
+  allow?: AllowMode;
 }
 
 export interface BuiltCommand {
   command: string;
   args: string[];
+  env?: Env;
   stdinFile?: string;
   stdinText?: string;
 }

@@ -1,9 +1,51 @@
-import type { AgentConfig, AgentHarness, AgentName, BuildOptions, BuiltCommand, Env } from "./types.js";
+import type { AgentConfig, AgentHarness, AgentName, AllowMode, BuildOptions, BuiltCommand, Env } from "./types.js";
 
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
+const opencodeReadOnlyConfig = JSON.stringify({
+  permission: {
+    edit: "deny",
+    bash: "deny",
+    webfetch: "deny",
+    websearch: "deny",
+    codesearch: "deny",
+    task: "deny",
+  },
+});
 
 function withModel(args: string[], model: string | undefined): string[] {
   return model ? [...args, "--model", model] : args;
+}
+
+function withClaudeAllow(args: string[], allow: AllowMode | undefined): string[] {
+  if (allow === "read-only") {
+    return [...args, "--permission-mode", "plan"];
+  }
+  return allow === "yolo" || allow === undefined ? [...args, "--dangerously-skip-permissions"] : args;
+}
+
+function withCursorAllow(args: string[], allow: AllowMode | undefined): string[] {
+  if (allow === "read-only") {
+    return args;
+  }
+  return allow === "yolo" || allow === undefined ? [...args, "--force"] : args;
+}
+
+function withGeminiAllow(args: string[], allow: AllowMode | undefined): string[] {
+  if (allow === "read-only") {
+    return [...args, "--approval-mode", "plan"];
+  }
+  if (allow === "yolo") {
+    return [...args, "--approval-mode", "yolo"];
+  }
+  return [...args, "--yolo"];
+}
+
+function opencodeEnv(allow: AllowMode | undefined): Env | undefined {
+  return allow === "read-only" ? { OPENCODE_CONFIG_CONTENT: opencodeReadOnlyConfig } : undefined;
+}
+
+function commandWithOptionalEnv(command: string, args: string[], env: Env | undefined): BuiltCommand {
+  return env ? { command, args, env } : { command, args };
 }
 
 function buildClaude(options: BuildOptions): BuiltCommand {
@@ -11,24 +53,38 @@ function buildClaude(options: BuildOptions): BuiltCommand {
   args.push("-p");
 
   if (options.promptFile) {
-    args.push("--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions");
+    args.push("--output-format", "stream-json", "--verbose");
+    args.push(...withClaudeAllow([], options.allow));
     return { command: "claude", args, stdinFile: options.promptFile };
   }
 
-  args.push(options.prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions");
+  args.push(options.prompt, "--output-format", "stream-json", "--verbose");
+  args.push(...withClaudeAllow([], options.allow));
   return { command: "claude", args };
 }
 
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
   const model = options.model || env.CODEX_MODEL || "gpt-5.2";
-  const args = [
-    "exec",
-    "--model",
-    model,
-    "--json",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--skip-git-repo-check",
-  ];
+  const args =
+    options.allow === undefined
+      ? [
+          "exec",
+          "--model",
+          model,
+          "--json",
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--skip-git-repo-check",
+        ]
+      : [
+          ...(options.allow === "read-only"
+            ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
+            : ["--dangerously-bypass-approvals-and-sandbox"]),
+          "exec",
+          "--model",
+          model,
+          "--json",
+          "--skip-git-repo-check",
+        ];
 
   if (options.promptFile) {
     args.push("-");
@@ -41,20 +97,29 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
 
 function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
   const model = options.model || env.CODEX_MODEL;
-  const args = withModel([], model);
+  const args =
+    options.allow === "read-only"
+      ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
+      : options.allow === "yolo"
+        ? ["--dangerously-bypass-approvals-and-sandbox"]
+        : [];
+  args.push(...withModel([], model));
   args.push(options.prompt);
   return { command: "codex", args };
 }
 
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
-  const args = ["-p", "--force", "--output-format", "stream-json"];
+  const args = ["-p", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
 
   if (env.CURSOR_API_KEY) {
     args.unshift("--api-key", env.CURSOR_API_KEY);
   }
   if (options.model) {
     args.push("--model", options.model);
+  }
+  if (options.allow === "read-only") {
+    args.push("--mode", "plan");
   }
 
   args.push(options.prompt);
@@ -71,6 +136,12 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   if (options.model) {
     args.push("--model", options.model);
   }
+  if (options.allow === "yolo") {
+    args.push("--force");
+  }
+  if (options.allow === "read-only") {
+    args.push("--mode", "plan");
+  }
   args.push(options.prompt);
 
   return { command, args };
@@ -80,17 +151,20 @@ function buildGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
 
   if (options.promptFile) {
-    args.push("--prompt", "", "--output-format", "stream-json", "--yolo");
+    args.push("--prompt", "", "--output-format", "stream-json", ...withGeminiAllow([], options.allow));
     return { command: "gemini", args, stdinFile: options.promptFile };
   }
 
-  args.push("-p", options.prompt, "--output-format", "stream-json", "--yolo");
+  args.push("-p", options.prompt, "--output-format", "stream-json", ...withGeminiAllow([], options.allow));
   return { command: "gemini", args };
 }
 
 function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
   args.push("--skip-trust");
+  if (options.allow !== undefined) {
+    args.push(...withGeminiAllow([], options.allow));
+  }
   args.push(options.prompt);
   return { command: "gemini", args };
 }
@@ -101,14 +175,20 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
   if (options.model) {
     args.push("--model", options.model);
   }
+  if (options.allow === "yolo") {
+    args.push("--dangerously-skip-permissions");
+  }
   args.push(options.prompt);
 
-  return { command: "opencode", args };
+  return commandWithOptionalEnv("opencode", args, opencodeEnv(options.allow));
 }
 
 function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
-  return { command: "opencode", args };
+  if (options.allow === "yolo") {
+    args.push("--dangerously-skip-permissions");
+  }
+  return commandWithOptionalEnv("opencode", args, opencodeEnv(options.allow));
 }
 
 function buildPi(options: BuildOptions, env: Env): BuiltCommand {
@@ -125,6 +205,11 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   }
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
+  }
+  if (options.allow === "read-only") {
+    args.push("--tools", "read,grep,find,ls");
+  } else if (options.allow === "yolo") {
+    args.push("--tools", "read,bash,edit,write");
   }
 
   args.push(options.prompt);
@@ -146,6 +231,11 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }
+  if (options.allow === "read-only") {
+    args.push("--tools", "read,grep,find,ls");
+  } else if (options.allow === "yolo") {
+    args.push("--tools", "read,bash,edit,write");
+  }
   args.push(options.prompt);
 
   return { command, args };
@@ -161,7 +251,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     buildCommand: buildClaude,
     buildInteractiveCommand: (options) => {
       const args = withModel([], options.model);
-      args.push("--dangerously-skip-permissions");
+      args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);
       return { command: "claude", args };
     },

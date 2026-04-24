@@ -13,7 +13,11 @@ export function quoteArg(value: string): string {
 }
 
 export function quoteCommand(command: BuiltCommand): string {
-  const parts = [command.command, ...command.args].map(quoteArg);
+  const envParts = Object.entries(command.env ?? {})
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${quoteArg(value)}`);
+  const parts = [...envParts, ...[command.command, ...command.args].map(quoteArg)];
   if (command.stdinText !== undefined) {
     return ["printf", "%s", quoteArg(command.stdinText), "|", ...parts].join(" ");
   }

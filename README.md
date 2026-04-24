@@ -57,6 +57,8 @@ headless opencode --show-config
 headless gemini --prompt "Summarize the codebase" --print-command
 headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --tmux
+headless codex --allow read-only --prompt "Review this repo"
+headless gemini --allow yolo --prompt "Fix the failing tests"
 headless --check
 headless --list
 ```
@@ -77,6 +79,8 @@ printf "Review this diff" | headless pi --model claude-opus
 | `gemini` | `gemini -p ... --output-format stream-json --yolo` |
 | `opencode` | `opencode run --format json ...` |
 | `pi` | `pi --no-session --mode json ...` |
+
+Pass `--allow read-only` to use each agent's read-only/planning mode where available. Pass `--allow yolo` to explicitly request each agent's native auto-approve/bypass mode. When `--allow` is omitted, Headless preserves its existing default command shapes.
 
 By default, Headless prints the agent's final assistant message. Pass `--json` to print the raw native JSON trace.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
@@ -108,6 +112,7 @@ Options:
 - `--prompt`, `-p`: prompt text.
 - `--prompt-file`: read prompt from a file.
 - `--model`, `--agent-model`: model override passed to the agent CLI.
+- `--allow`: permission mode, either `read-only` or `yolo`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--json`: print the raw agent JSON trace instead of extracting the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.

@@ -25,13 +25,14 @@ import {
 import { checkAgents, commandExists, commandForAgent, renderAgentChecks } from "./check.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
-import type { AgentName, BuiltCommand, Env } from "./types.js";
+import type { AgentName, AllowMode, BuiltCommand, Env } from "./types.js";
 
 interface ParsedArgs {
   agent?: AgentName;
   prompt?: string;
   promptFile?: string;
   model?: string;
+  allow?: AllowMode;
   workDir?: string;
   json: boolean;
   printCommand: boolean;
@@ -59,12 +60,13 @@ class CliError extends Error {
 
 function usage(): string {
   return [
-    "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --list | --show-config) [options]",
+    "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]",
     "",
     `Agents: ${listAgents().join(", ")}`,
     "",
     "Options:",
     "  --model <name>        Agent model override.",
+    "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
@@ -129,6 +131,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--agent-model":
         parsed.model = takeValue(args, arg);
         break;
+      case "--allow":
+        parsed.allow = parseAllowMode(takeValue(args, arg));
+        break;
       case "--work-dir":
       case "-C":
         parsed.workDir = takeValue(args, arg);
@@ -175,6 +180,13 @@ function takeValue(args: string[], flag: string | undefined): string {
     throw new CliError(`${flag} requires a value`);
   }
   return value;
+}
+
+function parseAllowMode(value: string): AllowMode {
+  if (value === "read-only" || value === "yolo") {
+    return value;
+  }
+  throw new CliError(`unsupported allow mode: ${value}`);
 }
 
 function renderConfig(agent: AgentName): string {
@@ -259,6 +271,10 @@ interface ExecuteResult {
   stdout: string;
 }
 
+function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
+  return command.env ? { ...baseEnv, ...command.env } : baseEnv;
+}
+
 interface CaptureResult {
   code: number;
   stdout: string;
@@ -325,7 +341,7 @@ async function executeCommand(
       let capturedStdout = "";
       const child = spawn(command.command, command.args, {
         cwd,
-        env: env as NodeJS.ProcessEnv,
+        env: commandEnv(env, command) as NodeJS.ProcessEnv,
         stdio,
       });
 
@@ -426,7 +442,7 @@ async function captureSimpleCommand(
     let stderr = "";
     const child = spawn(command.command, command.args, {
       cwd,
-      env: env as NodeJS.ProcessEnv,
+      env: commandEnv(env, command) as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -544,7 +560,7 @@ async function executeSimpleCommand(
   return await new Promise<number>((resolve) => {
     const child = spawn(command.command, command.args, {
       cwd,
-      env: env as NodeJS.ProcessEnv,
+      env: commandEnv(env, command) as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -630,6 +646,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         {
           prompt: prompt.prompt,
           model: parsed.model,
+          allow: parsed.allow,
         },
         env,
       );
@@ -664,6 +681,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         prompt: prompt.prompt,
         promptFile: prompt.promptFile,
         model: parsed.model,
+        allow: parsed.allow,
       },
       env,
     );
