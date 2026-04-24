@@ -57,6 +57,7 @@ headless opencode --show-config
 headless gemini --prompt "Summarize the codebase" --print-command
 headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --tmux
+headless --check
 headless --list
 ```
 
@@ -99,7 +100,7 @@ Use `headless --list` to list active tmux sessions created by Headless, or `head
 ## CLI Reference
 
 ```bash
-headless [agent] (--prompt <text> | --prompt-file <path> | --list | --show-config) [options]
+headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]
 ```
 
 Options:
@@ -110,6 +111,7 @@ Options:
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--json`: print the raw agent JSON trace instead of extracting the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
+- `--check`: check which supported agent binaries are installed and print their versions.
 - `--list`: list active tmux sessions created by Headless.
 - `--print-command`: print the shell command without executing it.
 - `--show-config`: print config paths and auth seed paths for an agent.

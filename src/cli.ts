@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 
 import {
-  accessSync,
   closeSync,
-  constants,
   existsSync,
   mkdirSync,
   openSync,
@@ -13,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -24,6 +22,7 @@ import {
   isAgentName,
   listAgents,
 } from "./agents.js";
+import { checkAgents, commandExists, commandForAgent, renderAgentChecks } from "./check.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
@@ -37,6 +36,7 @@ interface ParsedArgs {
   json: boolean;
   printCommand: boolean;
   showConfig: boolean;
+  check: boolean;
   list: boolean;
   tmux: boolean;
   help: boolean;
@@ -70,6 +70,7 @@ function usage(): string {
     "  --work-dir, -C <path> Run from this directory.",
     "  --json               Print raw agent JSON trace output.",
     "  --tmux               Launch an interactive agent in a tmux session.",
+    "  --check              Check installed agent binaries and versions.",
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
@@ -85,6 +86,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     printCommand: false,
     showConfig: false,
+    check: false,
     list: false,
     tmux: false,
     help: false,
@@ -136,6 +138,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--tmux":
         parsed.tmux = true;
+        break;
+      case "--check":
+        parsed.check = true;
         break;
       case "--list":
         parsed.list = true;
@@ -239,42 +244,6 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
 }
 
 const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "cursor"];
-
-function commandForAgent(agent: AgentName, env: Env): string {
-  if (agent === "cursor") {
-    return env.CURSOR_CLI_BIN || "agent";
-  }
-  if (agent === "pi") {
-    return env.PI_CODING_AGENT_BIN || "pi";
-  }
-  return agent;
-}
-
-function isExecutable(path: string): boolean {
-  try {
-    accessSync(path, constants.X_OK);
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function commandExists(command: string, env: Env): boolean {
-  if (command.includes("/") || command.includes("\\")) {
-    return isExecutable(command);
-  }
-
-  const extensions = process.platform === "win32" ? (env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    for (const extension of extensions) {
-      if (isExecutable(join(dir, `${command}${extension}`))) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 function selectDefaultAgent(env: Env): AgentName {
   for (const agent of autoAgentPreference) {
@@ -631,6 +600,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
 
     if (parsed.help) {
       stdout(usage());
+      return 0;
+    }
+    if (parsed.check) {
+      stdout(renderAgentChecks(await checkAgents(env)));
       return 0;
     }
     if (parsed.list) {
