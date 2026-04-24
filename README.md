@@ -40,6 +40,7 @@ headless opencode --show-config
 headless gemini --prompt "Summarize the codebase" --print-command
 headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --tmux
+headless --list
 ```
 
 Pipe a prompt over stdin:
@@ -76,11 +77,12 @@ Claude tmux launches include `--dangerously-skip-permissions` and pre-trust the 
 Cursor tmux launches pre-trust the launch directory so the detached session does not block on workspace trust.
 Gemini tmux launches include `--skip-trust` so the detached session does not block on the folder trust prompt.
 OpenCode tmux launches start the TUI, wake it, paste the prompt through a tmux buffer, and then send `Enter` so the prompt is submitted after the TUI is ready.
+Use `headless --list` to list active tmux sessions created by Headless, or `headless codex --list` to list sessions for one agent.
 
 ## CLI Reference
 
 ```bash
-headless [agent] (--prompt <text> | --prompt-file <path>) [options]
+headless [agent] (--prompt <text> | --prompt-file <path> | --list | --show-config) [options]
 ```
 
 Options:
@@ -91,6 +93,7 @@ Options:
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--json`: print the raw agent JSON trace instead of extracting the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
+- `--list`: list active tmux sessions created by Headless.
 - `--print-command`: print the shell command without executing it.
 - `--show-config`: print config paths and auth seed paths for an agent.
 - `--help`: show usage.

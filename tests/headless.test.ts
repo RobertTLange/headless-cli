@@ -640,6 +640,108 @@ test("CLI --tmux --print-command includes opencode Enter submit command", async 
   assert.match(stdout.join(""), /\ntmux send-keys -t headless-opencode-\d+ Enter\n$/);
 });
 
+test("CLI --list lists active headless tmux sessions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}') process.exit(2);",
+          "process.stdout.write('headless-codex-123\\nother\\nheadless-opencode-456\\nheadless-unknown-789\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(
+      stdout.join(""),
+      [
+        "headless-codex-123\tcodex\ttmux attach-session -t headless-codex-123",
+        "headless-opencode-456\topencode\ttmux attach-session -t headless-opencode-456",
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI agent --list filters active headless tmux sessions by agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "process.stdout.write('headless-codex-123\\nheadless-opencode-456\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["opencode", "--list"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "headless-opencode-456\topencode\ttmux attach-session -t headless-opencode-456\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --list treats missing tmux server as no active sessions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "process.stderr.write('no server running on /private/tmp/tmux-501/default\\n');",
+          "process.exit(1);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "No active headless tmux sessions\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI rejects --json with --tmux", async () => {
   const stderr: string[] = [];
   const code = await runCli(["codex", "--prompt", "hello", "--json", "--tmux"], {
