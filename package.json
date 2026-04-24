@@ -1,10 +1,18 @@
 {
-  "name": "headless",
+  "name": "@roberttlange/headless",
   "version": "0.1.0",
-  "private": true,
+  "description": "One CLI entrypoint for running coding agents in headless mode.",
   "type": "module",
   "bin": {
-    "headless": "./dist/cli.js"
+    "headless": "dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RobertTLange/headless.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "files": [
     "dist"
@@ -13,7 +21,9 @@
     "build": "tsc && chmod +x dist/cli.js",
     "test": "tsx --test tests/**/*.test.ts",
     "test:agents": "tsx --test tests/agents-smoke.ts",
-    "check": "npm run build && npm test"
+    "check": "npm run build && npm test",
+    "pack:check": "npm pack --dry-run",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
