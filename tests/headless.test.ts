@@ -465,7 +465,7 @@ test("CLI --json streams raw trace output for every provider", async () => {
         completed = true;
       });
 
-      await waitFor(() => stdout.join("") === firstChunk);
+      await waitFor(() => stdout.join("").startsWith(firstChunk) && !completed);
       assert.equal(completed, false);
 
       const code = await result;

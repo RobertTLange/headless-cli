@@ -303,6 +303,13 @@ interface HeadlessTmuxSession {
   agent: AgentName;
 }
 
+type StdoutHandling = "capture" | "stream" | "capture-and-stream";
+
+interface ExecuteCommandOptions {
+  stdoutHandling: StdoutHandling;
+  stdout: (text: string) => void;
+}
+
 function suppressKnownStderr(agent: AgentName, text: string): string {
   if (agent !== "gemini") {
     return text;
@@ -329,7 +336,7 @@ async function executeCommand(
   cwd: string | undefined,
   env: Env,
   stderr: (text: string) => void,
-  stdout?: (text: string) => void,
+  options: ExecuteCommandOptions,
 ): Promise<ExecuteResult> {
   let stdinFd: number | undefined;
   const stdio: ["ignore" | "pipe" | number, "pipe", "pipe"] = [
@@ -357,8 +364,12 @@ async function executeCommand(
       }
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
-        capturedStdout += chunk;
-        stdout?.(chunk);
+        if (options.stdoutHandling !== "stream") {
+          capturedStdout += chunk;
+        }
+        if (options.stdoutHandling !== "capture") {
+          options.stdout(chunk);
+        }
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
@@ -705,14 +716,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    const result = await executeCommand(
-      parsed.agent,
-      command,
-      cwd,
-      env,
-      stderr,
-      parsed.json || parsed.debug ? stdout : undefined,
-    );
+    const stdoutHandling: StdoutHandling = parsed.json
+      ? "stream"
+      : parsed.debug
+        ? "capture-and-stream"
+        : "capture";
+    const result = await executeCommand(parsed.agent, command, cwd, env, stderr, {
+      stdout,
+      stdoutHandling,
+    });
     if (parsed.json) {
       return result.code;
     }
