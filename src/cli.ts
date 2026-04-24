@@ -1,11 +1,27 @@
 #!/usr/bin/env node
 
-import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  existsSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { spawn } from "node:child_process";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildAgentCommand, getAgentConfig, getAgentHarness, isAgentName, listAgents } from "./agents.js";
+import {
+  buildAgentCommand,
+  buildInteractiveAgentCommand,
+  getAgentConfig,
+  getAgentHarness,
+  isAgentName,
+  listAgents,
+} from "./agents.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
@@ -19,6 +35,7 @@ interface ParsedArgs {
   json: boolean;
   printCommand: boolean;
   showConfig: boolean;
+  tmux: boolean;
   help: boolean;
 }
 
@@ -49,6 +66,7 @@ function usage(): string {
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
     "  --json               Print raw agent JSON trace output.",
+    "  --tmux               Launch an interactive agent in a tmux session.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
     "  -h, --help           Show this help.",
@@ -59,7 +77,7 @@ function usage(): string {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const parsed: ParsedArgs = { json: false, printCommand: false, showConfig: false, help: false };
+  const parsed: ParsedArgs = { json: false, printCommand: false, showConfig: false, tmux: false, help: false };
   const args = [...argv];
 
   if (args.length === 0) {
@@ -104,6 +122,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         parsed.json = true;
+        break;
+      case "--tmux":
+        parsed.tmux = true;
         break;
       case "--print-command":
         parsed.printCommand = true;
@@ -157,7 +178,11 @@ async function readStdin(): Promise<string> {
   return data;
 }
 
-async function resolvePrompt(parsed: ParsedArgs, deps: CliDeps): Promise<{ prompt: string; promptFile?: string }> {
+async function resolvePrompt(
+  parsed: ParsedArgs,
+  deps: CliDeps,
+  options: { forceText?: boolean } = {},
+): Promise<{ prompt: string; promptFile?: string }> {
   if (parsed.prompt && parsed.promptFile) {
     throw new CliError("use either --prompt or --prompt-file, not both");
   }
@@ -171,7 +196,7 @@ async function resolvePrompt(parsed: ParsedArgs, deps: CliDeps): Promise<{ promp
     if (!existsSync(parsed.promptFile) || !statSync(parsed.promptFile).isFile()) {
       throw new CliError(`prompt file not found: ${parsed.promptFile}`);
     }
-    if (harness.promptFileMode === "stdin") {
+    if (!options.forceText && harness.promptFileMode === "stdin") {
       return { prompt: "", promptFile: parsed.promptFile };
     }
     return { prompt: readFileSync(parsed.promptFile, "utf8") };
@@ -249,6 +274,11 @@ function selectDefaultAgent(env: Env): AgentName {
 interface ExecuteResult {
   code: number;
   stdout: string;
+}
+
+interface TmuxCommands {
+  sessionName: string;
+  newSession: BuiltCommand;
 }
 
 function suppressKnownStderr(agent: AgentName, text: string): string {
@@ -332,6 +362,58 @@ async function executeCommand(
   }
 }
 
+function buildTmuxCommands(
+  agent: AgentName,
+  command: BuiltCommand,
+  cwd: string | undefined,
+): TmuxCommands {
+  const sessionName = `headless-${agent}-${process.pid}`;
+  const startDir = cwd ?? process.cwd();
+  return {
+    sessionName,
+    newSession: {
+      command: "tmux",
+      args: ["new-session", "-d", "-s", sessionName, "-c", startDir, quoteCommand(command)],
+    },
+  };
+}
+
+async function executeSimpleCommand(
+  command: BuiltCommand,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    const child = spawn(command.command, command.args, {
+      cwd,
+      env: env as NodeJS.ProcessEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", () => undefined);
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => stderr(chunk));
+    child.on("error", (error) => {
+      stderr(`${error.message}\n`);
+      resolve(127);
+    });
+    child.on("close", (code, signal) => {
+      resolve(signal ? 1 : (code ?? 1));
+    });
+  });
+}
+
+async function executeTmuxCommands(
+  commands: TmuxCommands,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await executeSimpleCommand(commands.newSession, cwd, env, stderr);
+}
+
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
@@ -347,13 +429,41 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (!parsed.agent) {
       parsed.agent = selectDefaultAgent(env);
     }
+    if (parsed.tmux && parsed.json) {
+      throw new CliError("--json cannot be used with --tmux");
+    }
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));
       return 0;
     }
 
     const cwd = validateWorkDir(parsed.workDir);
-    const prompt = await resolvePrompt(parsed, deps);
+    const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux });
+
+    if (parsed.tmux) {
+      const tmuxCommand = buildInteractiveAgentCommand(
+        parsed.agent,
+        {
+          prompt: prompt.prompt,
+          model: parsed.model,
+        },
+        env,
+      );
+      const tmuxCommands = buildTmuxCommands(parsed.agent, tmuxCommand, cwd);
+
+      if (parsed.printCommand) {
+        stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
+        return 0;
+      }
+
+      const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
+      if (code === 0) {
+        stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
+        stdout(`attach: tmux attach-session -t ${tmuxCommands.sessionName}\n`);
+      }
+      return code;
+    }
+
     const command = buildAgentCommand(
       parsed.agent,
       {

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
+import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
 import { runCli } from "../src/cli.ts";
 import { quoteCommand } from "../src/shell.ts";
 
@@ -111,6 +111,45 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
     command: "pi",
     args: ["--no-session", "--mode", "json", "--model", "pi-model", "hello"],
   });
+});
+
+test("builds interactive commands for tmux mode", () => {
+  assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", model: "gpt-next" }, {}), {
+    command: "codex",
+    args: ["--model", "gpt-next", "hello"],
+  });
+
+  assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "sonnet" }, {}), {
+    command: "claude",
+    args: ["--model", "sonnet", "hello"],
+  });
+
+  assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
+    command: "gemini",
+    args: ["--model", "gemini-model", "hello"],
+  });
+
+  assert.deepEqual(buildInteractiveAgentCommand("opencode", { prompt: "hello", model: "oc-model" }, {}), {
+    command: "opencode",
+    args: ["--model", "oc-model", "--prompt", "hello"],
+  });
+
+  assert.deepEqual(
+    buildInteractiveAgentCommand(
+      "pi",
+      { prompt: "hello" },
+      {
+        PI_CODING_AGENT_BIN: "pi-agent",
+        PI_CODING_AGENT_PROVIDER: "bedrock",
+        PI_CODING_AGENT_MODEL: "opus",
+        PI_CODING_AGENT_MODELS: "opus,sonnet",
+      },
+    ),
+    {
+      command: "pi-agent",
+      args: ["--provider", "bedrock", "--model", "opus", "--models", "opus,sonnet", "hello"],
+    },
+  );
 });
 
 test("forwards cursor and pi environment-backed options", () => {
@@ -374,6 +413,74 @@ test("CLI --json prints raw trace output", async () => {
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
+});
+
+test("CLI --tmux launches an interactive tmux session and sends the prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "tmux.jsonl");
+    const promptFile = join(dir, "prompt.md");
+    writeFileSync(promptFile, "hello world");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      ["codex", "--prompt-file", promptFile, "--model", "gpt-next", "--work-dir", dir, "--tmux"],
+      {
+        env: { ...process.env, HEADLESS_TMUX_CAPTURE: captureFile, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const sessionName = calls[0][3];
+    assert.equal(code, 0);
+    assert.deepEqual(calls, [
+      ["new-session", "-d", "-s", sessionName, "-c", dir, "codex --model gpt-next hello\\ world"],
+    ]);
+    assert.match(sessionName, /^headless-codex-\d+$/);
+    assert.match(stdout.join(""), new RegExp(`tmux attach-session -t ${sessionName}`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --print-command prints tmux commands without executing them", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["pi", "--prompt", "hello world", "--tmux", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /^tmux new-session -d -s headless-pi-\d+ -c /);
+  assert.match(stdout.join(""), /pi/);
+  assert.match(stdout.join(""), /hello/);
+  assert.match(stdout.join(""), /world/);
+  assert.doesNotMatch(stdout.join(""), /send-keys/);
+});
+
+test("CLI rejects --json with --tmux", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["codex", "--prompt", "hello", "--json", "--tmux"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /--json cannot be used with --tmux/);
 });
 
 test("CLI suppresses known Gemini startup warnings", async () => {

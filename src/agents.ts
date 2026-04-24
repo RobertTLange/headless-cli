@@ -39,6 +39,13 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
   return { command: "codex", args, stdinText: options.prompt };
 }
 
+function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
+  const model = options.model || env.CODEX_MODEL;
+  const args = withModel([], model);
+  args.push(options.prompt);
+  return { command: "codex", args };
+}
+
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args = ["-p", "--force", "--output-format", "stream-json"];
@@ -54,6 +61,21 @@ function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   return { command, args };
 }
 
+function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
+  const command = env.CURSOR_CLI_BIN || "agent";
+  const args: string[] = [];
+
+  if (env.CURSOR_API_KEY) {
+    args.push("--api-key", env.CURSOR_API_KEY);
+  }
+  if (options.model) {
+    args.push("--model", options.model);
+  }
+  args.push(options.prompt);
+
+  return { command, args };
+}
+
 function buildGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
 
@@ -66,6 +88,12 @@ function buildGemini(options: BuildOptions): BuiltCommand {
   return { command: "gemini", args };
 }
 
+function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
+  const args = withModel([], options.model);
+  args.push(options.prompt);
+  return { command: "gemini", args };
+}
+
 function buildOpencode(options: BuildOptions): BuiltCommand {
   const args = ["run", "--format", "json"];
 
@@ -74,6 +102,12 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
   }
   args.push(options.prompt);
 
+  return { command: "opencode", args };
+}
+
+function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
+  const args = withModel([], options.model);
+  args.push("--prompt", options.prompt);
   return { command: "opencode", args };
 }
 
@@ -97,6 +131,26 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   return { command, args };
 }
 
+function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
+  const command = env.PI_CODING_AGENT_BIN || "pi";
+  const args: string[] = [];
+
+  if (env.PI_CODING_AGENT_PROVIDER) {
+    args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
+  }
+  if (options.model) {
+    args.push("--model", options.model);
+  } else if (env.PI_CODING_AGENT_MODEL) {
+    args.push("--model", env.PI_CODING_AGENT_MODEL);
+  }
+  if (env.PI_CODING_AGENT_MODELS) {
+    args.push("--models", env.PI_CODING_AGENT_MODELS);
+  }
+  args.push(options.prompt);
+
+  return { command, args };
+}
+
 const harnesses: Record<AgentName, AgentHarness> = {
   claude: {
     name: "claude",
@@ -105,6 +159,11 @@ const harnesses: Record<AgentName, AgentHarness> = {
     workspaceConfigRelDir: ".claude",
     seedPaths: [".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
     buildCommand: buildClaude,
+    buildInteractiveCommand: (options) => {
+      const args = withModel([], options.model);
+      args.push(options.prompt);
+      return { command: "claude", args };
+    },
   },
   codex: {
     name: "codex",
@@ -113,6 +172,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     workspaceConfigRelDir: ".codex",
     seedPaths: [".codex/auth.json", ".codex/config.toml"],
     buildCommand: buildCodex,
+    buildInteractiveCommand: buildInteractiveCodex,
   },
   cursor: {
     name: "cursor",
@@ -121,6 +181,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     workspaceConfigRelDir: ".cursor",
     seedPaths: [".cursor/cli-config.json"],
     buildCommand: buildCursor,
+    buildInteractiveCommand: buildInteractiveCursor,
   },
   gemini: {
     name: "gemini",
@@ -135,6 +196,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
       ".gemini/installation_id",
     ],
     buildCommand: buildGemini,
+    buildInteractiveCommand: buildInteractiveGemini,
   },
   opencode: {
     name: "opencode",
@@ -143,6 +205,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     workspaceConfigRelDir: ".opencode",
     seedPaths: [".config/opencode"],
     buildCommand: buildOpencode,
+    buildInteractiveCommand: buildInteractiveOpencode,
   },
   pi: {
     name: "pi",
@@ -151,6 +214,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     workspaceConfigRelDir: ".pi/agent",
     seedPaths: [".pi/agent/auth.json", ".pi/agent/settings.json"],
     buildCommand: buildPi,
+    buildInteractiveCommand: buildInteractivePi,
   },
 };
 
@@ -167,10 +231,22 @@ export function getAgentHarness(name: AgentName): AgentHarness {
 }
 
 export function getAgentConfig(name: AgentName): AgentConfig {
-  const { buildCommand: _buildCommand, ...config } = harnesses[name];
+  const {
+    buildCommand: _buildCommand,
+    buildInteractiveCommand: _buildInteractiveCommand,
+    ...config
+  } = harnesses[name];
   return { ...config, seedPaths: [...config.seedPaths] };
 }
 
 export function buildAgentCommand(name: AgentName, options: BuildOptions, env: Env = process.env): BuiltCommand {
   return getAgentHarness(name).buildCommand(options, env);
+}
+
+export function buildInteractiveAgentCommand(
+  name: AgentName,
+  options: BuildOptions,
+  env: Env = process.env,
+): BuiltCommand {
+  return getAgentHarness(name).buildInteractiveCommand(options, env);
 }
