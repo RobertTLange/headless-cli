@@ -281,6 +281,12 @@ interface ExecuteResult {
 interface TmuxCommands {
   sessionName: string;
   newSession: BuiltCommand;
+  postLaunch: TmuxPostLaunchCommand[];
+}
+
+interface TmuxPostLaunchCommand {
+  command: BuiltCommand;
+  delayMs: number;
 }
 
 function suppressKnownStderr(agent: AgentName, text: string): string {
@@ -367,17 +373,55 @@ async function executeCommand(
 function buildTmuxCommands(
   agent: AgentName,
   command: BuiltCommand,
+  prompt: string,
   cwd: string | undefined,
+  env: Env,
 ): TmuxCommands {
   const sessionName = `headless-${agent}-${process.pid}`;
   const startDir = cwd ?? process.cwd();
+  const opencodeWakeDelayMs = parseDelayMs(
+    env.HEADLESS_TMUX_OPENCODE_WAKE_DELAY_MS ?? env.HEADLESS_TMUX_OPENCODE_ENTER_DELAY_MS,
+    4000,
+  );
+  const opencodePasteDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_PASTE_DELAY_MS, 1000);
+  const opencodeSubmitDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_SUBMIT_DELAY_MS, 1000);
+  const opencodePromptBuffer = `${sessionName}-prompt`;
   return {
     sessionName,
     newSession: {
       command: "tmux",
       args: ["new-session", "-d", "-s", sessionName, "-c", startDir, quoteCommand(command)],
     },
+    postLaunch:
+      agent === "opencode"
+        ? [
+            {
+              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
+              delayMs: opencodeWakeDelayMs,
+            },
+            {
+              command: { command: "tmux", args: ["set-buffer", "-b", opencodePromptBuffer, prompt] },
+              delayMs: opencodePasteDelayMs,
+            },
+            {
+              command: { command: "tmux", args: ["paste-buffer", "-d", "-b", opencodePromptBuffer, "-t", sessionName] },
+              delayMs: 0,
+            },
+            {
+              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
+              delayMs: opencodeSubmitDelayMs,
+            },
+          ]
+        : [],
   };
+}
+
+function parseDelayMs(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function trustClaudeWorkspace(cwd: string | undefined, env: Env): void {
@@ -447,13 +491,32 @@ async function executeSimpleCommand(
   });
 }
 
+async function waitForDelay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function executeTmuxCommands(
   commands: TmuxCommands,
   cwd: string | undefined,
   env: Env,
   stderr: (text: string) => void,
 ): Promise<number> {
-  return await executeSimpleCommand(commands.newSession, cwd, env, stderr);
+  const launchCode = await executeSimpleCommand(commands.newSession, cwd, env, stderr);
+  if (launchCode !== 0) {
+    return launchCode;
+  }
+
+  for (const postLaunch of commands.postLaunch) {
+    await waitForDelay(postLaunch.delayMs);
+    const code = await executeSimpleCommand(postLaunch.command, cwd, env, stderr);
+    if (code !== 0) {
+      return code;
+    }
+  }
+  return 0;
 }
 
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
@@ -491,10 +554,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         },
         env,
       );
-      const tmuxCommands = buildTmuxCommands(parsed.agent, tmuxCommand, cwd);
+      const tmuxCommands = buildTmuxCommands(parsed.agent, tmuxCommand, prompt.prompt, cwd, env);
 
       if (parsed.printCommand) {
         stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
+        for (const postLaunch of tmuxCommands.postLaunch) {
+          stdout(`${quoteCommand(postLaunch.command)}\n`);
+        }
         return 0;
       }
 

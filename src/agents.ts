@@ -108,7 +108,6 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
 
 function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
-  args.push("--prompt", options.prompt);
   return { command: "opencode", args };
 }
 
