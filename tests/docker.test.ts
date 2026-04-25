@@ -10,7 +10,16 @@ import { quoteCommand } from "../src/shell.ts";
 test("Dockerfile exposes Cursor agent from a non-root path", () => {
   const dockerfile = readFileSync("Dockerfile", "utf8");
 
-  assert.match(dockerfile, /cp -R "\$\{cursor_agent_dir\}\/\." \/opt\/cursor-agent\//);
+  assert.match(dockerfile, /^FROM node:22-bookworm-slim@sha256:[a-f0-9]{64}$/m);
+  assert.match(dockerfile, /@anthropic-ai\/claude-code@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /@google\/gemini-cli@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /@mariozechner\/pi-coding-agent@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /@openai\/codex@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /opencode-ai@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /ARG CURSOR_AGENT_VERSION=\d{4}\.\d{2}\.\d{2}-[a-f0-9]+/);
+  assert.match(dockerfile, /ARG CURSOR_AGENT_SHA256_AMD64=[a-f0-9]{64}/);
+  assert.match(dockerfile, /ARG CURSOR_AGENT_SHA256_ARM64=[a-f0-9]{64}/);
+  assert.match(dockerfile, /sha256sum -c -/);
   assert.match(dockerfile, /ln -sf \/opt\/cursor-agent\/cursor-agent \/usr\/local\/bin\/cursor-agent/);
   assert.match(dockerfile, /ln -sf \/usr\/local\/bin\/cursor-agent \/usr\/local\/bin\/agent/);
 });
