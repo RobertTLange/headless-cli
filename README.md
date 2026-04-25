@@ -74,11 +74,11 @@ printf "Review this diff" | headless pi --model claude-opus
 | `claude` | `claude -p ... --output-format stream-json --verbose --dangerously-skip-permissions` |
 | `codex` | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ...` |
 | `cursor` | `agent -p --force --output-format stream-json ...` |
-| `gemini` | `gemini -p ... --output-format stream-json --yolo` |
-| `opencode` | `opencode run --format json ...` |
-| `pi` | `pi --no-session --mode json ...` |
+| `gemini` | `gemini -p ... --output-format stream-json --approval-mode yolo` |
+| `opencode` | `opencode run --format json --dangerously-skip-permissions ...` |
+| `pi` | `pi --no-session --mode json --tools read,bash,edit,write ...` |
 
-Pass `--allow read-only` to use each agent's read-only/planning mode where available. Pass `--allow yolo` to explicitly request each agent's native auto-approve/bypass mode. When `--allow` is omitted, Headless preserves its existing default command shapes.
+By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only/planning mode where available.
 
 By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.

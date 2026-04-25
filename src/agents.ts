@@ -34,10 +34,7 @@ function withGeminiAllow(args: string[], allow: AllowMode | undefined): string[]
   if (allow === "read-only") {
     return [...args, "--approval-mode", "plan"];
   }
-  if (allow === "yolo") {
-    return [...args, "--approval-mode", "yolo"];
-  }
-  return [...args, "--yolo"];
+  return [...args, "--approval-mode", "yolo"];
 }
 
 function opencodeEnv(allow: AllowMode | undefined): Env | undefined {
@@ -65,26 +62,16 @@ function buildClaude(options: BuildOptions): BuiltCommand {
 
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
   const model = options.model || env.CODEX_MODEL || "gpt-5.2";
-  const args =
-    options.allow === undefined
-      ? [
-          "exec",
-          "--model",
-          model,
-          "--json",
-          "--dangerously-bypass-approvals-and-sandbox",
-          "--skip-git-repo-check",
-        ]
-      : [
-          ...(options.allow === "read-only"
-            ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
-            : ["--dangerously-bypass-approvals-and-sandbox"]),
-          "exec",
-          "--model",
-          model,
-          "--json",
-          "--skip-git-repo-check",
-        ];
+  const args = [
+    ...(options.allow === "read-only"
+      ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
+      : ["--dangerously-bypass-approvals-and-sandbox"]),
+    "exec",
+    "--model",
+    model,
+    "--json",
+    "--skip-git-repo-check",
+  ];
 
   if (options.promptFile) {
     args.push("-");
@@ -100,7 +87,7 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
   const args =
     options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
-      : options.allow === "yolo"
+      : options.allow === "yolo" || options.allow === undefined
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : [];
   args.push(...withModel([], model));
@@ -136,7 +123,7 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   if (options.model) {
     args.push("--model", options.model);
   }
-  if (options.allow === "yolo") {
+  if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--force");
   }
   if (options.allow === "read-only") {
@@ -162,9 +149,7 @@ function buildGemini(options: BuildOptions): BuiltCommand {
 function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
   args.push("--skip-trust");
-  if (options.allow !== undefined) {
-    args.push(...withGeminiAllow([], options.allow));
-  }
+  args.push(...withGeminiAllow([], options.allow));
   args.push(options.prompt);
   return { command: "gemini", args };
 }
@@ -175,7 +160,7 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
   if (options.model) {
     args.push("--model", options.model);
   }
-  if (options.allow === "yolo") {
+  if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--dangerously-skip-permissions");
   }
   args.push(options.prompt);
@@ -185,7 +170,7 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
 
 function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
-  if (options.allow === "yolo") {
+  if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--dangerously-skip-permissions");
   }
   return commandWithOptionalEnv("opencode", args, opencodeEnv(options.allow));
@@ -208,7 +193,7 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
-  } else if (options.allow === "yolo") {
+  } else if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--tools", "read,bash,edit,write");
   }
 
@@ -233,7 +218,7 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
-  } else if (options.allow === "yolo") {
+  } else if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--tools", "read,bash,edit,write");
   }
   args.push(options.prompt);

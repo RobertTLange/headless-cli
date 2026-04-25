@@ -32,11 +32,11 @@ test("builds codex command with default model and prompt stdin", () => {
   assert.deepEqual(command, {
     command: "codex",
     args: [
+      "--dangerously-bypass-approvals-and-sandbox",
       "exec",
       "--model",
       "gpt-5.2",
       "--json",
-      "--dangerously-bypass-approvals-and-sandbox",
       "--skip-git-repo-check",
       "-",
     ],
@@ -47,7 +47,7 @@ test("builds codex command with default model and prompt stdin", () => {
 test("builds codex command using CODEX_MODEL fallback", () => {
   const command = buildAgentCommand("codex", { prompt: "hello" }, { CODEX_MODEL: "gpt-next" });
 
-  assert.equal(command.args[2], "gpt-next");
+  assert.equal(command.args[3], "gpt-next");
   assert.equal(command.stdinText, "hello");
 });
 
@@ -55,11 +55,11 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
   assert.deepEqual(buildAgentCommand("codex", { prompt: "", promptFile: "prompt.md", model: "m" }, {}), {
     command: "codex",
     args: [
+      "--dangerously-bypass-approvals-and-sandbox",
       "exec",
       "--model",
       "m",
       "--json",
-      "--dangerously-bypass-approvals-and-sandbox",
       "--skip-git-repo-check",
       "-",
     ],
@@ -82,7 +82,7 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "", promptFile: "prompt.md", model: "gemini-pro" }, {}), {
     command: "gemini",
-    args: ["--model", "gemini-pro", "--prompt", "", "--output-format", "stream-json", "--yolo"],
+    args: ["--model", "gemini-pro", "--prompt", "", "--output-format", "stream-json", "--approval-mode", "yolo"],
     stdinFile: "prompt.md",
   });
 });
@@ -109,24 +109,24 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
     command: "gemini",
-    args: ["--model", "gemini-model", "-p", "hello", "--output-format", "stream-json", "--yolo"],
+    args: ["--model", "gemini-model", "-p", "hello", "--output-format", "stream-json", "--approval-mode", "yolo"],
   });
 
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", model: "oc-model" }, {}), {
     command: "opencode",
-    args: ["run", "--format", "json", "--model", "oc-model", "hello"],
+    args: ["run", "--format", "json", "--model", "oc-model", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("pi", { prompt: "hello", model: "pi-model" }, {}), {
     command: "pi",
-    args: ["--no-session", "--mode", "json", "--model", "pi-model", "hello"],
+    args: ["--no-session", "--mode", "json", "--model", "pi-model", "--tools", "read,bash,edit,write", "hello"],
   });
 });
 
 test("builds interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", model: "gpt-next" }, {}), {
     command: "codex",
-    args: ["--model", "gpt-next", "hello"],
+    args: ["--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-next", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "sonnet" }, {}), {
@@ -136,12 +136,12 @@ test("builds interactive commands for tmux mode", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
     command: "gemini",
-    args: ["--model", "gemini-model", "--skip-trust", "hello"],
+    args: ["--model", "gemini-model", "--skip-trust", "--approval-mode", "yolo", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("opencode", { prompt: "hello", model: "oc-model" }, {}), {
     command: "opencode",
-    args: ["--model", "oc-model"],
+    args: ["--model", "oc-model", "--dangerously-skip-permissions"],
   });
 
   assert.deepEqual(
@@ -157,7 +157,17 @@ test("builds interactive commands for tmux mode", () => {
     ),
     {
       command: "pi-agent",
-      args: ["--provider", "bedrock", "--model", "opus", "--models", "opus,sonnet", "hello"],
+      args: [
+        "--provider",
+        "bedrock",
+        "--model",
+        "opus",
+        "--models",
+        "opus,sonnet",
+        "--tools",
+        "read,bash,edit,write",
+        "hello",
+      ],
     },
   );
 });
@@ -198,6 +208,8 @@ test("forwards cursor and pi environment-backed options", () => {
         "opus",
         "--models",
         "opus,sonnet",
+        "--tools",
+        "read,bash,edit,write",
         "hello",
       ],
     },
@@ -240,7 +252,7 @@ test("CLI print-command reads argument-mode prompt files", async () => {
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "opencode run --format json 'from file'\n");
+    assert.equal(stdout.join(""), "opencode run --format json --dangerously-skip-permissions 'from file'\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -255,7 +267,7 @@ test("CLI accepts stdin fallback", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "pi --no-session --mode json 'stdin prompt'\n");
+  assert.equal(stdout.join(""), "pi --no-session --mode json --tools 'read,bash,edit,write' 'stdin prompt'\n");
 });
 
 test("CLI auto-selects the preferred installed agent when omitted", async () => {
@@ -278,7 +290,7 @@ test("CLI auto-selects the preferred installed agent when omitted", async () => 
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^printf %s hello \| codex exec/);
+    assert.match(stdout.join(""), /^printf %s hello \| codex --dangerously-bypass-approvals-and-sandbox exec/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -304,7 +316,7 @@ test("CLI auto-selection follows fallback order and env-backed binaries", async 
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "pi-agent --no-session --mode json hello\n");
+    assert.equal(stdout.join(""), "pi-agent --no-session --mode json --tools 'read,bash,edit,write' hello\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -512,7 +524,15 @@ test("CLI --tmux launches an interactive tmux session and sends the prompt", asy
     const sessionName = calls[0][3];
     assert.equal(code, 0);
     assert.deepEqual(calls, [
-      ["new-session", "-d", "-s", sessionName, "-c", dir, "codex --model gpt-next 'hello world'"],
+      [
+        "new-session",
+        "-d",
+        "-s",
+        sessionName,
+        "-c",
+        dir,
+        "codex --dangerously-bypass-approvals-and-sandbox --model gpt-next 'hello world'",
+      ],
     ]);
     assert.match(sessionName, /^headless-codex-\d+$/);
     assert.match(stdout.join(""), new RegExp(`tmux attach-session -t ${sessionName}`));
@@ -572,6 +592,7 @@ test("CLI --tmux preserves multiline prompt-file text through the tmux shell com
 
     assert.equal(code, 0);
     assert.deepEqual(JSON.parse(readFileSync(agentCaptureFile, "utf8")), [
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-next",
       "line one\nline two",
@@ -621,7 +642,7 @@ test("CLI --tmux sends Enter after launching opencode prompt", async () => {
     const sessionName = calls[0][3];
     assert.equal(code, 0);
     assert.deepEqual(calls, [
-      ["new-session", "-d", "-s", sessionName, "-c", dir, "opencode --model oc-model"],
+      ["new-session", "-d", "-s", sessionName, "-c", dir, "opencode --model oc-model --dangerously-skip-permissions"],
       ["send-keys", "-t", sessionName, "Space", "BSpace"],
       ["set-buffer", "-b", `${sessionName}-prompt`, "hello world"],
       ["paste-buffer", "-d", "-b", `${sessionName}-prompt`, "-t", sessionName],
@@ -722,7 +743,7 @@ test("CLI --tmux marks Cursor workspaces trusted before launch", async () => {
     assert.equal(code, 0);
     assert.equal(trust.workspacePath, workspace);
     assert.match(trust.trustedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.match(calls[0][6], /agent hello/);
+    assert.match(calls[0][6], /agent --force hello/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1002,7 +1023,7 @@ test("CLI executes fake binaries and propagates exit codes", async () => {
     });
 
     assert.equal(code, 7);
-    assert.equal(readFileSync(captureFile, "utf8"), "run|--format|json|hello");
+    assert.equal(readFileSync(captureFile, "utf8"), "run|--format|json|--dangerously-skip-permissions|hello");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -113,6 +113,21 @@ test("builds explicit yolo commands for supported agents", () => {
   ]);
 });
 
+test("defaults to yolo commands for supported agents", () => {
+  const agents = ["claude", "codex", "cursor", "gemini", "opencode", "pi"] as const;
+
+  for (const agent of agents) {
+    assert.deepEqual(
+      buildAgentCommand(agent, { prompt: "hello" }, {}),
+      buildAgentCommand(agent, { prompt: "hello", allow: "yolo" }, {}),
+    );
+    assert.deepEqual(
+      buildInteractiveAgentCommand(agent, { prompt: "hello" }, {}),
+      buildInteractiveAgentCommand(agent, { prompt: "hello", allow: "yolo" }, {}),
+    );
+  }
+});
+
 test("builds read-only interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", allow: "read-only" }, {}), {
     command: "codex",
