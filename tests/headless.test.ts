@@ -320,6 +320,74 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
   }
 });
 
+test("CLI --modal print-command wraps the selected agent command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const projectDir = join(dir, "project");
+    mkdirSync(projectDir);
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      [
+        "codex",
+        "--prompt",
+        "hello",
+        "--work-dir",
+        projectDir,
+        "--modal",
+        "--modal-app",
+        "headless-dev",
+        "--modal-image",
+        "custom/headless:modal",
+        "--modal-image-secret",
+        "ghcr",
+        "--modal-cpu",
+        "4",
+        "--modal-memory",
+        "8192",
+        "--modal-timeout",
+        "900",
+        "--modal-secret",
+        "provider-secret",
+        "--print-command",
+      ],
+      { stdout: (text) => stdout.push(text) },
+    );
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
+    assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
+    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex/);
+    assert.match(output, /exec --model gpt-5\.2 --json --skip-git-repo-check -/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI rejects invalid Modal option combinations", async () => {
+  const stderr: string[] = [];
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--modal", "--docker"], { stderr: (text) => stderr.push(text) }),
+    2,
+  );
+  assert.match(stderr.join(""), /--docker cannot be used with --modal/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--modal-env", "BAD-NAME"], { stderr: (text) => stderr.push(text) }),
+    2,
+  );
+  assert.match(stderr.join(""), /invalid modal env/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--modal-secret", "bad/name"], { stderr: (text) => stderr.push(text) }),
+    2,
+  );
+  assert.match(stderr.join(""), /invalid modal secret/);
+});
+
 test("CLI --docker executes through docker and preserves stdin prompt", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

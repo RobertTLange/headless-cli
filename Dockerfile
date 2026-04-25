@@ -4,6 +4,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates curl git ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /headless-home && chown node:node /headless-home
+
 RUN npm install -g \
   @anthropic-ai/claude-code@2.1.119 \
   @google/gemini-cli@0.39.1 \
@@ -31,6 +33,6 @@ RUN set -eu; \
   && ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent \
   && ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent
 
-ENV PATH="/root/.local/bin:/root/.cursor/bin:/root/.cursor/cli/bin:${PATH}"
+ENV PATH="/home/node/.local/bin:/home/node/.cursor/bin:/home/node/.cursor/cli/bin:/headless-home/.local/bin:/headless-home/.cursor/bin:/headless-home/.cursor/cli/bin:/root/.local/bin:/root/.cursor/bin:/root/.cursor/cli/bin:${PATH}"
 
 WORKDIR /workspace

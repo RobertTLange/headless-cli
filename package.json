@@ -33,5 +33,12 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "uuid": "^14.0.0"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.0",
+    "modal": "^0.7.4"
   }
 }
