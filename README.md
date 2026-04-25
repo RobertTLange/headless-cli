@@ -57,7 +57,7 @@ headless codex --allow read-only --prompt "Review this repo"
 headless gemini --allow yolo --prompt "Fix the failing tests"
 # Validate local setup and environment.
 headless --check
-# List discovered providers and adapters.
+# List managed tmux sessions with state and timestamps.
 headless --list
 ```
 
@@ -128,7 +128,7 @@ Claude tmux launches include `--dangerously-skip-permissions` and pre-trust the 
 Cursor tmux launches pre-trust the launch directory so detached sessions do not block on workspace trust.
 Gemini tmux launches include `--skip-trust` so detached sessions do not block on folder trust prompts.
 OpenCode tmux launches start the TUI, wake it, paste the prompt through a tmux buffer, then send `Enter` so the prompt is submitted after the TUI is ready.
-Use `headless --list` to list active tmux sessions created by Headless, or `headless codex --list` to list sessions for one agent.
+Use `headless --list` to list active tmux sessions created by Headless, including inferred state, creation time, and last activity time. Use `headless codex --list` to list sessions for one agent.
 Use `headless send <session-name> --prompt "..."` to send a follow-up message to an existing Headless tmux session.
 Use `headless rename <session-name> <new-name>` to rename an existing Headless tmux session while preserving its agent prefix.
 
@@ -160,7 +160,7 @@ Options:
 - `send <session-name>`: send a message to an existing Headless tmux session.
 - `rename <session-name> <new-name>`: rename an existing Headless tmux session.
 - `--check`: check which supported agent binaries are installed and print their versions.
-- `--list`: list active tmux sessions created by Headless.
+- `--list`: list active tmux sessions created by Headless, including state and timestamps.
 - `--print-command`: print the shell command without executing it.
 - `--show-config`: print config paths and auth seed paths for an agent.
 - `--help`: show usage.

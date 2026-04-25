@@ -794,8 +794,8 @@ test("CLI --list lists active headless tmux sessions", async () => {
         tmux,
         [
           "#!/usr/bin/env node",
-          "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}') process.exit(2);",
-          "process.stdout.write('headless-codex-123\\nother\\nheadless-opencode-456\\nheadless-unknown-789\\n');",
+          "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+          "process.stdout.write('headless-codex-123\\t1700000000\\t4102444800\\t0\\nother\\t1700000000\\t1700000000\\t0\\nheadless-opencode-456\\t1700000000\\t1700000000\\t0\\nheadless-unknown-789\\t1700000000\\t1700000000\\t0\\n');",
           "",
         ].join("\n"),
       );
@@ -812,8 +812,9 @@ test("CLI --list lists active headless tmux sessions", async () => {
     assert.equal(
       stdout.join(""),
       [
-        "headless-codex-123\tcodex\ttmux attach-session -t headless-codex-123",
-        "headless-opencode-456\topencode\ttmux attach-session -t headless-opencode-456",
+        "NAME                   AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
+        "headless-codex-123     codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  tmux attach-session -t headless-codex-123",
+        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-456",
         "",
       ].join("\n"),
     );
@@ -833,7 +834,7 @@ test("CLI agent --list filters active headless tmux sessions by agent", async ()
         tmux,
         [
           "#!/usr/bin/env node",
-          "process.stdout.write('headless-codex-123\\nheadless-opencode-456\\n');",
+          "process.stdout.write('headless-codex-123\\t1700000000\\t4102444800\\t0\\nheadless-opencode-456\\t1700000000\\t1700000000\\t0\\n');",
           "",
         ].join("\n"),
       );
@@ -847,7 +848,109 @@ test("CLI agent --list filters active headless tmux sessions by agent", async ()
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "headless-opencode-456\topencode\ttmux attach-session -t headless-opencode-456\n");
+    assert.equal(
+      stdout.join(""),
+      [
+        "NAME                   AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
+        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-456",
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --list marks dead tmux panes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "process.stdout.write('headless-claude-dead\\t1700000000\\t4102444800\\t1\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^headless-claude-dead\s+claude\s+dead\s+/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --list honors HEADLESS_LIST_WAITING_AFTER_MS", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const activity = Math.floor(Date.now() / 1000) - 2;",
+          "process.stdout.write(`headless-codex-quiet\\t1700000000\\t${activity}\\t0\\n`);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, HEADLESS_LIST_WAITING_AFTER_MS: "1000", PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^headless-codex-quiet\s+codex\s+waiting\s+/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --list uses tmux window activity for last activity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "if (!process.argv.slice(2).join(' ').includes('#{window_activity}')) process.exit(2);",
+          "process.stdout.write('headless-codex-active\\t1700000000\\t1700000100\\t0\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /2023-11-14T22:15:00\.000Z/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

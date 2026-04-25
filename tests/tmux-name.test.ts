@@ -118,8 +118,8 @@ test("CLI list includes named headless tmux sessions", async () => {
       binDir,
       [
         "#!/usr/bin/env node",
-        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}') process.exit(2);",
-        "process.stdout.write('headless-codex-work\\nheadless-opencode-review.1\\nother\\n');",
+        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+        "process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\nheadless-opencode-review.1\\t1700000000\\t1700000000\\t0\\nother\\t1700000000\\t1700000000\\t0\\n');",
         "",
       ].join("\n"),
     );
@@ -134,8 +134,9 @@ test("CLI list includes named headless tmux sessions", async () => {
     assert.equal(
       stdout.join(""),
       [
-        "headless-codex-work\tcodex\ttmux attach-session -t headless-codex-work",
-        "headless-opencode-review.1\topencode\ttmux attach-session -t headless-opencode-review.1",
+        "NAME                        AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
+        "headless-codex-work         codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  tmux attach-session -t headless-codex-work",
+        "headless-opencode-review.1  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-review.1",
         "",
       ].join("\n"),
     );

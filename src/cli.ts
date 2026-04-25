@@ -346,6 +346,14 @@ interface HeadlessTmuxSession {
   agent: AgentName;
 }
 
+type HeadlessTmuxSessionState = "running" | "waiting" | "dead";
+
+interface HeadlessTmuxSessionDetails extends HeadlessTmuxSession {
+  state: HeadlessTmuxSessionState;
+  createdAt: string;
+  lastActivityAt: string;
+}
+
 type StdoutHandling = "capture" | "stream" | "capture-and-stream";
 
 interface ExecuteCommandOptions {
@@ -550,14 +558,73 @@ function parseHeadlessTmuxSession(name: string): HeadlessTmuxSession | undefined
   return { name, agent };
 }
 
-function renderHeadlessTmuxSessions(sessions: HeadlessTmuxSession[]): string {
+function formatEpochSeconds(value: number): string {
+  return new Date(value * 1000).toISOString();
+}
+
+function parseEpochSeconds(value: string): number | undefined {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseWaitingAfterMs(env: Env): number {
+  const parsed = Number.parseInt(env.HEADLESS_LIST_WAITING_AFTER_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30_000;
+}
+
+function inferHeadlessTmuxSessionState(
+  paneDead: string,
+  lastActivitySeconds: number,
+  waitingAfterMs: number,
+): HeadlessTmuxSessionState {
+  if (paneDead === "1") {
+    return "dead";
+  }
+  return Date.now() - lastActivitySeconds * 1000 <= waitingAfterMs ? "running" : "waiting";
+}
+
+function parseHeadlessTmuxSessionDetails(
+  line: string,
+  waitingAfterMs: number,
+): HeadlessTmuxSessionDetails | undefined {
+  const [name, createdRaw, activityRaw, paneDead = "0"] = line.split("\t");
+  const session = parseHeadlessTmuxSession(name?.trim() ?? "");
+  const createdSeconds = parseEpochSeconds(createdRaw ?? "");
+  const activitySeconds = parseEpochSeconds(activityRaw ?? "");
+  if (!session || createdSeconds === undefined || activitySeconds === undefined) {
+    return undefined;
+  }
+  return {
+    ...session,
+    state: inferHeadlessTmuxSessionState(paneDead.trim(), activitySeconds, waitingAfterMs),
+    createdAt: formatEpochSeconds(createdSeconds),
+    lastActivityAt: formatEpochSeconds(activitySeconds),
+  };
+}
+
+function renderTable(headers: string[], rows: string[][]): string {
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)),
+  );
+  const renderRow = (row: string[]) => row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd();
+  return [renderRow(headers), ...rows.map(renderRow)].join("\n").concat("\n");
+}
+
+function renderHeadlessTmuxSessions(sessions: HeadlessTmuxSessionDetails[]): string {
   if (sessions.length === 0) {
     return "No active headless tmux sessions\n";
   }
-  return sessions
-    .map((session) => `${session.name}\t${session.agent}\ttmux attach-session -t ${session.name}`)
-    .join("\n")
-    .concat("\n");
+  return renderTable(
+    ["NAME", "AGENT", "STATE", "CREATED", "LAST_ACTIVITY", "ATTACH"],
+    sessions.map((session) => [
+      session.name,
+      session.agent,
+      session.state,
+      session.createdAt,
+      session.lastActivityAt,
+      `tmux attach-session -t ${session.name}`,
+    ]),
+  );
 }
 
 function buildTmuxSendCommands(sessionName: string, prompt: string): TmuxSendCommands {
@@ -598,7 +665,10 @@ function validateHeadlessTmuxSession(sessionName: string | undefined): HeadlessT
 
 async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env): Promise<string> {
   const result = await captureSimpleCommand(
-    { command: "tmux", args: ["list-sessions", "-F", "#{session_name}"] },
+    {
+      command: "tmux",
+      args: ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}"],
+    },
     undefined,
     env,
   );
@@ -610,12 +680,13 @@ async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env):
     throw new CliError(result.stderr.trim() || "could not list tmux sessions");
   }
 
+  const waitingAfterMs = parseWaitingAfterMs(env);
   const sessions = result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map(parseHeadlessTmuxSession)
-    .filter((session): session is HeadlessTmuxSession => Boolean(session))
+    .map((line) => parseHeadlessTmuxSessionDetails(line, waitingAfterMs))
+    .filter((session): session is HeadlessTmuxSessionDetails => Boolean(session))
     .filter((session) => agent === undefined || session.agent === agent);
 
   return renderHeadlessTmuxSessions(sessions);
