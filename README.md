@@ -51,6 +51,10 @@ headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --debug
 # Launch in tmux for persistent interactive sessions.
 headless codex --prompt "Fix the failing tests" --tmux
+# Run the agent inside the default Docker image.
+headless codex --prompt "Fix the failing tests" --docker
+# Check Docker setup and image availability.
+headless docker doctor
 # Restrict tool permissions to read-only actions.
 headless codex --allow read-only --prompt "Review this repo"
 # Allow all tools for autonomous execution.
@@ -83,7 +87,7 @@ By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--
 By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
-## 4 Execution Modes
+## 5 Execution Modes
 
 ### 1) Raw mode (default)
 
@@ -113,7 +117,38 @@ headless codex --prompt "Fix the failing tests" --debug
 
 `--debug` only applies to headless execution and cannot be combined with `--json` or `--tmux`.
 
-### 4) tmux mode (`--tmux`)
+### 4) Docker mode (`--docker`)
+
+Docker mode wraps one-shot headless execution in `docker run --rm`. It mounts the target workdir at the same absolute path inside the container, mounts existing agent config/auth seed paths read-only, passes a curated set of credential environment variables, and runs the selected agent from `ghcr.io/RobertTLange/headless:latest` by default.
+
+```bash
+headless codex --prompt "Fix the failing tests" --docker
+headless claude --prompt-file task.md --work-dir /path/to/project --docker
+headless pi --prompt "Summarize this repo" --docker --docker-image custom/headless:dev
+```
+
+Use `--docker-env NAME` to pass one extra host environment variable, `--docker-env NAME=value` to set one inline value, and repeat `--docker-arg <arg>` for additional `docker run` arguments.
+
+```bash
+headless codex --prompt "Use the private provider" --docker --docker-env OPENROUTER_API_KEY
+headless gemini --prompt "Inspect this repo" --docker --docker-arg --network=host
+```
+
+Docker mode is only for headless execution. It cannot be combined with `--tmux`, `send`, `rename`, or `--list`.
+
+The default image contract is simple: every supported agent binary is available on `PATH`, and the image has no required entrypoint. Plain `--docker` uses `ghcr.io/RobertTLange/headless:latest`; Docker will pull it automatically if it is not local. Headless never auto-builds images during agent execution.
+
+For local development or when the default image has not been published yet, build the packaged Dockerfile explicitly:
+
+```bash
+headless docker doctor
+headless docker build
+headless codex --prompt "Fix the failing tests" --docker --docker-image headless-local:dev
+```
+
+Use `headless docker build --docker-image <image>` to choose a different local tag.
+
+### 5) tmux mode (`--tmux`)
 
 tmux mode creates a detached session named `headless-<agent>-<pid>`, starts the selected agent in interactive mode with the prompt as its initial message, prints an attach command, and exits. Pass `--name <name>` to create a stable managed session name like `headless-codex-work`.
 
@@ -142,6 +177,8 @@ headless send headless-codex-work --prompt "Run the focused tests now"
 
 ```bash
 headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]
+headless docker doctor [options]
+headless docker build [options]
 headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]
 headless rename <session-name> <new-name> [options]
 ```
@@ -153,12 +190,18 @@ Options:
 - `--model`, `--agent-model`: model override passed to the agent CLI.
 - `--allow`: permission mode, either `read-only` or `yolo`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
+- `--docker`: run the agent inside Docker for one-shot headless execution.
+- `--docker-image`: Docker image override. Defaults to `ghcr.io/RobertTLange/headless:latest`.
+- `--docker-arg`: extra `docker run` argument. Repeat for multiple args.
+- `--docker-env`: pass env into Docker as `NAME` or `NAME=value`. Repeatable.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
 - `--name`: use a stable managed session name with `--tmux`.
 - `send <session-name>`: send a message to an existing Headless tmux session.
 - `rename <session-name> <new-name>`: rename an existing Headless tmux session.
+- `docker doctor`: check Docker setup and image availability.
+- `docker build`: build the packaged Dockerfile as `headless-local:dev`, or `--docker-image <image>`.
 - `--check`: check which supported agent binaries are installed and print their versions.
 - `--list`: list active tmux sessions created by Headless, including state and timestamps.
 - `--print-command`: print the shell command without executing it.
@@ -176,6 +219,8 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 - `PI_CODING_AGENT_PROVIDER`: passed to Pi as `--provider`.
 - `PI_CODING_AGENT_MODEL`: default Pi model when `--model` is omitted.
 - `PI_CODING_AGENT_MODELS`: passed to Pi as `--models`.
+
+Docker mode also passes common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` for anything else.
 
 ## Development
 
