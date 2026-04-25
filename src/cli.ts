@@ -28,6 +28,8 @@ import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env } from "./types.js";
 
 interface ParsedArgs {
+  send: boolean;
+  sendSession?: string;
   agent?: AgentName;
   prompt?: string;
   promptFile?: string;
@@ -62,6 +64,7 @@ class CliError extends Error {
 function usage(): string {
   return [
     "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]",
+    "       headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]",
     "",
     `Agents: ${listAgents().join(", ")}`,
     "",
@@ -74,6 +77,7 @@ function usage(): string {
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
     "  --tmux               Launch an interactive agent in a tmux session.",
+    "  send <session-name>  Send a message to an existing headless tmux session.",
     "  --check              Check installed agent binaries and versions.",
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
@@ -87,6 +91,7 @@ function usage(): string {
 
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
+    send: false,
     json: false,
     debug: false,
     printCommand: false,
@@ -112,7 +117,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.help = true;
     return parsed;
   }
-  if (isAgentName(first)) {
+  if (first === "send") {
+    parsed.send = true;
+  } else if (isAgentName(first)) {
     parsed.agent = first;
   } else if (first.startsWith("-")) {
     args.unshift(first);
@@ -173,6 +180,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         }
         break;
       default:
+        if (parsed.send && arg && !arg.startsWith("-") && parsed.sendSession === undefined) {
+          parsed.sendSession = arg;
+          break;
+        }
         throw new CliError(`unknown argument: ${arg ?? ""}`);
     }
   }
@@ -218,22 +229,20 @@ async function readStdin(): Promise<string> {
 async function resolvePrompt(
   parsed: ParsedArgs,
   deps: CliDeps,
-  options: { forceText?: boolean } = {},
+  options: { forceText?: boolean; requireAgent?: boolean } = {},
 ): Promise<{ prompt: string; promptFile?: string }> {
   if (parsed.prompt && parsed.promptFile) {
     throw new CliError("use either --prompt or --prompt-file, not both");
   }
-  if (!parsed.agent) {
+  if (!parsed.agent && options.requireAgent !== false) {
     throw new CliError("missing agent");
   }
-
-  const harness = getAgentHarness(parsed.agent);
 
   if (parsed.promptFile) {
     if (!existsSync(parsed.promptFile) || !statSync(parsed.promptFile).isFile()) {
       throw new CliError(`prompt file not found: ${parsed.promptFile}`);
     }
-    if (!options.forceText && harness.promptFileMode === "stdin") {
+    if (parsed.agent && !options.forceText && getAgentHarness(parsed.agent).promptFileMode === "stdin") {
       return { prompt: "", promptFile: parsed.promptFile };
     }
     return { prompt: readFileSync(parsed.promptFile, "utf8") };
@@ -291,6 +300,11 @@ interface TmuxCommands {
   sessionName: string;
   newSession: BuiltCommand;
   postLaunch: TmuxPostLaunchCommand[];
+}
+
+interface TmuxSendCommands {
+  sessionName: string;
+  commands: BuiltCommand[];
 }
 
 interface TmuxPostLaunchCommand {
@@ -505,6 +519,28 @@ function renderHeadlessTmuxSessions(sessions: HeadlessTmuxSession[]): string {
     .concat("\n");
 }
 
+function buildTmuxSendCommands(sessionName: string, prompt: string): TmuxSendCommands {
+  const promptBuffer = `${sessionName}-send`;
+  return {
+    sessionName,
+    commands: [
+      { command: "tmux", args: ["set-buffer", "-b", promptBuffer, prompt] },
+      { command: "tmux", args: ["paste-buffer", "-d", "-b", promptBuffer, "-t", sessionName] },
+      { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
+    ],
+  };
+}
+
+function validateHeadlessTmuxSessionName(sessionName: string | undefined): string {
+  if (!sessionName) {
+    throw new CliError("missing tmux session");
+  }
+  if (!parseHeadlessTmuxSession(sessionName)) {
+    throw new CliError(`not a headless tmux session: ${sessionName}`);
+  }
+  return sessionName;
+}
+
 async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env): Promise<string> {
   const result = await captureSimpleCommand(
     { command: "tmux", args: ["list-sessions", "-F", "#{session_name}"] },
@@ -625,6 +661,20 @@ async function executeTmuxCommands(
   return 0;
 }
 
+async function executeTmuxSendCommands(
+  commands: TmuxSendCommands,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  for (const command of commands.commands) {
+    const code = await executeSimpleCommand(command, undefined, env, stderr);
+    if (code !== 0) {
+      return code;
+    }
+  }
+  return 0;
+}
+
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
@@ -636,6 +686,34 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.help) {
       stdout(usage());
       return 0;
+    }
+    if (parsed.send) {
+      if (parsed.tmux) {
+        throw new CliError("--tmux cannot be used with send");
+      }
+      if (parsed.json) {
+        throw new CliError("--json cannot be used with send");
+      }
+      if (parsed.debug) {
+        throw new CliError("--debug cannot be used with send");
+      }
+
+      const sessionName = validateHeadlessTmuxSessionName(parsed.sendSession);
+      const prompt = await resolvePrompt(parsed, deps, { forceText: true, requireAgent: false });
+      const tmuxCommands = buildTmuxSendCommands(sessionName, prompt.prompt);
+
+      if (parsed.printCommand) {
+        for (const command of tmuxCommands.commands) {
+          stdout(`${quoteCommand(command)}\n`);
+        }
+        return 0;
+      }
+
+      const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
+      if (code === 0) {
+        stdout(`sent: ${tmuxCommands.sessionName}\n`);
+      }
+      return code;
     }
     if (parsed.check) {
       stdout(renderAgentChecks(await checkAgents(env)));

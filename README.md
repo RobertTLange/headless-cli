@@ -128,11 +128,18 @@ Cursor tmux launches pre-trust the launch directory so detached sessions do not 
 Gemini tmux launches include `--skip-trust` so detached sessions do not block on folder trust prompts.
 OpenCode tmux launches start the TUI, wake it, paste the prompt through a tmux buffer, then send `Enter` so the prompt is submitted after the TUI is ready.
 Use `headless --list` to list active tmux sessions created by Headless, or `headless codex --list` to list sessions for one agent.
+Use `headless send <session-name> --prompt "..."` to send a follow-up message to an existing Headless tmux session.
+
+```bash
+headless --list
+headless send headless-codex-12345 --prompt "Run the focused tests now"
+```
 
 ## CLI Reference
 
 ```bash
 headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]
+headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]
 ```
 
 Options:
@@ -145,6 +152,7 @@ Options:
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
+- `send <session-name>`: send a message to an existing Headless tmux session.
 - `--check`: check which supported agent binaries are installed and print their versions.
 - `--list`: list active tmux sessions created by Headless.
 - `--print-command`: print the shell command without executing it.
