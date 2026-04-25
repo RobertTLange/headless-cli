@@ -115,11 +115,12 @@ headless codex --prompt "Fix the failing tests" --debug
 
 ### 4) tmux mode (`--tmux`)
 
-tmux mode creates a detached session named `headless-<agent>-<pid>`, starts the selected agent in interactive mode with the prompt as its initial message, prints an attach command, and exits.
+tmux mode creates a detached session named `headless-<agent>-<pid>`, starts the selected agent in interactive mode with the prompt as its initial message, prints an attach command, and exits. Pass `--name <name>` to create a stable managed session name like `headless-codex-work`.
 
 ```bash
 headless claude --prompt-file task.md --work-dir /path/to/project --tmux
 tmux attach-session -t headless-claude-12345
+headless codex --prompt "Fix the tests" --tmux --name work
 ```
 
 Use `--print-command --tmux` to preview the tmux launch command without starting a session.
@@ -129,10 +130,12 @@ Gemini tmux launches include `--skip-trust` so detached sessions do not block on
 OpenCode tmux launches start the TUI, wake it, paste the prompt through a tmux buffer, then send `Enter` so the prompt is submitted after the TUI is ready.
 Use `headless --list` to list active tmux sessions created by Headless, or `headless codex --list` to list sessions for one agent.
 Use `headless send <session-name> --prompt "..."` to send a follow-up message to an existing Headless tmux session.
+Use `headless rename <session-name> <new-name>` to rename an existing Headless tmux session while preserving its agent prefix.
 
 ```bash
 headless --list
-headless send headless-codex-12345 --prompt "Run the focused tests now"
+headless rename headless-codex-12345 work
+headless send headless-codex-work --prompt "Run the focused tests now"
 ```
 
 ## CLI Reference
@@ -140,6 +143,7 @@ headless send headless-codex-12345 --prompt "Run the focused tests now"
 ```bash
 headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]
 headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]
+headless rename <session-name> <new-name> [options]
 ```
 
 Options:
@@ -152,7 +156,9 @@ Options:
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
+- `--name`: use a stable managed session name with `--tmux`.
 - `send <session-name>`: send a message to an existing Headless tmux session.
+- `rename <session-name> <new-name>`: rename an existing Headless tmux session.
 - `--check`: check which supported agent binaries are installed and print their versions.
 - `--list`: list active tmux sessions created by Headless.
 - `--print-command`: print the shell command without executing it.
