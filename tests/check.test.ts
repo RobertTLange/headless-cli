@@ -162,3 +162,33 @@ test("CLI --check retries transient empty version output", async () => {
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("CLI --check reports docker and default image status", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    await writeExecutable(
+      join(binDir, "docker"),
+      [
+        "#!/bin/sh",
+        "if [ \"$1\" = \"--version\" ]; then echo 'Docker version 27.1.2, build abc'; exit 0; fi",
+        "if [ \"$1\" = \"image\" ] && [ \"$2\" = \"inspect\" ]; then exit 0; fi",
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { PATH: binDir },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^Docker\s+Status\s+Version\s+Default image$/m);
+    assert.match(stdout.join(""), /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/roberttlange\/headless:latest \(present\)$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});

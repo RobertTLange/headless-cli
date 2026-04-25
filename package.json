@@ -15,6 +15,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
+    "Dockerfile",
     "dist"
   ],
   "scripts": {

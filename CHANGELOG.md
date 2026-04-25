@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added Docker execution mode, Docker setup checks, local image builds, and packaged Docker image support. Thanks @RobertTLange for PR #3.
+
 ## 0.1.1 - 2026-04-24
 
 - Added `--debug` mode to stream the raw agent trace and append the extracted final assistant message.

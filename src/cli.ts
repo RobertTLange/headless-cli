@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -22,7 +22,13 @@ import {
   isAgentName,
   listAgents,
 } from "./agents.js";
-import { checkAgents, commandExists, commandForAgent, renderAgentChecks } from "./check.js";
+import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
+import {
+  buildDockerAgentCommand,
+  DEFAULT_DOCKER_IMAGE,
+  LOCAL_DOCKER_IMAGE,
+  detectDockerHostUser,
+} from "./docker.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env } from "./types.js";
@@ -33,6 +39,7 @@ interface ParsedArgs {
   rename: boolean;
   renameSession?: string;
   renameName?: string;
+  dockerCommand?: "build" | "doctor";
   agent?: AgentName;
   prompt?: string;
   promptFile?: string;
@@ -40,6 +47,10 @@ interface ParsedArgs {
   allow?: AllowMode;
   workDir?: string;
   tmuxName?: string;
+  docker: boolean;
+  dockerImage?: string;
+  dockerArgs: string[];
+  dockerEnv: string[];
   json: boolean;
   debug: boolean;
   printCommand: boolean;
@@ -68,6 +79,8 @@ class CliError extends Error {
 function usage(): string {
   return [
     "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]",
+    "       headless docker doctor [options]",
+    "       headless docker build [options]",
     "       headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]",
     "       headless rename <session-name> <new-name> [options]",
     "",
@@ -79,12 +92,18 @@ function usage(): string {
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
+    "  --docker             Run the agent inside Docker.",
+    "  --docker-image <img> Docker image. Defaults to ghcr.io/roberttlange/headless:latest.",
+    "  --docker-arg <arg>   Extra docker run argument. Repeat for multiple args.",
+    "  --docker-env <env>   Pass env into Docker as NAME or NAME=value. Repeatable.",
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --name <name>        Use a managed tmux session name with --tmux.",
     "  send <session-name>  Send a message to an existing headless tmux session.",
     "  rename <session> <name> Rename an existing headless tmux session.",
+    "  docker doctor       Check Docker setup and image availability.",
+    "  docker build        Build the local Docker image tag headless-local:dev.",
     "  --check              Check installed agent binaries and versions.",
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
@@ -100,6 +119,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     send: false,
     rename: false,
+    docker: false,
+    dockerArgs: [],
+    dockerEnv: [],
     json: false,
     debug: false,
     printCommand: false,
@@ -129,6 +151,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.send = true;
   } else if (first === "rename") {
     parsed.rename = true;
+  } else if (first === "docker") {
+    parsed.dockerCommand = parseDockerCommand(args.shift());
   } else if (isAgentName(first)) {
     parsed.agent = first;
   } else if (first.startsWith("-")) {
@@ -157,6 +181,18 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--work-dir":
       case "-C":
         parsed.workDir = takeValue(args, arg);
+        break;
+      case "--docker":
+        parsed.docker = true;
+        break;
+      case "--docker-image":
+        parsed.dockerImage = takeValue(args, arg);
+        break;
+      case "--docker-arg":
+        parsed.dockerArgs.push(takeValue(args, arg));
+        break;
+      case "--docker-env":
+        parsed.dockerEnv.push(parseDockerEnv(takeValue(args, arg)));
         break;
       case "--name":
         parsed.tmuxName = takeValue(args, arg);
@@ -229,6 +265,21 @@ function parseAllowMode(value: string): AllowMode {
   throw new CliError(`unsupported allow mode: ${value}`);
 }
 
+function parseDockerEnv(value: string): string {
+  const name = value.includes("=") ? value.slice(0, value.indexOf("=")) : value;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new CliError(`invalid docker env: ${value}`);
+  }
+  return value;
+}
+
+function parseDockerCommand(value: string | undefined): "build" | "doctor" {
+  if (value === "build" || value === "doctor") {
+    return value;
+  }
+  throw new CliError("missing docker command; use docker doctor or docker build");
+}
+
 function renderConfig(agent: AgentName): string {
   const config = getAgentConfig(agent);
   return [
@@ -239,6 +290,42 @@ function renderConfig(agent: AgentName): string {
     ...config.seedPaths.map((path) => `  ${path}`),
     "",
   ].join("\n");
+}
+
+function packageRoot(): string {
+  return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+
+function dockerfilePath(): string {
+  return join(packageRoot(), "Dockerfile");
+}
+
+function buildDockerImageCommand(image: string): BuiltCommand {
+  return { command: "docker", args: ["build", "-t", image, "-f", dockerfilePath(), packageRoot()] };
+}
+
+function renderDockerDoctor(check: Awaited<ReturnType<typeof checkDocker>>, image: string): string {
+  const lines = [
+    renderDockerCheck(check).trimEnd(),
+    "",
+    `Default run image: ${DEFAULT_DOCKER_IMAGE}`,
+    `Local build image: ${LOCAL_DOCKER_IMAGE}`,
+    `Dockerfile: ${dockerfilePath()}`,
+  ];
+  if (!check.available) {
+    lines.push("", "Docker is not on PATH. Install/start Docker, then rerun `headless docker doctor`.");
+  } else if (!check.imageAvailable) {
+    lines.push(
+      "",
+      `Image not present locally: ${image}`,
+      "Plain `headless --docker` will let Docker pull the default image automatically.",
+      `For local development, run: headless docker build`,
+      `Then run with: headless codex --docker --docker-image ${LOCAL_DOCKER_IMAGE} --prompt "..."`,
+    );
+  } else {
+    lines.push("", "Docker is ready.");
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 async function readStdin(): Promise<string> {
@@ -362,6 +449,20 @@ interface ExecuteCommandOptions {
 }
 
 function suppressKnownStderr(agent: AgentName, text: string): string {
+  if (agent === "codex") {
+    return text
+      .split(/\r?\n/)
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        if (/ERROR codex_core::session: failed to record rollout items: thread .* not found$/.test(trimmed)) {
+          return false;
+        }
+        return true;
+      })
+      .map((line) => `${line}\n`)
+      .join("");
+  }
   if (agent !== "gemini") {
     return text;
   }
@@ -737,6 +838,7 @@ async function executeSimpleCommand(
   cwd: string | undefined,
   env: Env,
   stderr: (text: string) => void,
+  stdout?: (text: string) => void,
 ): Promise<number> {
   return await new Promise<number>((resolve) => {
     const child = spawn(command.command, command.args, {
@@ -746,7 +848,7 @@ async function executeSimpleCommand(
     });
 
     child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", () => undefined);
+    child.stdout?.on("data", (chunk: string) => stdout?.(chunk));
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => stderr(chunk));
     child.on("error", (error) => {
@@ -821,7 +923,40 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       stdout(usage());
       return 0;
     }
+    if (parsed.dockerCommand) {
+      if (parsed.prompt !== undefined || parsed.promptFile !== undefined) {
+        throw new CliError(`--prompt and --prompt-file cannot be used with docker ${parsed.dockerCommand}`);
+      }
+      if (parsed.docker || parsed.dockerArgs.length > 0 || parsed.dockerEnv.length > 0) {
+        throw new CliError(`--docker, --docker-arg, and --docker-env cannot be used with docker ${parsed.dockerCommand}`);
+      }
+      if (parsed.tmux || parsed.json || parsed.debug || parsed.list || parsed.check || parsed.showConfig) {
+        throw new CliError(`unsupported option for docker ${parsed.dockerCommand}`);
+      }
+      if (parsed.dockerCommand === "doctor") {
+        const image = parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE;
+        stdout(renderDockerDoctor(await checkDocker(env, image), image));
+        return 0;
+      }
+
+      const image = parsed.dockerImage ?? LOCAL_DOCKER_IMAGE;
+      const command = buildDockerImageCommand(image);
+      if (!existsSync(dockerfilePath())) {
+        throw new CliError(`Dockerfile not found: ${dockerfilePath()}`);
+      }
+      if (parsed.printCommand) {
+        stdout(`${quoteCommand(command)}\n`);
+        return 0;
+      }
+      if (!commandExists("docker", env)) {
+        throw new CliError("docker not found on PATH");
+      }
+      return await executeSimpleCommand(command, undefined, env, stderr, stdout);
+    }
     if (parsed.rename) {
+      if (parsed.docker) {
+        throw new CliError("--docker cannot be used with rename");
+      }
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with rename");
       }
@@ -853,6 +988,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
     if (parsed.send) {
+      if (parsed.docker) {
+        throw new CliError("--docker cannot be used with send");
+      }
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with send");
       }
@@ -885,14 +1023,27 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.check) {
       stdout(renderAgentChecks(await checkAgents(env)));
+      stdout(renderDockerCheck(await checkDocker(env, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE)));
       return 0;
+    }
+    if (parsed.list && parsed.docker) {
+      throw new CliError("--docker cannot be used with --list");
     }
     if (parsed.list) {
       stdout(await listHeadlessTmuxSessions(parsed.agent, env));
       return 0;
     }
+    if (
+      !parsed.docker &&
+      (parsed.dockerImage !== undefined || parsed.dockerArgs.length > 0 || parsed.dockerEnv.length > 0)
+    ) {
+      throw new CliError("--docker-image, --docker-arg, and --docker-env require --docker");
+    }
     if (!parsed.agent) {
-      parsed.agent = selectDefaultAgent(env);
+      parsed.agent = parsed.docker ? autoAgentPreference[0] : selectDefaultAgent(env);
+    }
+    if (parsed.tmux && parsed.docker) {
+      throw new CliError("--docker cannot be used with --tmux");
     }
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
@@ -949,7 +1100,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
 
-    const command = buildAgentCommand(
+    let command = buildAgentCommand(
       parsed.agent,
       {
         prompt: prompt.prompt,
@@ -959,10 +1110,25 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       },
       env,
     );
+    if (parsed.docker) {
+      command = buildDockerAgentCommand({
+        agent: parsed.agent,
+        command,
+        dockerArgs: parsed.dockerArgs,
+        dockerEnv: parsed.dockerEnv,
+        env,
+        hostUser: detectDockerHostUser(),
+        image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
+        workDir: cwd ?? process.cwd(),
+      });
+    }
 
     if (parsed.printCommand) {
       stdout(`${quoteCommand(command)}\n`);
       return 0;
+    }
+    if (parsed.docker && !commandExists("docker", env)) {
+      throw new CliError("docker not found on PATH");
     }
 
     const stdoutHandling: StdoutHandling = parsed.json
