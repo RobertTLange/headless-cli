@@ -2,6 +2,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
+import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
 export const DEFAULT_DOCKER_IMAGE = "ghcr.io/roberttlange/headless:latest";
@@ -15,36 +16,7 @@ const bootstrapScript = [
   'exec "$@"',
 ].join("; ");
 
-const defaultDockerEnvNames = [
-  "ANTHROPIC_API_KEY",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_DEFAULT_REGION",
-  "AWS_PROFILE",
-  "AWS_REGION",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AZURE_OPENAI_API_KEY",
-  "AZURE_OPENAI_ENDPOINT",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CODEX_API_KEY",
-  "CURSOR_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "GOOGLE_APPLICATION_CREDENTIALS",
-  "OPENAI_API_KEY",
-  "OPENAI_BASE_URL",
-  "OPENROUTER_API_KEY",
-  "PI_CODING_AGENT_API_KEY",
-  "PI_CODING_AGENT_MODEL",
-  "PI_CODING_AGENT_MODELS",
-  "PI_CODING_AGENT_PROVIDER",
-];
-
-interface DockerEnvEntry {
-  name: string;
-  value?: string;
-  actualValue?: string;
-}
+type DockerEnvEntry = ForwardedEnvEntry;
 
 export interface DockerAgentCommandOptions {
   agent: AgentName;
@@ -119,25 +91,7 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
 }
 
 function collectDockerEnvEntries(env: Env, commandEnv: Env | undefined, explicitDockerEnv: string[]): DockerEnvEntry[] {
-  const entries = new Map<string, DockerEnvEntry>();
-  for (const name of defaultDockerEnvNames) {
-    if (env[name] !== undefined) {
-      entries.set(name, { name, actualValue: env[name] });
-    }
-  }
-  for (const [name, value] of Object.entries(commandEnv ?? {})) {
-    if (value !== undefined) {
-      entries.set(name, { name, value: `${name}=${value}`, actualValue: value });
-    }
-  }
-  for (const item of explicitDockerEnv) {
-    const equals = item.indexOf("=");
-    if (equals === -1) {
-      entries.set(item, { name: item, actualValue: env[item] });
-    } else {
-      entries.set(item.slice(0, equals), { name: item.slice(0, equals), value: item, actualValue: item.slice(equals + 1) });
-    }
-  }
+  const entries = new Map(collectForwardedEnvEntries(env, commandEnv, explicitDockerEnv).map((entry) => [entry.name, entry]));
   entries.set("HOME", { name: "HOME", value: `HOME=${containerHome}`, actualValue: containerHome });
 
   return [...entries.values()];
