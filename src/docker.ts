@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
@@ -40,6 +40,12 @@ const defaultDockerEnvNames = [
   "PI_CODING_AGENT_PROVIDER",
 ];
 
+interface DockerEnvEntry {
+  name: string;
+  value?: string;
+  actualValue?: string;
+}
+
 export interface DockerAgentCommandOptions {
   agent: AgentName;
   command: BuiltCommand;
@@ -69,9 +75,11 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   }
 
   const workDir = realpathSync(options.workDir);
+  const dockerEnvEntries = collectDockerEnvEntries(options.env, options.command.env, options.dockerEnv);
   args.push("--workdir", workDir, "--volume", `${workDir}:${workDir}`);
   args.push(...agentConfigMountArgs(options.agent, options.env));
-  args.push(...dockerEnvArgs(options.env, options.command.env, options.dockerEnv));
+  args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
+  args.push(...dockerEnvArgs(dockerEnvEntries));
   args.push(...options.dockerArgs);
   args.push(options.image, "sh", "-lc", bootstrapScript, "headless-agent", options.command.command, ...options.command.args);
 
@@ -110,31 +118,54 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
   return args;
 }
 
-function dockerEnvArgs(env: Env, commandEnv: Env | undefined, explicitDockerEnv: string[]): string[] {
-  const values = new Map<string, string | undefined>();
+function collectDockerEnvEntries(env: Env, commandEnv: Env | undefined, explicitDockerEnv: string[]): DockerEnvEntry[] {
+  const entries = new Map<string, DockerEnvEntry>();
   for (const name of defaultDockerEnvNames) {
     if (env[name] !== undefined) {
-      values.set(name, undefined);
+      entries.set(name, { name, actualValue: env[name] });
     }
   }
   for (const [name, value] of Object.entries(commandEnv ?? {})) {
     if (value !== undefined) {
-      values.set(name, value);
+      entries.set(name, { name, value: `${name}=${value}`, actualValue: value });
     }
   }
   for (const item of explicitDockerEnv) {
     const equals = item.indexOf("=");
     if (equals === -1) {
-      values.set(item, undefined);
+      entries.set(item, { name: item, actualValue: env[item] });
     } else {
-      values.set(item.slice(0, equals), item);
+      entries.set(item.slice(0, equals), { name: item.slice(0, equals), value: item, actualValue: item.slice(equals + 1) });
     }
   }
-  values.set("HOME", `HOME=${containerHome}`);
+  entries.set("HOME", { name: "HOME", value: `HOME=${containerHome}`, actualValue: containerHome });
 
+  return [...entries.values()];
+}
+
+function credentialMountArgs(env: Env, entries: DockerEnvEntry[], workDir: string): string[] {
   const args: string[] = [];
-  for (const [name, value] of values) {
-    args.push("--env", value ?? name);
+  const googleCredentials = entries.find((entry) => entry.name === "GOOGLE_APPLICATION_CREDENTIALS")?.actualValue;
+  if (googleCredentials) {
+    const hostPath = resolve(workDir, googleCredentials);
+    if (existsSync(hostPath) && statSync(hostPath).isFile()) {
+      args.push("--volume", `${hostPath}:${hostPath}:ro`);
+    }
+  }
+
+  const awsProfile = entries.find((entry) => entry.name === "AWS_PROFILE")?.actualValue;
+  const awsDir = env.HOME ? join(env.HOME, ".aws") : undefined;
+  if (awsProfile && awsDir && existsSync(awsDir) && statSync(awsDir).isDirectory()) {
+    args.push("--volume", `${awsDir}:${join(hostHomeMountRoot, ".aws")}:ro`);
+  }
+
+  return args;
+}
+
+function dockerEnvArgs(entries: DockerEnvEntry[]): string[] {
+  const args: string[] = [];
+  for (const entry of entries) {
+    args.push("--env", entry.value ?? entry.name);
   }
   return args;
 }

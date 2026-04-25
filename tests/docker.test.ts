@@ -191,3 +191,44 @@ test("preserves prompt-file stdin through docker for print-command output", () =
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("mounts provider credential files needed by forwarded env vars", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "project");
+    const googleCredentials = join(dir, "google", "service-account.json");
+    mkdirSync(join(home, ".aws"), { recursive: true });
+    mkdirSync(join(dir, "google"), { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(join(home, ".aws", "config"), "[profile dev]\nregion = us-west-2\n");
+    writeFileSync(join(home, ".aws", "credentials"), "[dev]\naws_access_key_id = test\n");
+    writeFileSync(googleCredentials, "{}");
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: {
+        command: "codex",
+        args: ["exec", "-"],
+        stdinText: "hello",
+      },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: {
+        AWS_PROFILE: "dev",
+        GOOGLE_APPLICATION_CREDENTIALS: googleCredentials,
+        HOME: home,
+      },
+      hostUser: "501:20",
+      image: DEFAULT_DOCKER_IMAGE,
+      workDir,
+    });
+
+    assert.ok(command.args.includes(`${googleCredentials}:${googleCredentials}:ro`));
+    assert.ok(command.args.includes(`${join(home, ".aws")}:/tmp/headless-host-home/.aws:ro`));
+    assert.ok(command.args.includes("AWS_PROFILE"));
+    assert.ok(command.args.includes("GOOGLE_APPLICATION_CREDENTIALS"));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
