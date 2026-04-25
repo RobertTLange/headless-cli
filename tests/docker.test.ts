@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { buildDockerAgentCommand, DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
+
+test("Dockerfile exposes Cursor agent from a non-root path", () => {
+  const dockerfile = readFileSync("Dockerfile", "utf8");
+
+  assert.match(dockerfile, /cp -R "\$\{cursor_agent_dir\}\/\." \/opt\/cursor-agent\//);
+  assert.match(dockerfile, /ln -sf \/opt\/cursor-agent\/cursor-agent \/usr\/local\/bin\/cursor-agent/);
+  assert.match(dockerfile, /ln -sf \/usr\/local\/bin\/cursor-agent \/usr\/local\/bin\/agent/);
+});
 
 test("wraps stdin-based agent command in docker with workdir, user, env, and config mounts", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));

@@ -12,9 +12,11 @@ RUN npm install -g \
   opencode-ai
 
 RUN curl https://cursor.com/install -fsS | bash \
-  && if command -v cursor-agent >/dev/null 2>&1 && ! command -v agent >/dev/null 2>&1; then \
-    ln -s "$(command -v cursor-agent)" /usr/local/bin/agent; \
-  fi
+  && cursor_agent_dir="$(dirname "$(readlink -f /root/.local/bin/cursor-agent)")" \
+  && mkdir -p /opt/cursor-agent \
+  && cp -R "${cursor_agent_dir}/." /opt/cursor-agent/ \
+  && ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent \
+  && ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent
 
 ENV PATH="/root/.local/bin:/root/.cursor/bin:/root/.cursor/cli/bin:${PATH}"
 
