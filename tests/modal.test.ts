@@ -54,7 +54,7 @@ test("collects Modal env from curated, command, explicit, and HOME entries", () 
     {
       CURSOR_API_KEY: "cursor",
       EXTRA_TOKEN: "extra",
-      HOME: "/headless-home",
+      HOME: "/home/node",
       INLINE_TOKEN: "value",
       OPENAI_API_KEY: "sk-test",
     },
@@ -139,6 +139,7 @@ test("executeModalAgent runs through a Modal client and syncs results back", asy
     assert.equal(sandbox.createParams?.env?.OPENAI_API_KEY, "sk-test");
     assert.equal(sandbox.createParams?.env?.EXTRA_TOKEN, "value");
     assert.deepEqual(sandbox.agentCommand, ["sh", "-lc", sandbox.agentCommand?.[2], "headless-agent", "codex", "exec", "--json", "-"]);
+    assert.match(sandbox.agentCommand?.[2] ?? "", /runuser -u node/);
     assert.equal(sandbox.agentStdin, "prompt");
     assert.deepEqual(stderr, []);
   } finally {
@@ -264,7 +265,7 @@ class FakeProcess implements ModalProcessLike<string | Uint8Array> {
       writeFileSync(join(workspace, "input.txt"), "remote");
       writeFileSync(join(workspace, "created.txt"), "created");
       this.stdoutValue = JSON.stringify({ type: "agent_message", text: "modal final" });
-      assert.equal(this.params?.env?.HOME, "/headless-home");
+      assert.equal(this.params?.env?.HOME, "/home/node");
       return;
     }
     throw new Error(`unexpected fake command: ${this.command.join(" ")}`);

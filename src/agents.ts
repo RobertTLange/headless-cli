@@ -232,7 +232,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     promptFileMode: "stdin",
     configRelDir: ".claude",
     workspaceConfigRelDir: ".claude",
-    seedPaths: [".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
+    seedPaths: [".claude.json", ".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
     buildCommand: buildClaude,
     buildInteractiveCommand: (options) => {
       const args = withModel([], options.model);

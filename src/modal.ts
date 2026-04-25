@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -12,6 +13,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -28,13 +30,15 @@ export const DEFAULT_MODAL_MEMORY_MIB = 4096;
 export const DEFAULT_MODAL_TIMEOUT_SECONDS = 3600;
 
 const remoteWorkDir = "/workspace";
-const remoteHome = "/headless-home";
+const remoteHome = "/home/node";
 const remoteHostHome = "/tmp/headless-host-home";
+const sandboxUser = "node";
 const bootstrapScript = [
   "set -eu",
   `mkdir -p "${remoteHome}"`,
   `if [ -d "${remoteHostHome}" ]; then cp -R "${remoteHostHome}/." "$HOME"/; fi`,
-  'exec "$@"',
+  `chown -R ${sandboxUser}:${sandboxUser} "${remoteHome}" "${remoteWorkDir}"`,
+  `exec runuser -u ${sandboxUser} -- "$@"`,
 ].join("; ");
 
 export type StdoutHandling = "capture" | "stream" | "capture-and-stream";
@@ -132,6 +136,12 @@ interface FileState {
   mode: number;
   target?: string;
   type: "file" | "symlink";
+}
+
+interface GeneratedSeedFile {
+  content: string;
+  mode: number;
+  relPath: string;
 }
 
 export interface WorkspaceSyncResult {
@@ -294,7 +304,60 @@ async function createAgentSeedArchive(agent: AgentName, env: Env): Promise<Uint8
       break;
     }
   }
-  return paths.length > 0 ? await runLocalTar(home, paths) : new Uint8Array();
+  const generatedFiles = collectGeneratedSeedFiles(agent, env, paths);
+  if (generatedFiles.length === 0) {
+    return paths.length > 0 ? await runLocalTar(home, paths) : new Uint8Array();
+  }
+
+  const seedDir = mkdtempSync(join(tmpdir(), "headless-modal-seed-"));
+  try {
+    for (const relPath of paths) {
+      const source = join(home, relPath);
+      const target = join(seedDir, relPath);
+      mkdirSync(dirname(target), { recursive: true });
+      cpSync(source, target, { recursive: true, verbatimSymlinks: true });
+    }
+    for (const file of generatedFiles) {
+      const target = join(seedDir, file.relPath);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, file.content, { mode: file.mode });
+      if (!paths.includes(file.relPath)) {
+        paths.push(file.relPath);
+      }
+    }
+    return paths.length > 0 ? await runLocalTar(seedDir, paths) : new Uint8Array();
+  } finally {
+    rmSync(seedDir, { force: true, recursive: true });
+  }
+}
+
+function collectGeneratedSeedFiles(agent: AgentName, env: Env, selectedPaths: string[]): GeneratedSeedFile[] {
+  if (agent !== "claude" || !env.HOME || selectedPaths.includes(".claude/.credentials.json")) {
+    return [];
+  }
+  const content = readClaudeKeychainCredentials(env);
+  return content ? [{ content, mode: 0o600, relPath: ".claude/.credentials.json" }] : [];
+}
+
+function readClaudeKeychainCredentials(env: Env): string | undefined {
+  if (process.platform !== "darwin") {
+    return undefined;
+  }
+  const user = process.env.USER;
+  if (!user) {
+    return undefined;
+  }
+  const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME ?? "", ".claude");
+  const configSuffix = env.CLAUDE_CONFIG_DIR ? `-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}` : "";
+  const service = `Claude Code-credentials${configSuffix}`;
+  const result = spawnSync("security", ["find-generic-password", "-a", user, "-w", "-s", service], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return undefined;
+  }
+  return result.stdout;
 }
 
 async function listGitFiles(workDir: string): Promise<string[] | undefined> {
