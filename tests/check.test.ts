@@ -187,7 +187,7 @@ test("CLI --check reports docker and default image status", async () => {
 
     assert.equal(code, 0);
     assert.match(stdout.join(""), /^Docker\s+Status\s+Version\s+Default image$/m);
-    assert.match(stdout.join(""), /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/RobertTLange\/headless:latest \(present\)$/m);
+    assert.match(stdout.join(""), /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/roberttlange\/headless:latest \(present\)$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

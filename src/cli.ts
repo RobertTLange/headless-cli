@@ -93,7 +93,7 @@ function usage(): string {
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
     "  --docker             Run the agent inside Docker.",
-    "  --docker-image <img> Docker image. Defaults to ghcr.io/RobertTLange/headless:latest.",
+    "  --docker-image <img> Docker image. Defaults to ghcr.io/roberttlange/headless:latest.",
     "  --docker-arg <arg>   Extra docker run argument. Repeat for multiple args.",
     "  --docker-env <env>   Pass env into Docker as NAME or NAME=value. Repeatable.",
     "  --json               Stream raw agent JSON trace output.",

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
 import { runCli } from "../src/cli.ts";
+import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
 
@@ -24,6 +25,11 @@ async function waitFor(assertion: () => boolean): Promise<void> {
 
 test("lists all supported agents", () => {
   assert.deepEqual(listAgents(), ["claude", "codex", "cursor", "gemini", "opencode", "pi"]);
+});
+
+test("default Docker image reference is accepted by Docker", () => {
+  assert.equal(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_IMAGE.toLowerCase());
+  assert.equal(DEFAULT_DOCKER_IMAGE, "ghcr.io/roberttlange/headless:latest");
 });
 
 test("builds codex command with default model and prompt stdin", () => {
@@ -356,7 +362,7 @@ test("CLI --docker executes through docker and preserves stdin prompt", async ()
     assert.equal(stdout.join(""), "docker final\n");
     assert.equal(capture.stdin, "hello");
     assert.equal(capture.args[0], "run");
-    assert.ok(capture.args.includes("ghcr.io/RobertTLange/headless:latest"));
+    assert.ok(capture.args.includes("ghcr.io/roberttlange/headless:latest"));
     assert.deepEqual(capture.args.slice(-8), [
       "codex",
       "--dangerously-bypass-approvals-and-sandbox",
@@ -400,7 +406,7 @@ test("CLI docker doctor reports image status and local build guidance", async ()
 
     const output = stdout.join("");
     assert.equal(code, 0);
-    assert.match(output, /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/RobertTLange\/headless:latest \(missing\)$/m);
+    assert.match(output, /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/roberttlange\/headless:latest \(missing\)$/m);
     assert.match(output, /Plain `headless --docker` will let Docker pull the default image automatically\./);
     assert.match(output, /For local development, run: headless docker build/);
   } finally {

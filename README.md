@@ -119,7 +119,7 @@ headless codex --prompt "Fix the failing tests" --debug
 
 ### 4) Docker mode (`--docker`)
 
-Docker mode wraps one-shot headless execution in `docker run --rm`. It mounts the target workdir at the same absolute path inside the container, mounts existing agent config/auth seed paths read-only, passes a curated set of credential environment variables, and runs the selected agent from `ghcr.io/RobertTLange/headless:latest` by default.
+Docker mode wraps one-shot headless execution in `docker run --rm`. It mounts the target workdir at the same absolute path inside the container, mounts existing agent config/auth seed paths read-only, passes a curated set of credential environment variables, and runs the selected agent from `ghcr.io/roberttlange/headless:latest` by default.
 
 ```bash
 headless codex --prompt "Fix the failing tests" --docker
@@ -136,7 +136,7 @@ headless gemini --prompt "Inspect this repo" --docker --docker-arg --network=hos
 
 Docker mode is only for headless execution. It cannot be combined with `--tmux`, `send`, `rename`, or `--list`.
 
-The default image contract is simple: every supported agent binary is available on `PATH`, and the image has no required entrypoint. Plain `--docker` uses `ghcr.io/RobertTLange/headless:latest`; Docker will pull it automatically if it is not local. Headless never auto-builds images during agent execution.
+The default image contract is simple: every supported agent binary is available on `PATH`, and the image has no required entrypoint. Plain `--docker` uses `ghcr.io/roberttlange/headless:latest`; Docker will pull it automatically if it is not local. Headless never auto-builds images during agent execution.
 
 For local development or when the default image has not been published yet, build the packaged Dockerfile explicitly:
 
@@ -191,7 +191,7 @@ Options:
 - `--allow`: permission mode, either `read-only` or `yolo`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
-- `--docker-image`: Docker image override. Defaults to `ghcr.io/RobertTLange/headless:latest`.
+- `--docker-image`: Docker image override. Defaults to `ghcr.io/roberttlange/headless:latest`.
 - `--docker-arg`: extra `docker run` argument. Repeat for multiple args.
 - `--docker-env`: pass env into Docker as `NAME` or `NAME=value`. Repeatable.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.

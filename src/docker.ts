@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { getAgentConfig } from "./agents.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
-export const DEFAULT_DOCKER_IMAGE = "ghcr.io/RobertTLange/headless:latest";
+export const DEFAULT_DOCKER_IMAGE = "ghcr.io/roberttlange/headless:latest";
 export const LOCAL_DOCKER_IMAGE = "headless-local:dev";
 const containerHome = "/headless-home";
 const hostHomeMountRoot = "/tmp/headless-host-home";
