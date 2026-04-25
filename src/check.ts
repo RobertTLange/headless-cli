@@ -18,6 +18,14 @@ interface AgentCheck {
   version: string;
 }
 
+interface DockerCheck {
+  command: string;
+  available: boolean;
+  version: string;
+  image: string;
+  imageAvailable: boolean;
+}
+
 export function commandForAgent(agent: AgentName, env: Env): string {
   if (agent === "cursor") {
     return env.CURSOR_CLI_BIN || "agent";
@@ -72,11 +80,26 @@ async function captureVersion(executable: string, env: Env): Promise<string> {
 }
 
 async function captureVersionOnce(executable: string, env: Env): Promise<string> {
-  const result = await new Promise<CaptureResult>((resolve) => {
+  const result = await captureCommand(executable, ["--version"], env, versionTimeoutMs);
+
+  if (result.code !== 0) {
+    return "unknown";
+  }
+  const stdoutVersion = normalizeVersion(result.stdout);
+  return stdoutVersion === "unknown" ? normalizeVersion(result.stderr) : stdoutVersion;
+}
+
+async function captureCommand(
+  executable: string,
+  args: string[],
+  env: Env,
+  timeoutMs: number,
+): Promise<CaptureResult> {
+  return await new Promise<CaptureResult>((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(executable, ["--version"], {
+    const child = spawn(executable, args, {
       env: env as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -85,7 +108,7 @@ async function captureVersionOnce(executable: string, env: Env): Promise<string>
       settled = true;
       child.kill();
       resolve({ code: 124, stdout, stderr });
-    }, versionTimeoutMs);
+    }, timeoutMs);
     const finish = (result: CaptureResult) => {
       if (settled) return;
       settled = true;
@@ -109,12 +132,6 @@ async function captureVersionOnce(executable: string, env: Env): Promise<string>
       finish({ code: signal ? 1 : (code ?? 1), stdout, stderr });
     });
   });
-
-  if (result.code !== 0) {
-    return "unknown";
-  }
-  const stdoutVersion = normalizeVersion(result.stdout);
-  return stdoutVersion === "unknown" ? normalizeVersion(result.stderr) : stdoutVersion;
 }
 
 function normalizeVersion(output: string): string {
@@ -144,6 +161,24 @@ export async function checkAgents(env: Env): Promise<AgentCheck[]> {
   );
 }
 
+export async function checkDocker(env: Env, image: string): Promise<DockerCheck> {
+  const command = "docker";
+  const executable = findExecutable(command, env);
+  if (!executable) {
+    return { command, available: false, version: "-", image, imageAvailable: false };
+  }
+
+  const version = await captureVersion(executable, env);
+  const imageInspect = await captureCommand(executable, ["image", "inspect", image], env, versionTimeoutMs);
+  return {
+    command,
+    available: true,
+    version,
+    image,
+    imageAvailable: imageInspect.code === 0,
+  };
+}
+
 export function renderAgentChecks(checks: AgentCheck[]): string {
   const rows = [
     ["Agent", "Status", "Version", "Binary"],
@@ -154,6 +189,26 @@ export function renderAgentChecks(checks: AgentCheck[]): string {
       check.command,
     ]),
   ];
+  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
+  return rows
+    .map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd())
+    .join("\n")
+    .concat("\n");
+}
+
+export function renderDockerCheck(check: DockerCheck): string {
+  return renderRows([
+    ["Docker", "Status", "Version", "Default image"],
+    [
+      check.command,
+      check.available ? "✓" : "✗",
+      check.version,
+      check.available ? `${check.image} (${check.imageAvailable ? "present" : "missing"})` : check.image,
+    ],
+  ]);
+}
+
+function renderRows(rows: string[][]): string {
   const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
   return rows
     .map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd())

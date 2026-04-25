@@ -270,6 +270,191 @@ test("CLI accepts stdin fallback", async () => {
   assert.equal(stdout.join(""), "pi --no-session --mode json --tools 'read,bash,edit,write' 'stdin prompt'\n");
 });
 
+test("CLI --docker print-command wraps the selected agent command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    mkdirSync(join(homeDir, ".codex"), { recursive: true });
+    mkdirSync(projectDir);
+    writeFileSync(join(homeDir, ".codex", "config.toml"), "model = 'test'\n");
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      [
+        "codex",
+        "--prompt",
+        "hello",
+        "--work-dir",
+        projectDir,
+        "--docker",
+        "--docker-image",
+        "custom/headless:dev",
+        "--docker-env",
+        "EXTRA_TOKEN=value",
+        "--docker-arg",
+        "--network=host",
+        "--print-command",
+      ],
+      {
+        env: { ...process.env, HOME: homeDir },
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^printf %s hello \| docker run --rm --interactive --tmpfs '\/headless-home:rw,mode=1777' --user \d+:\d+ /);
+    assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
+    assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
+    assert.match(output, /headless-agent codex/);
+    assert.match(output, /exec --model gpt-5\.2 --json --skip-git-repo-check -/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --docker executes through docker and preserves stdin prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    const captureFile = join(dir, "docker.json");
+    mkdirSync(binDir);
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+      const docker = join(binDir, "docker");
+      await writeFile(
+        docker,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const stdin = fs.readFileSync(0, 'utf8');",
+          "fs.writeFileSync(process.env.HEADLESS_DOCKER_CAPTURE, JSON.stringify({ args: process.argv.slice(2), stdin }));",
+          "console.log(JSON.stringify({ type: 'agent_message', text: 'docker final' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(docker, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--work-dir", projectDir, "--docker"], {
+      env: {
+        ...process.env,
+        HEADLESS_DOCKER_CAPTURE: captureFile,
+        HOME: homeDir,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const capture = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "docker final\n");
+    assert.equal(capture.stdin, "hello");
+    assert.equal(capture.args[0], "run");
+    assert.ok(capture.args.includes("ghcr.io/RobertTLange/headless:latest"));
+    assert.deepEqual(capture.args.slice(-8), [
+      "codex",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "exec",
+      "--model",
+      "gpt-5.2",
+      "--json",
+      "--skip-git-repo-check",
+      "-",
+    ]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI docker doctor reports image status and local build guidance", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+      const docker = join(binDir, "docker");
+      await writeFile(
+        docker,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"--version\" ]; then echo 'Docker version 27.1.2, build abc'; exit 0; fi",
+          "if [ \"$1\" = \"image\" ] && [ \"$2\" = \"inspect\" ]; then exit 1; fi",
+          "exit 2",
+          "",
+        ].join("\n"),
+      );
+      await chmod(docker, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["docker", "doctor"], {
+      env: { PATH: binDir },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/RobertTLange\/headless:latest \(missing\)$/m);
+    assert.match(output, /Plain `headless --docker` will let Docker pull the default image automatically\./);
+    assert.match(output, /For local development, run: headless docker build/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI docker build prints the packaged Dockerfile build command", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["docker", "build", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /^docker build -t headless-local:dev -f .*Dockerfile /);
+});
+
+test("CLI docker build runs docker with a custom image tag", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "docker-args.json");
+    mkdirSync(binDir);
+    await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+      const docker = join(binDir, "docker");
+      await writeFile(
+        docker,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.writeFileSync(process.env.HEADLESS_DOCKER_CAPTURE, JSON.stringify(process.argv.slice(2)));",
+          "process.stdout.write('built\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(docker, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["docker", "build", "--docker-image", "custom/headless:dev"], {
+      env: { ...process.env, HEADLESS_DOCKER_CAPTURE: captureFile, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const args = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "built\n");
+    assert.deepEqual(args.slice(0, 4), ["build", "-t", "custom/headless:dev", "-f"]);
+    assert.match(args[4], /Dockerfile$/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI auto-selects the preferred installed agent when omitted", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -998,6 +1183,62 @@ test("CLI rejects --json with --tmux", async () => {
   assert.match(stderr.join(""), /--json cannot be used with --tmux/);
 });
 
+test("CLI rejects docker for tmux and session-management commands", async () => {
+  const stderr: string[] = [];
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--docker", "--tmux"], { stderr: (text) => stderr.push(text) }),
+    2,
+  );
+  assert.match(stderr.join(""), /--docker cannot be used with --tmux/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["send", "headless-codex-work", "--prompt", "hello", "--docker"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
+  );
+  assert.match(stderr.join(""), /--docker cannot be used with send/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["rename", "headless-codex-work", "next", "--docker"], { stderr: (text) => stderr.push(text) }),
+    2,
+  );
+  assert.match(stderr.join(""), /--docker cannot be used with rename/);
+});
+
+test("CLI validates docker env names", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["codex", "--prompt", "hello", "--docker", "--docker-env", "BAD-NAME"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /invalid docker env/);
+});
+
+test("CLI reports missing docker at execution time", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["codex", "--prompt", "hello", "--docker"], {
+    env: { ...process.env, PATH: "" },
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /docker not found on PATH/);
+});
+
+test("CLI requires --docker for docker execution options", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["codex", "--prompt", "hello", "--docker-image", "custom/headless:dev"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /require --docker/);
+});
+
 test("CLI suppresses known Gemini startup warnings", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -1032,6 +1273,41 @@ test("CLI suppresses known Gemini startup warnings", async () => {
     assert.equal(code, 0);
     assert.equal(stdout.join(""), "final answer\n");
     assert.equal(stderr.join(""), "real gemini error\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI suppresses known Codex rollout recording warning", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "process.stderr.write('2026-04-25T16:54:20.076657Z ERROR codex_core::session: failed to record rollout items: thread 019dc590-3a4c-78d1-a11a-8c28174c8902 not found\\n');",
+          "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    assert.equal(stderr.join(""), "");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
