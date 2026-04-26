@@ -93,6 +93,29 @@ test("syncWorkspace applies remote changes and skips local conflicts", () => {
   }
 });
 
+test("syncWorkspace applies remote changes under generated directories", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-sync-generated-"));
+  try {
+    const baseline = join(dir, "baseline");
+    const result = join(dir, "result");
+    const work = join(dir, "work");
+    mkdirSync(join(baseline, "dist"), { recursive: true });
+    mkdirSync(join(result, "dist"), { recursive: true });
+    mkdirSync(join(work, "dist"), { recursive: true });
+    writeFileSync(join(baseline, "dist", "bundle.js"), "before");
+    writeFileSync(join(result, "dist", "bundle.js"), "after");
+    writeFileSync(join(work, "dist", "bundle.js"), "before");
+
+    const sync = syncWorkspace({ baselineDir: baseline, resultDir: result, workDir: work });
+
+    assert.deepEqual(sync.changed, ["dist/bundle.js"]);
+    assert.deepEqual(sync.conflicts, []);
+    assert.equal(readFileSync(join(work, "dist", "bundle.js"), "utf8"), "after");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent runs through a Modal client and syncs results back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-exec-"));
   try {

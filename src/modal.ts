@@ -284,7 +284,11 @@ async function createModalClient(): Promise<ModalClientLike> {
 
 async function createWorkspaceArchive(workDir: string, includeGit: boolean): Promise<Uint8Array> {
   const files = includeGit ? listFilesRecursive(workDir) : await listGitFiles(workDir);
-  const selected = files ?? listFilesRecursive(workDir).filter((path) => path !== ".git" && !path.startsWith(".git/"));
+  const selected =
+    files ??
+    listFilesRecursive(workDir, { ignoredDirs: new Set([".cache", "coverage", "dist", "node_modules"]) }).filter(
+      (path) => path !== ".git" && !path.startsWith(".git/"),
+    );
   return await runLocalTar(workDir, selected);
 }
 
@@ -373,12 +377,11 @@ async function listGitFiles(workDir: string): Promise<string[] | undefined> {
     .sort();
 }
 
-function listFilesRecursive(root: string): string[] {
+function listFilesRecursive(root: string, options: { ignoredDirs?: Set<string> } = {}): string[] {
   const result: string[] = [];
-  const ignoredDirs = new Set([".cache", "coverage", "dist", "node_modules"]);
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory() && ignoredDirs.has(entry.name)) {
+      if (entry.isDirectory() && options.ignoredDirs?.has(entry.name)) {
         continue;
       }
       const path = join(dir, entry.name);
