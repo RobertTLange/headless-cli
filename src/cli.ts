@@ -38,7 +38,7 @@ import {
   DEFAULT_MODAL_TIMEOUT_SECONDS,
   executeModalAgent,
 } from "./modal.js";
-import { extractFinalMessage } from "./output.js";
+import { extractFinalMessage, extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
@@ -73,6 +73,7 @@ interface ParsedArgs {
   modalTimeoutSeconds?: number;
   json: boolean;
   debug: boolean;
+  usage: boolean;
   printCommand: boolean;
   showConfig: boolean;
   check: boolean;
@@ -129,6 +130,7 @@ function usage(): string {
     "  --modal-include-git Include .git metadata in Modal uploads.",
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
+    "  --usage              Print final message plus normalized token and cost JSON.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --name <name>        Use a managed tmux session name with --tmux.",
     "  send <session-name>  Send a message to an existing headless tmux session.",
@@ -159,6 +161,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     modalSecrets: [],
     json: false,
     debug: false,
+    usage: false,
     printCommand: false,
     showConfig: false,
     check: false,
@@ -270,6 +273,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--debug":
         parsed.debug = true;
+        break;
+      case "--usage":
+        parsed.usage = true;
         break;
       case "--tmux":
         parsed.tmux = true;
@@ -535,6 +541,35 @@ interface ExecuteResult {
 
 function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
   return command.env ? { ...baseEnv, ...command.env } : baseEnv;
+}
+
+function usageContext(agent: AgentName, parsed: ParsedArgs, env: Env): { provider?: string; model?: string } {
+  if (agent === "codex") {
+    return { provider: "openai", model: parsed.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
+  }
+  if (agent === "claude") {
+    return { provider: "anthropic", model: parsed.model ?? "claude-opus-4-6" };
+  }
+  if (agent === "gemini") {
+    return { provider: "google", model: parsed.model };
+  }
+  if (agent === "pi") {
+    return { provider: env.PI_CODING_AGENT_PROVIDER, model: parsed.model ?? env.PI_CODING_AGENT_MODEL };
+  }
+  return { model: parsed.model };
+}
+
+async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
+  const summary = extractUsageSummary(agent, stdout, context);
+  if (summary.pricingStatus === "native") {
+    return `${JSON.stringify({ usage: priceUsageSummary(summary, {}) })}\n`;
+  }
+  try {
+    const pricing = await fetchModelsDevPricing();
+    return `${JSON.stringify({ usage: priceUsageSummary(summary, pricing) })}\n`;
+  } catch {
+    return `${JSON.stringify({ usage: priceUsageSummary(summary, {}) })}\n`;
+  }
 }
 
 interface CaptureResult {
@@ -1070,7 +1105,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.modal || hasModalOptions(parsed)) {
         throw new CliError(`--modal and --modal-* cannot be used with docker ${parsed.dockerCommand}`);
       }
-      if (parsed.tmux || parsed.json || parsed.debug || parsed.list || parsed.check || parsed.showConfig) {
+      if (
+        parsed.tmux ||
+        parsed.json ||
+        parsed.debug ||
+        parsed.usage ||
+        parsed.list ||
+        parsed.check ||
+        parsed.showConfig
+      ) {
         throw new CliError(`unsupported option for docker ${parsed.dockerCommand}`);
       }
       if (parsed.dockerCommand === "doctor") {
@@ -1109,6 +1152,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.debug) {
         throw new CliError("--debug cannot be used with rename");
       }
+      if (parsed.usage) {
+        throw new CliError("--usage cannot be used with rename");
+      }
       if (parsed.tmuxName !== undefined) {
         throw new CliError("--name cannot be used with rename");
       }
@@ -1145,6 +1191,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (parsed.debug) {
         throw new CliError("--debug cannot be used with send");
+      }
+      if (parsed.usage) {
+        throw new CliError("--usage cannot be used with send");
       }
       if (parsed.tmuxName !== undefined) {
         throw new CliError("--name cannot be used with send");
@@ -1205,6 +1254,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
+    }
+    if (parsed.usage && parsed.json) {
+      throw new CliError("--usage cannot be used with --json");
+    }
+    if (parsed.usage && parsed.tmux) {
+      throw new CliError("--usage cannot be used with --tmux");
     }
     if (parsed.debug && parsed.json) {
       throw new CliError("--debug cannot be used with --json");
@@ -1358,6 +1413,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(`--- final message ---\n${finalMessage}\n`);
       } else {
         stdout(`${finalMessage}\n`);
+      }
+      if (parsed.usage) {
+        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, parsed, env)));
       }
       return result.code;
     }

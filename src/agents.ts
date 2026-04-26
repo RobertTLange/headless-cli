@@ -10,6 +10,8 @@ import type {
 } from "./types.js";
 
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
+const defaultClaudeModel = "claude-opus-4-6";
+const defaultCodexModel = "gpt-5.5";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",
@@ -59,7 +61,7 @@ function commandWithOptionalEnv(command: string, args: string[], env: Env | unde
 }
 
 function buildClaude(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? defaultClaudeModel);
   args.push("-p");
 
   if (options.promptFile) {
@@ -76,7 +78,7 @@ function buildClaude(options: BuildOptions): BuiltCommand {
 }
 
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL;
+  const model = options.model || env.CODEX_MODEL || defaultCodexModel;
   const args = [
     ...(options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
@@ -98,7 +100,7 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL;
+  const model = options.model || env.CODEX_MODEL || defaultCodexModel;
   const args =
     options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
@@ -262,7 +264,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     seedPaths: [".claude.json", ".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
     buildCommand: buildClaude,
     buildInteractiveCommand: (options) => {
-      const args = withModel([], options.model);
+      const args = withModel([], options.model ?? defaultClaudeModel);
       args.push(...withClaudeEffort([], options.reasoningEffort));
       args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);

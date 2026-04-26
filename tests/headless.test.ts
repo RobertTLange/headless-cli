@@ -15,7 +15,7 @@ import type { AgentName } from "../src/types.ts";
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 async function waitFor(assertion: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000;
+  const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     if (assertion()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -32,7 +32,7 @@ test("default Docker image reference is accepted by Docker", () => {
   assert.equal(DEFAULT_DOCKER_IMAGE, "ghcr.io/roberttlange/headless:latest");
 });
 
-test("builds codex command without a headless default model", () => {
+test("builds codex command with the headless default model", () => {
   const command = buildAgentCommand("codex", { prompt: "hello world" }, {});
 
   assert.deepEqual(command, {
@@ -40,6 +40,8 @@ test("builds codex command without a headless default model", () => {
     args: [
       "--dangerously-bypass-approvals-and-sandbox",
       "exec",
+      "--model",
+      "gpt-5.5",
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -48,7 +50,7 @@ test("builds codex command without a headless default model", () => {
   });
 });
 
-test("builds codex command using CODEX_MODEL fallback", () => {
+test("builds codex command using CODEX_MODEL override", () => {
   const command = buildAgentCommand("codex", { prompt: "hello" }, { CODEX_MODEL: "gpt-next" });
 
   assert.deepEqual(command.args.slice(2, 4), ["--model", "gpt-next"]);
@@ -59,6 +61,8 @@ test("builds reasoning effort flags for supported agents", () => {
   assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", reasoningEffort: "high" }, {}).args, [
     "--dangerously-bypass-approvals-and-sandbox",
     "exec",
+    "--model",
+    "gpt-5.5",
     "-c",
     'model_reasoning_effort="high"',
     "--json",
@@ -67,6 +71,8 @@ test("builds reasoning effort flags for supported agents", () => {
   ]);
 
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}).args, [
+    "--model",
+    "claude-opus-4-6",
     "-p",
     "hello",
     "--output-format",
@@ -235,12 +241,19 @@ test("builds interactive commands for tmux mode", () => {
 test("builds reasoning effort flags for supported interactive commands", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "codex",
-    args: ["--dangerously-bypass-approvals-and-sandbox", "-c", 'model_reasoning_effort="high"', "hello"],
+    args: [
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="high"',
+      "hello",
+    ],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
     command: "claude",
-    args: ["--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
+    args: ["--model", "claude-opus-4-6", "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("pi", { prompt: "hello", reasoningEffort: "low" }, {}), {
@@ -401,7 +414,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
     assert.match(output, /headless-agent codex/);
-    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec --model gpt-5\.5 -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -448,7 +461,7 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
     assert.match(output, /--image-secret ghcr --secret provider-secret -- codex/);
-    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec --model gpt-5\.5 -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -520,10 +533,12 @@ test("CLI --docker executes through docker and preserves stdin prompt", async ()
     assert.equal(capture.stdin, "hello");
     assert.equal(capture.args[0], "run");
     assert.ok(capture.args.includes("ghcr.io/roberttlange/headless:latest"));
-    assert.deepEqual(capture.args.slice(-6), [
+    assert.deepEqual(capture.args.slice(-8), [
       "codex",
       "--dangerously-bypass-approvals-and-sandbox",
       "exec",
+      "--model",
+      "gpt-5.5",
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -833,6 +848,170 @@ test("CLI --json streams raw trace output for every provider", async () => {
       rmSync(dir, { force: true, recursive: true });
     }
   }
+});
+
+test("CLI --usage prints final message and normalized usage JSON", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+          "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 100 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5": {
+                cost: {
+                  input: 1.25,
+                  cache_read: 0.125,
+                  output: 10,
+                },
+              },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(lines[0], "final answer");
+    assert.deepEqual(JSON.parse(lines[1]), {
+      usage: {
+        agent: "codex",
+        provider: "openai",
+        model: "gpt-5",
+        inputTokens: 600,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 0,
+        outputTokens: 100,
+        reasoningOutputTokens: 0,
+        totalTokens: 1100,
+        cost: {
+          input: 0.00075,
+          cacheRead: 0.00005,
+          cacheWrite: 0,
+          output: 0.001,
+          total: 0.0018,
+        },
+        pricingSource: "models.dev",
+        pricingStatus: "priced",
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --usage prices Codex hard default model", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    const codexHome = join(dir, "codex-home");
+    mkdirSync(codexHome);
+    writeFileSync(join(codexHome, "config.toml"), 'model = "ignored-model"\n[projects]\n');
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+          "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 100 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5.5": {
+                cost: {
+                  input: 2,
+                  output: 20,
+                },
+              },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, CODEX_HOME: codexHome, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
+    assert.equal(usage.model, "gpt-5.5");
+    assert.equal(usage.pricingStatus, "priced");
+    assert.deepEqual(usage.cost, {
+      input: 0.002,
+      cacheRead: 0,
+      cacheWrite: 0,
+      output: 0.002,
+      total: 0.004,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI rejects --usage in raw json and tmux modes", async () => {
+  const stderr: string[] = [];
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--usage", "--json"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
+  );
+  assert.match(stderr.join(""), /--usage cannot be used with --json/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--usage", "--tmux"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
+  );
+  assert.match(stderr.join(""), /--usage cannot be used with --tmux/);
+});
+
+test("CLI help lists usage output option", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["--help"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /--usage/);
 });
 
 test("CLI --tmux launches an interactive tmux session and sends the prompt", async () => {

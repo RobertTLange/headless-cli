@@ -51,6 +51,8 @@ headless gemini --prompt "Summarize the codebase" --print-command
 headless pi --prompt "Summarize this repo" --json
 # Stream JSON output and append the extracted final message.
 headless codex --prompt "Fix the failing tests" --debug
+# Print the final message plus token usage and cost JSON.
+headless codex --prompt "Summarize this repo" --model gpt-5 --usage
 # Launch in tmux for persistent interactive sessions.
 headless codex --prompt "Fix the failing tests" --tmux
 # Run the agent inside the default Docker image.
@@ -89,7 +91,7 @@ printf "Review this diff" | headless pi --model claude-opus
 By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only/planning mode where available.
 Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot agent command. In tmux mode, Claude, Codex, and Pi receive their interactive effort flags. Cursor, Gemini, and OpenCode tmux currently do not expose stable per-run reasoning-effort flags through their CLIs, so Headless accepts the option for them, leaves the command unchanged, and prints a warning.
 
-By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message.
+By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message. Pass `--usage` to append normalized token usage and cost JSON for one-shot runs. Headless uses native agent costs when available and fetches live fallback pricing from `https://models.dev/api.json`; if a model cannot be priced, token counts are still returned with `cost: null`. When `--model` is omitted, Headless defaults Codex to `gpt-5.5` and Claude to `claude-opus-4-6`.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
 ## 6 Execution Modes
@@ -121,6 +123,16 @@ headless codex --prompt "Fix the failing tests" --debug
 ```
 
 `--debug` only applies to headless execution and cannot be combined with `--json` or `--tmux`.
+
+### Usage accounting (`--usage`)
+
+Usage accounting runs in normal one-shot mode, including Docker and Modal runs, and appends one JSON object after the final message.
+
+```bash
+headless codex --prompt "Summarize this repo" --model gpt-5 --usage
+```
+
+The summary includes input, cache read, cache write, output, reasoning output, total tokens, provider/model metadata, pricing status, and cost when available. `--usage` cannot be combined with `--json` or `--tmux`.
 
 ### 4) Docker mode (`--docker`)
 
@@ -233,6 +245,7 @@ Options:
 - `--modal-include-git`: include `.git` metadata in the uploaded workspace.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
+- `--usage`: append normalized token usage and cost JSON after the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
 - `--name`: use a stable managed session name with `--tmux`.
 - `send <session-name>`: send a message to an existing Headless tmux session.
@@ -249,7 +262,7 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 
 ## Environment
 
-- `CODEX_MODEL`: default Codex model when `--model` is omitted. When unset, Headless leaves model selection to the Codex CLI.
+- `CODEX_MODEL`: Codex model override when `--model` is omitted. When unset, Headless defaults Codex to `gpt-5.5`.
 - `CURSOR_CLI_BIN`: Cursor CLI binary override. Defaults to `agent`.
 - `CURSOR_API_KEY`: passed to Cursor as `--api-key`.
 - `PI_CODING_AGENT_BIN`: Pi CLI binary override. Defaults to `pi`.

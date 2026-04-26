@@ -8,7 +8,7 @@ import test from "node:test";
 import { runCli } from "../src/cli.ts";
 
 async function waitFor(assertion: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     if (assertion()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));

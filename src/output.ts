@@ -224,3 +224,6 @@ export function extractFinalMessage(agent: AgentName, stdout: string): string {
   const candidates = values.flatMap((value) => collectCandidates(value, agent));
   return candidates.at(-1)?.trim() ?? "";
 }
+
+export { extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./usage.js";
+export type { UsageCostBreakdown, UsageSummary } from "./usage.js";
