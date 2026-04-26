@@ -24,6 +24,8 @@ test("builds read-only commands for supported agents", () => {
       "--ask-for-approval",
       "never",
       "exec",
+      "--model",
+      "gpt-5.5",
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -33,7 +35,17 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", allow: "read-only" }, {}), {
     command: "claude",
-    args: ["-p", "hello", "--output-format", "stream-json", "--verbose", "--permission-mode", "plan"],
+    args: [
+      "--model",
+      "claude-opus-4-6",
+      "-p",
+      "hello",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "plan",
+    ],
   });
 
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", allow: "read-only" }, {}), {
@@ -65,11 +77,15 @@ test("builds explicit yolo commands for supported agents", () => {
   assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", allow: "yolo" }, {}).args, [
     "--dangerously-bypass-approvals-and-sandbox",
     "exec",
+    "--model",
+    "gpt-5.5",
     "--json",
     "--skip-git-repo-check",
     "-",
   ]);
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", allow: "yolo" }, {}).args, [
+    "--model",
+    "claude-opus-4-6",
     "-p",
     "hello",
     "--output-format",
@@ -127,11 +143,11 @@ test("defaults to yolo commands for supported agents", () => {
 test("builds read-only interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", allow: "read-only" }, {}), {
     command: "codex",
-    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "hello"],
+    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--model", "gpt-5.5", "hello"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", allow: "read-only" }, {}), {
     command: "claude",
-    args: ["--permission-mode", "plan", "hello"],
+    args: ["--model", "claude-opus-4-6", "--permission-mode", "plan", "hello"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
     command: "gemini",
@@ -254,7 +270,7 @@ test("CLI tmux print-command includes allow mode flags", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never hello/);
+  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --model gpt-5\.5 hello/);
 });
 
 test("CLI execution passes command environment overrides", async () => {

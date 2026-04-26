@@ -32,7 +32,7 @@ test("default Docker image reference is accepted by Docker", () => {
   assert.equal(DEFAULT_DOCKER_IMAGE, "ghcr.io/roberttlange/headless:latest");
 });
 
-test("builds codex command without a headless default model", () => {
+test("builds codex command with the headless default model", () => {
   const command = buildAgentCommand("codex", { prompt: "hello world" }, {});
 
   assert.deepEqual(command, {
@@ -40,6 +40,8 @@ test("builds codex command without a headless default model", () => {
     args: [
       "--dangerously-bypass-approvals-and-sandbox",
       "exec",
+      "--model",
+      "gpt-5.5",
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -48,7 +50,7 @@ test("builds codex command without a headless default model", () => {
   });
 });
 
-test("builds codex command using CODEX_MODEL fallback", () => {
+test("builds codex command using CODEX_MODEL override", () => {
   const command = buildAgentCommand("codex", { prompt: "hello" }, { CODEX_MODEL: "gpt-next" });
 
   assert.deepEqual(command.args.slice(2, 4), ["--model", "gpt-next"]);
@@ -59,6 +61,8 @@ test("builds reasoning effort flags for supported agents", () => {
   assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", reasoningEffort: "high" }, {}).args, [
     "--dangerously-bypass-approvals-and-sandbox",
     "exec",
+    "--model",
+    "gpt-5.5",
     "-c",
     'model_reasoning_effort="high"',
     "--json",
@@ -67,6 +71,8 @@ test("builds reasoning effort flags for supported agents", () => {
   ]);
 
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}).args, [
+    "--model",
+    "claude-opus-4-6",
     "-p",
     "hello",
     "--output-format",
@@ -235,12 +241,19 @@ test("builds interactive commands for tmux mode", () => {
 test("builds reasoning effort flags for supported interactive commands", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "codex",
-    args: ["--dangerously-bypass-approvals-and-sandbox", "-c", 'model_reasoning_effort="high"', "hello"],
+    args: [
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="high"',
+      "hello",
+    ],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
     command: "claude",
-    args: ["--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
+    args: ["--model", "claude-opus-4-6", "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("pi", { prompt: "hello", reasoningEffort: "low" }, {}), {
@@ -401,7 +414,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
     assert.match(output, /headless-agent codex/);
-    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec --model gpt-5\.5 -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -448,7 +461,7 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
     assert.match(output, /--image-secret ghcr --secret provider-secret -- codex/);
-    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec --model gpt-5\.5 -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -520,10 +533,12 @@ test("CLI --docker executes through docker and preserves stdin prompt", async ()
     assert.equal(capture.stdin, "hello");
     assert.equal(capture.args[0], "run");
     assert.ok(capture.args.includes("ghcr.io/roberttlange/headless:latest"));
-    assert.deepEqual(capture.args.slice(-6), [
+    assert.deepEqual(capture.args.slice(-8), [
       "codex",
       "--dangerously-bypass-approvals-and-sandbox",
       "exec",
+      "--model",
+      "gpt-5.5",
       "--json",
       "--skip-git-repo-check",
       "-",
