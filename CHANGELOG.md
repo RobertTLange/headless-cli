@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Added Modal CPU sandbox execution with workspace upload, sync-back, resource flags, env forwarding, and named Modal Secret support.
+- Added Modal CPU sandbox execution with workspace upload, sync-back, resource flags, env forwarding, and named Modal Secret support. Thanks @RobertTLange for PR #4.
 - Added Docker execution mode, Docker setup checks, local image builds, and packaged Docker image support. Thanks @RobertTLange for PR #3.
 
 ## 0.1.1 - 2026-04-24
