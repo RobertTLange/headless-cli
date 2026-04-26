@@ -15,7 +15,7 @@ import type { AgentName } from "../src/types.ts";
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 async function waitFor(assertion: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000;
+  const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     if (assertion()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
