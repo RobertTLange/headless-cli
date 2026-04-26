@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractFinalMessage } from "../src/output.ts";
+import { extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
 
 test("extracts final Codex assistant message from JSONL trace", () => {
   const trace = [
@@ -144,3 +144,285 @@ test("ignores tool results and returns empty string when no assistant text exist
 
   assert.equal(extractFinalMessage("pi", trace), "");
 });
+
+test("extracts Codex usage from turn completed trace and prices with models.dev data", () => {
+  const trace = JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 1000,
+      cached_input_tokens: 400,
+      output_tokens: 100,
+      reasoning_output_tokens: 25,
+    },
+  });
+
+  const summary = priceUsageSummary(
+    extractUsageSummary("codex", trace, { provider: "openai", model: "gpt-5" }),
+    pricingFixture(),
+  );
+
+  assert.deepEqual(summary, {
+    agent: "codex",
+    provider: "openai",
+    model: "gpt-5",
+    inputTokens: 1000,
+    cacheReadTokens: 400,
+    cacheWriteTokens: 0,
+    outputTokens: 100,
+    reasoningOutputTokens: 25,
+    totalTokens: 1100,
+    cost: {
+      input: 0.00125,
+      cacheRead: 0.00005,
+      cacheWrite: 0,
+      output: 0.001,
+      total: 0.0023,
+    },
+    pricingSource: "models.dev",
+    pricingStatus: "priced",
+  });
+});
+
+test("extracts Claude usage and preserves native cost", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    total_cost_usd: 0.18331675,
+    usage: {
+      input_tokens: 3,
+      cache_creation_input_tokens: 29231,
+      cache_read_input_tokens: 0,
+      output_tokens: 8,
+    },
+    modelUsage: {
+      "claude-opus-4-6": {
+        inputTokens: 3,
+        outputTokens: 8,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 29231,
+        costUSD: 0.18331675,
+      },
+    },
+  });
+
+  assert.deepEqual(extractUsageSummary("claude", trace), {
+    agent: "claude",
+    provider: "anthropic",
+    model: "claude-opus-4-6",
+    inputTokens: 3,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 29231,
+    outputTokens: 8,
+    reasoningOutputTokens: 0,
+    totalTokens: 11,
+    cost: {
+      input: null,
+      cacheRead: null,
+      cacheWrite: null,
+      output: null,
+      total: 0.18331675,
+    },
+    pricingSource: "native",
+    pricingStatus: "native",
+  });
+});
+
+test("extracts Claude usage with requested model when modelUsage includes sidecars", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    total_cost_usd: 0.0930365,
+    usage: {
+      input_tokens: 3,
+      cache_creation_input_tokens: 13246,
+      cache_read_input_tokens: 15130,
+      output_tokens: 90,
+    },
+    modelUsage: {
+      "claude-haiku-4-5-20251001": {
+        inputTokens: 353,
+        outputTokens: 11,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 0.000408,
+      },
+      "claude-opus-4-6": {
+        inputTokens: 3,
+        outputTokens: 90,
+        cacheReadInputTokens: 15130,
+        cacheCreationInputTokens: 13246,
+        costUSD: 0.0926285,
+      },
+    },
+  });
+
+  const summary = extractUsageSummary("claude", trace, { provider: "anthropic", model: "claude-opus-4-6" });
+
+  assert.equal(summary.model, "claude-opus-4-6");
+  assert.equal(summary.cost?.total, 0.0930365);
+  assert.equal(summary.pricingStatus, "native");
+});
+
+test("extracts Cursor usage and returns null cost when model pricing is missing", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    usage: {
+      inputTokens: 3705,
+      outputTokens: 43,
+      cacheReadTokens: 5216,
+      cacheWriteTokens: 0,
+    },
+    model: "Composer 2 Fast",
+  });
+
+  const summary = priceUsageSummary(extractUsageSummary("cursor", trace), pricingFixture());
+
+  assert.equal(summary.inputTokens, 3705);
+  assert.equal(summary.cacheReadTokens, 5216);
+  assert.equal(summary.outputTokens, 43);
+  assert.equal(summary.model, "Composer 2 Fast");
+  assert.equal(summary.cost, null);
+  assert.equal(summary.pricingStatus, "missing");
+});
+
+test("extracts Gemini multi-model usage and sums priced costs", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    stats: {
+      models: {
+        "gemini-2.5-flash-lite": {
+          input_tokens: 1000,
+          output_tokens: 40,
+          cached: 200,
+        },
+        "gemini-3-flash-preview": {
+          input_tokens: 2000,
+          output_tokens: 4,
+          cached: 0,
+        },
+      },
+    },
+  });
+
+  const summary = priceUsageSummary(extractUsageSummary("gemini", trace), pricingFixture());
+
+  assert.equal(summary.inputTokens, 3000);
+  assert.equal(summary.cacheReadTokens, 200);
+  assert.equal(summary.outputTokens, 44);
+  assert.equal(summary.provider, "google");
+  assert.equal(summary.model, "mixed");
+  assert.deepEqual(summary.cost, {
+    input: 0.0011,
+    cacheRead: 0.000005,
+    cacheWrite: 0,
+    output: 0.000028,
+    total: 0.001133,
+  });
+  assert.equal(summary.pricingStatus, "priced");
+});
+
+test("extracts OpenCode native usage cost", () => {
+  const trace = JSON.stringify({
+    type: "step_finish",
+    part: {
+      tokens: {
+        input: 15777,
+        output: 24,
+        reasoning: 192,
+        cache: { read: 0, write: 0 },
+      },
+      cost: 0.00087525,
+    },
+  });
+
+  const summary = extractUsageSummary("opencode", trace, { provider: "openai", model: "gpt-5-nano" });
+
+  assert.equal(summary.inputTokens, 15777);
+  assert.equal(summary.outputTokens, 24);
+  assert.equal(summary.reasoningOutputTokens, 192);
+  assert.deepEqual(summary.cost, {
+    input: null,
+    cacheRead: null,
+    cacheWrite: null,
+    output: null,
+    total: 0.00087525,
+  });
+  assert.equal(summary.pricingStatus, "native");
+});
+
+test("extracts Pi usage and native cost", () => {
+  const trace = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      provider: "amazon-bedrock",
+      model: "global.anthropic.claude-opus-4-6-v1",
+      usage: {
+        input: 2310,
+        output: 7,
+        cacheRead: 10,
+        cacheWrite: 20,
+        cost: {
+          input: 0.01155,
+          output: 0.000175,
+          cacheRead: 0.000005,
+          cacheWrite: 0.000125,
+          total: 0.011855,
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(extractUsageSummary("pi", trace), {
+    agent: "pi",
+    provider: "amazon-bedrock",
+    model: "global.anthropic.claude-opus-4-6-v1",
+    inputTokens: 2310,
+    cacheReadTokens: 10,
+    cacheWriteTokens: 20,
+    outputTokens: 7,
+    reasoningOutputTokens: 0,
+    totalTokens: 2317,
+    cost: {
+      input: 0.01155,
+      output: 0.000175,
+      cacheRead: 0.000005,
+      cacheWrite: 0.000125,
+      total: 0.011855,
+    },
+    pricingSource: "native",
+    pricingStatus: "native",
+  });
+});
+
+function pricingFixture() {
+  return {
+    openai: {
+      models: {
+        "gpt-5": {
+          cost: {
+            input: 1.25,
+            cache_read: 0.125,
+            output: 10,
+          },
+        },
+      },
+    },
+    google: {
+      models: {
+        "gemini-2.5-flash-lite": {
+          cost: {
+            input: 0.1,
+            cache_read: 0.025,
+            output: 0.4,
+          },
+        },
+        "gemini-3-flash-preview": {
+          cost: {
+            input: 0.5,
+            cache_read: 0.05,
+            output: 3,
+          },
+        },
+      },
+    },
+  };
+}

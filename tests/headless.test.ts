@@ -850,6 +850,170 @@ test("CLI --json streams raw trace output for every provider", async () => {
   }
 });
 
+test("CLI --usage prints final message and normalized usage JSON", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+          "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 100 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5": {
+                cost: {
+                  input: 1.25,
+                  cache_read: 0.125,
+                  output: 10,
+                },
+              },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(lines[0], "final answer");
+    assert.deepEqual(JSON.parse(lines[1]), {
+      usage: {
+        agent: "codex",
+        provider: "openai",
+        model: "gpt-5",
+        inputTokens: 1000,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 0,
+        outputTokens: 100,
+        reasoningOutputTokens: 0,
+        totalTokens: 1100,
+        cost: {
+          input: 0.00125,
+          cacheRead: 0.00005,
+          cacheWrite: 0,
+          output: 0.001,
+          total: 0.0023,
+        },
+        pricingSource: "models.dev",
+        pricingStatus: "priced",
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --usage prices Codex hard default model", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    const codexHome = join(dir, "codex-home");
+    mkdirSync(codexHome);
+    writeFileSync(join(codexHome, "config.toml"), 'model = "ignored-model"\n[projects]\n');
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+          "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 100 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5.5": {
+                cost: {
+                  input: 2,
+                  output: 20,
+                },
+              },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, CODEX_HOME: codexHome, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
+    assert.equal(usage.model, "gpt-5.5");
+    assert.equal(usage.pricingStatus, "priced");
+    assert.deepEqual(usage.cost, {
+      input: 0.002,
+      cacheRead: 0,
+      cacheWrite: 0,
+      output: 0.002,
+      total: 0.004,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI rejects --usage in raw json and tmux modes", async () => {
+  const stderr: string[] = [];
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--usage", "--json"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
+  );
+  assert.match(stderr.join(""), /--usage cannot be used with --json/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["codex", "--prompt", "hello", "--usage", "--tmux"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
+  );
+  assert.match(stderr.join(""), /--usage cannot be used with --tmux/);
+});
+
+test("CLI help lists usage output option", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["--help"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /--usage/);
+});
+
 test("CLI --tmux launches an interactive tmux session and sends the prompt", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
