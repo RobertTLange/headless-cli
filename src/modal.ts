@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { gunzipSync } from "node:zlib";
 
 import { getAgentConfig } from "./agents.js";
 import { collectForwardedEnvEntries } from "./env.js";
@@ -32,6 +33,8 @@ export const DEFAULT_MODAL_TIMEOUT_SECONDS = 3600;
 const remoteWorkDir = "/workspace";
 const remoteHome = "/home/node";
 const remoteHostHome = "/tmp/headless-host-home";
+const localTarCommand = process.platform === "win32" ? "tar" : "/usr/bin/tar";
+const remoteTarCommand = "/usr/bin/tar";
 const sandboxUser = "node";
 const bootstrapScript = [
   "set -eu",
@@ -230,12 +233,12 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
     const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
     extractArchiveLocally(workspaceArchive, baselineDir);
     await runRemoteTar(sandbox, ["mkdir", "-p", remoteWorkDir], timeoutMs);
-    await runRemoteTar(sandbox, ["tar", "-xzf", "-", "-C", remoteWorkDir], timeoutMs, workspaceArchive);
+    await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteWorkDir], timeoutMs, workspaceArchive);
 
     const seedArchive = await createAgentSeedArchive(options.agent, options.env);
     if (seedArchive.length > 0) {
       await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
-      await runRemoteTar(sandbox, ["tar", "-xzf", "-", "-C", remoteHostHome], timeoutMs, seedArchive);
+      await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, seedArchive);
     }
 
     const runProcess = await sandbox.exec(
@@ -398,7 +401,7 @@ function listFilesRecursive(root: string, options: { ignoredDirs?: Set<string> }
 }
 
 async function runLocalTar(cwd: string, paths: string[]): Promise<Uint8Array> {
-  const result = await captureLocalCommand("tar", ["-czf", "-", "--null", "-T", "-"], {
+  const result = await captureLocalCommand(localTarCommand, ["-czf", "-", "--null", "-T", "-"], {
     cwd,
     stdin: paths.length > 0 ? `${paths.join("\0")}\0` : "",
   });
@@ -409,7 +412,8 @@ async function runLocalTar(cwd: string, paths: string[]): Promise<Uint8Array> {
 }
 
 function extractArchiveLocally(archive: Uint8Array, dir: string): void {
-  const result = spawnSync("tar", ["-xzf", "-", "-C", dir], { input: archive, encoding: "utf8" });
+  validateArchiveEntries(archive);
+  const result = spawnSync(localTarCommand, ["-xzf", "-", "-C", dir], { input: archive, encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(result.stderr || result.error?.message || "could not extract Modal workspace archive");
   }
@@ -442,7 +446,7 @@ async function runRemoteTar(
 }
 
 async function captureRemoteArchive(sandbox: ModalSandboxLike, timeoutMs: number): Promise<Uint8Array> {
-  const process = await sandbox.exec(["tar", "-czf", "-", "-C", remoteWorkDir, "."], {
+  const process = await sandbox.exec([remoteTarCommand, "-czf", "-", "-C", remoteWorkDir, "."], {
     mode: "binary",
     stderr: "pipe",
     stdout: "pipe",
@@ -458,6 +462,124 @@ async function captureRemoteArchive(sandbox: ModalSandboxLike, timeoutMs: number
     throw new Error(stderr || "could not download Modal workspace archive");
   }
   return stdout;
+}
+
+function validateArchiveEntries(archive: Uint8Array): void {
+  let data: Buffer;
+  try {
+    data = gunzipSync(archive);
+  } catch {
+    throw new Error("could not inspect Modal workspace archive");
+  }
+
+  let offset = 0;
+  let nextLongName: string | undefined;
+  let nextPaxPath: string | undefined;
+  while (offset + 512 <= data.length) {
+    const header = data.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      return;
+    }
+
+    const type = readTarString(header, 156, 1) || "0";
+    const size = readTarSize(header);
+    const contentStart = offset + 512;
+    const contentEnd = contentStart + size;
+    if (contentEnd > data.length) {
+      throw new Error("unsafe Modal workspace archive entry: truncated archive");
+    }
+
+    if (type === "L") {
+      nextLongName = readNullTerminated(data.subarray(contentStart, contentEnd));
+      offset = nextTarOffset(contentEnd);
+      continue;
+    }
+    if (type === "x") {
+      nextPaxPath = parsePaxRecords(data.subarray(contentStart, contentEnd)).path;
+      offset = nextTarOffset(contentEnd);
+      continue;
+    }
+    if (type === "g") {
+      const records = parsePaxRecords(data.subarray(contentStart, contentEnd));
+      if (records.path !== undefined) {
+        throw new Error("unsafe Modal workspace archive entry: global pax path is not supported");
+      }
+      offset = nextTarOffset(contentEnd);
+      continue;
+    }
+
+    const prefix = readTarString(header, 345, 155);
+    const name = nextPaxPath ?? nextLongName ?? [prefix, readTarString(header, 0, 100)].filter(Boolean).join("/");
+    nextLongName = undefined;
+    nextPaxPath = undefined;
+    if (!isSafeArchivePath(name)) {
+      throw new Error(`unsafe Modal workspace archive entry: ${name}`);
+    }
+    if (!["0", "\0", "2", "5"].includes(type)) {
+      throw new Error(`unsafe Modal workspace archive entry: unsupported type ${type || "unknown"} for ${name}`);
+    }
+
+    offset = nextTarOffset(contentEnd);
+  }
+
+  throw new Error("unsafe Modal workspace archive entry: missing end marker");
+}
+
+function readTarString(header: Buffer, start: number, length: number): string {
+  const end = header.indexOf(0, start);
+  return header.subarray(start, end === -1 || end > start + length ? start + length : end).toString("utf8");
+}
+
+function readTarSize(header: Buffer): number {
+  const value = readTarString(header, 124, 12).trim();
+  const parsed = Number.parseInt(value || "0", 8);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error("unsafe Modal workspace archive entry: invalid size");
+  }
+  return parsed;
+}
+
+function readNullTerminated(data: Buffer): string {
+  const end = data.indexOf(0);
+  return data.subarray(0, end === -1 ? data.length : end).toString("utf8");
+}
+
+function parsePaxRecords(data: Buffer): Record<string, string> {
+  const text = data.toString("utf8");
+  const records: Record<string, string> = {};
+  let offset = 0;
+  while (offset < text.length) {
+    const space = text.indexOf(" ", offset);
+    if (space === -1) {
+      break;
+    }
+    const length = Number.parseInt(text.slice(offset, space), 10);
+    if (!Number.isFinite(length) || length <= 0 || offset + length > text.length) {
+      throw new Error("unsafe Modal workspace archive entry: invalid pax header");
+    }
+    const record = text.slice(space + 1, offset + length - 1);
+    const equals = record.indexOf("=");
+    if (equals !== -1) {
+      records[record.slice(0, equals)] = record.slice(equals + 1);
+    }
+    offset += length;
+  }
+  return records;
+}
+
+function nextTarOffset(contentEnd: number): number {
+  return Math.ceil(contentEnd / 512) * 512;
+}
+
+function isSafeArchivePath(path: string): boolean {
+  if (!path || path === ".") {
+    return true;
+  }
+  const normalized = path.split("\\").join("/");
+  if (normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)) {
+    return false;
+  }
+  return !normalized.split("/").some((segment) => segment === "..");
 }
 
 async function writeModalStdin(stdin: ModalWriteStreamLike<string | Uint8Array>, command: BuiltCommand): Promise<void> {

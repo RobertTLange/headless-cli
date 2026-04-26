@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 
 import {
   buildModalRunSummary,
@@ -184,10 +185,54 @@ test("executeModalAgent runs through a Modal client and syncs results back", asy
     assert.equal(sandbox.createParams?.cpu, DEFAULT_MODAL_CPU);
     assert.equal(sandbox.createParams?.env?.OPENAI_API_KEY, "sk-test");
     assert.equal(sandbox.createParams?.env?.EXTRA_TOKEN, "value");
+    assert.ok(sandbox.commands.some((command) => command[0] === "/usr/bin/tar"));
     assert.deepEqual(sandbox.agentCommand, ["sh", "-lc", sandbox.agentCommand?.[2], "headless-agent", "codex", "exec", "--json", "-"]);
     assert.match(sandbox.agentCommand?.[2] ?? "", /runuser -u node/);
     assert.equal(sandbox.agentStdin, "prompt");
     assert.deepEqual(stderr, []);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("executeModalAgent rejects unsafe result archive entries before local extraction", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-unsafe-archive-"));
+  try {
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    writeFileSync(join(work, "input.txt"), "local");
+    const sandbox = new FakeSandbox(remote, {
+      resultArchive: makeTarGz([{ content: "outside", name: "../../outside.txt" }]),
+    });
+    const client = new FakeModalClient(sandbox);
+
+    await assert.rejects(
+      () =>
+        executeModalAgent({
+          agent: "codex",
+          appName: "headless-test",
+          command: { command: "codex", args: ["exec", "--json", "-"], stdinText: "prompt" },
+          cpu: DEFAULT_MODAL_CPU,
+          env: { HOME: join(dir, "home"), OPENAI_API_KEY: "sk-test" },
+          image: DEFAULT_MODAL_IMAGE,
+          includeGit: false,
+          memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+          modalEnv: [],
+          modalSecrets: [],
+          stderr: () => {},
+          stdout: () => {},
+          stdoutHandling: "capture",
+          timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+          workDir: work,
+          clientFactory: async () => client,
+        }),
+      /unsafe Modal workspace archive entry/,
+    );
+    assert.equal(existsSync(join(dir, "outside.txt")), false);
+    assert.equal(sandbox.terminated, true);
+    assert.equal(client.closed, true);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -240,12 +285,17 @@ class FakeModalClient implements ModalClientLike {
 class FakeSandbox implements ModalSandboxLike {
   agentCommand?: string[];
   agentStdin = "";
+  commands: string[][] = [];
   createParams?: ModalSandboxCreateParams;
   terminated = false;
 
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    public options: { resultArchive?: Uint8Array } = {},
+  ) {}
 
   async exec(command: string[], params?: ModalExecParams): Promise<ModalProcessLike<string | Uint8Array>> {
+    this.commands.push(command);
     const process = new FakeProcess(command, params, this.root, this);
     return process;
   }
@@ -290,14 +340,18 @@ class FakeProcess implements ModalProcessLike<string | Uint8Array> {
       mkdirSync(this.mapPath(this.command[2]), { recursive: true });
       return;
     }
-    if (this.command[0] === "tar" && this.command[1] === "-xzf") {
+    if (isTarCommand(this.command[0]) && this.command[1] === "-xzf") {
       const target = this.mapPath(this.command[4]);
       mkdirSync(target, { recursive: true });
       const result = spawnSync("tar", ["-xzf", "-", "-C", target], { input: this.stdin.bytes });
       if (result.status !== 0) throw new Error(result.stderr.toString());
       return;
     }
-    if (this.command[0] === "tar" && this.command[1] === "-czf") {
+    if (isTarCommand(this.command[0]) && this.command[1] === "-czf") {
+      if (this.sandbox.options.resultArchive) {
+        this.stdoutValue = this.sandbox.options.resultArchive;
+        return;
+      }
       const source = this.mapPath(this.command[4]);
       const result = spawnSync("tar", ["-czf", "-", "-C", source, "."], { encoding: "buffer" });
       if (result.status !== 0) throw new Error(result.stderr.toString());
@@ -322,6 +376,40 @@ class FakeProcess implements ModalProcessLike<string | Uint8Array> {
     if (path === "/tmp/headless-host-home") return join(this.root, "host-home");
     throw new Error(`unexpected path: ${path}`);
   }
+}
+
+function isTarCommand(command: string): boolean {
+  return command === "tar" || command === "/usr/bin/tar";
+}
+
+function makeTarGz(entries: { content: string; name: string }[]): Uint8Array {
+  const chunks: Buffer[] = [];
+  for (const entry of entries) {
+    const content = Buffer.from(entry.content);
+    const header = Buffer.alloc(512);
+    header.write(entry.name, 0, 100, "utf8");
+    header.write("0000644\0", 100, 8, "ascii");
+    header.write("0000000\0", 108, 8, "ascii");
+    header.write("0000000\0", 116, 8, "ascii");
+    header.write(content.length.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
+    header.write("00000000000\0", 136, 12, "ascii");
+    header.fill(" ", 148, 156);
+    header.write("0", 156, 1, "ascii");
+    header.write("ustar\0", 257, 6, "ascii");
+    header.write("00", 263, 2, "ascii");
+    let checksum = 0;
+    for (const byte of header) {
+      checksum += byte;
+    }
+    header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
+    chunks.push(header, content);
+    const padding = 512 - (content.length % 512 || 512);
+    if (padding > 0) {
+      chunks.push(Buffer.alloc(padding));
+    }
+  }
+  chunks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(chunks));
 }
 
 class FakeWriteStream implements ModalWriteStreamLike<string | Uint8Array> {
