@@ -135,7 +135,7 @@ interface FileState {
   hash?: string;
   mode: number;
   target?: string;
-  type: "file" | "symlink";
+  type: "directory" | "file" | "symlink";
 }
 
 interface GeneratedSeedFile {
@@ -530,8 +530,12 @@ export function syncWorkspace(options: { baselineDir: string; resultDir: string;
   const allPaths = new Set([...baseline.keys(), ...result.keys()]);
   const changed: string[] = [];
   const conflicts: string[] = [];
+  const replacedAncestors = new Set<string>();
 
   for (const relPath of [...allPaths].sort()) {
+    if (hasReplacedAncestor(relPath, replacedAncestors)) {
+      continue;
+    }
     const before = baseline.get(relPath);
     const after = result.get(relPath);
     if (sameState(before, after)) {
@@ -560,17 +564,30 @@ export function syncWorkspace(options: { baselineDir: string; resultDir: string;
         rmSync(localPath, { force: true, recursive: true });
       }
       changed.push(relPath);
+      if (before?.type === "directory") {
+        replacedAncestors.add(relPath);
+      }
       continue;
     }
     mkdirSync(dirname(localPath), { recursive: true });
-    if (after.type === "symlink") {
+    if (after.type === "directory") {
+      if (local?.type !== "directory") {
+        removePathIfPresent(localPath);
+      }
+      mkdirSync(localPath, { recursive: true, mode: after.mode });
+      chmodSync(localPath, after.mode);
+    } else if (after.type === "symlink") {
       removePathIfPresent(localPath);
       symlinkSync(after.target ?? "", localPath);
     } else {
+      removePathIfPresent(localPath);
       copyFileSync(join(options.resultDir, relPath), localPath);
       chmodSync(localPath, after.mode);
     }
     changed.push(relPath);
+    if (before?.type === "directory" && after.type !== "directory") {
+      replacedAncestors.add(relPath);
+    }
   }
 
   return { changed, conflicts };
@@ -578,12 +595,20 @@ export function syncWorkspace(options: { baselineDir: string; resultDir: string;
 
 function snapshotTree(root: string): Map<string, FileState> {
   const result = new Map<string, FileState>();
-  for (const relPath of listFilesRecursive(root)) {
-    const state = snapshotPath(root, relPath);
-    if (state) {
-      result.set(relPath, state);
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      const relPath = normalizeRelative(root, path);
+      const state = snapshotPath(root, relPath);
+      if (state) {
+        result.set(relPath, state);
+      }
+      if (entry.isDirectory()) {
+        walk(path);
+      }
     }
-  }
+  };
+  walk(root);
   return result;
 }
 
@@ -601,6 +626,9 @@ function snapshotPath(root: string, relPath: string): FileState | undefined {
   const mode = stat.mode & 0o777;
   if (stat.isSymbolicLink()) {
     return { mode, target: readlinkText(path), type: "symlink" };
+  }
+  if (stat.isDirectory()) {
+    return { mode, type: "directory" };
   }
   if (!stat.isFile()) {
     return undefined;
@@ -626,6 +654,17 @@ function removePathIfPresent(path: string): void {
     return;
   }
   rmSync(path, { force: true, recursive: true });
+}
+
+function hasReplacedAncestor(relPath: string, ancestors: Set<string>): boolean {
+  let parent = dirname(relPath).split("\\").join("/");
+  while (parent && parent !== ".") {
+    if (ancestors.has(parent)) {
+      return true;
+    }
+    parent = dirname(parent).split("\\").join("/");
+  }
+  return false;
 }
 
 function normalizeRelative(root: string, path: string): string {

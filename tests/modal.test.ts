@@ -116,6 +116,29 @@ test("syncWorkspace applies remote changes under generated directories", () => {
   }
 });
 
+test("syncWorkspace replaces a baseline directory with a remote file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-sync-dir-file-"));
+  try {
+    const baseline = join(dir, "baseline");
+    const result = join(dir, "result");
+    const work = join(dir, "work");
+    mkdirSync(join(baseline, "config"), { recursive: true });
+    mkdirSync(result);
+    mkdirSync(join(work, "config"), { recursive: true });
+    writeFileSync(join(baseline, "config", "old.json"), "{}\n");
+    writeFileSync(join(result, "config"), "remote config\n");
+    writeFileSync(join(work, "config", "old.json"), "{}\n");
+
+    const sync = syncWorkspace({ baselineDir: baseline, resultDir: result, workDir: work });
+
+    assert.deepEqual(sync.changed, ["config"]);
+    assert.deepEqual(sync.conflicts, []);
+    assert.equal(readFileSync(join(work, "config"), "utf8"), "remote config\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent runs through a Modal client and syncs results back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-exec-"));
   try {
