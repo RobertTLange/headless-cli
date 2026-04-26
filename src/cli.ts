@@ -29,6 +29,15 @@ import {
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
 } from "./docker.js";
+import {
+  buildModalRunSummary,
+  DEFAULT_MODAL_APP,
+  DEFAULT_MODAL_CPU,
+  DEFAULT_MODAL_IMAGE,
+  DEFAULT_MODAL_MEMORY_MIB,
+  DEFAULT_MODAL_TIMEOUT_SECONDS,
+  executeModalAgent,
+} from "./modal.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env } from "./types.js";
@@ -51,6 +60,16 @@ interface ParsedArgs {
   dockerImage?: string;
   dockerArgs: string[];
   dockerEnv: string[];
+  modal: boolean;
+  modalApp?: string;
+  modalCpu?: number;
+  modalEnv: string[];
+  modalImage?: string;
+  modalImageSecret?: string;
+  modalIncludeGit: boolean;
+  modalMemoryMiB?: number;
+  modalSecrets: string[];
+  modalTimeoutSeconds?: number;
   json: boolean;
   debug: boolean;
   printCommand: boolean;
@@ -96,6 +115,16 @@ function usage(): string {
     "  --docker-image <img> Docker image. Defaults to ghcr.io/roberttlange/headless:latest.",
     "  --docker-arg <arg>   Extra docker run argument. Repeat for multiple args.",
     "  --docker-env <env>   Pass env into Docker as NAME or NAME=value. Repeatable.",
+    "  --modal              Run the agent in a Modal CPU sandbox.",
+    "  --modal-image <img>  Modal sandbox image. Defaults to ghcr.io/roberttlange/headless:latest.",
+    "  --modal-image-secret <nm> Modal Secret for private registry image pulls.",
+    "  --modal-app <name>   Modal app name. Defaults to headless-cli.",
+    "  --modal-cpu <n>      Modal CPU reservation. Defaults to 2.",
+    "  --modal-memory <mb>  Modal memory reservation in MiB. Defaults to 4096.",
+    "  --modal-timeout <s>  Modal sandbox and command timeout. Defaults to 3600.",
+    "  --modal-secret <nm>  Inject a named Modal Secret. Repeatable.",
+    "  --modal-env <env>    Pass env into Modal as NAME or NAME=value. Repeatable.",
+    "  --modal-include-git Include .git metadata in Modal uploads.",
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
     "  --tmux               Launch an interactive agent in a tmux session.",
@@ -122,6 +151,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     docker: false,
     dockerArgs: [],
     dockerEnv: [],
+    modal: false,
+    modalEnv: [],
+    modalIncludeGit: false,
+    modalSecrets: [],
     json: false,
     debug: false,
     printCommand: false,
@@ -193,6 +226,36 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--docker-env":
         parsed.dockerEnv.push(parseDockerEnv(takeValue(args, arg)));
+        break;
+      case "--modal":
+        parsed.modal = true;
+        break;
+      case "--modal-app":
+        parsed.modalApp = takeValue(args, arg);
+        break;
+      case "--modal-cpu":
+        parsed.modalCpu = parsePositiveNumber(takeValue(args, arg), arg);
+        break;
+      case "--modal-env":
+        parsed.modalEnv.push(parseModalEnv(takeValue(args, arg)));
+        break;
+      case "--modal-image":
+        parsed.modalImage = takeValue(args, arg);
+        break;
+      case "--modal-image-secret":
+        parsed.modalImageSecret = parseModalSecret(takeValue(args, arg));
+        break;
+      case "--modal-include-git":
+        parsed.modalIncludeGit = true;
+        break;
+      case "--modal-memory":
+        parsed.modalMemoryMiB = parsePositiveInteger(takeValue(args, arg), arg);
+        break;
+      case "--modal-secret":
+        parsed.modalSecrets.push(parseModalSecret(takeValue(args, arg)));
+        break;
+      case "--modal-timeout":
+        parsed.modalTimeoutSeconds = parsePositiveInteger(takeValue(args, arg), arg);
         break;
       case "--name":
         parsed.tmuxName = takeValue(args, arg);
@@ -266,11 +329,42 @@ function parseAllowMode(value: string): AllowMode {
 }
 
 function parseDockerEnv(value: string): string {
+  return parseForwardedEnv(value, "docker");
+}
+
+function parseModalEnv(value: string): string {
+  return parseForwardedEnv(value, "modal");
+}
+
+function parseForwardedEnv(value: string, label: string): string {
   const name = value.includes("=") ? value.slice(0, value.indexOf("=")) : value;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    throw new CliError(`invalid docker env: ${value}`);
+    throw new CliError(`invalid ${label} env: ${value}`);
   }
   return value;
+}
+
+function parseModalSecret(value: string): string {
+  if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
+    throw new CliError(`invalid modal secret: ${value}`);
+  }
+  return value;
+}
+
+function parsePositiveNumber(value: string, flag: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new CliError(`${flag} must be a positive number`);
+  }
+  return parsed;
+}
+
+function parsePositiveInteger(value: string, flag: string | undefined): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0 || String(parsed) !== value) {
+    throw new CliError(`${flag} must be a positive integer`);
+  }
+  return parsed;
 }
 
 function parseDockerCommand(value: string | undefined): "build" | "doctor" {
@@ -278,6 +372,20 @@ function parseDockerCommand(value: string | undefined): "build" | "doctor" {
     return value;
   }
   throw new CliError("missing docker command; use docker doctor or docker build");
+}
+
+function hasModalOptions(parsed: ParsedArgs): boolean {
+  return (
+    parsed.modalApp !== undefined ||
+    parsed.modalCpu !== undefined ||
+    parsed.modalEnv.length > 0 ||
+    parsed.modalImage !== undefined ||
+    parsed.modalImageSecret !== undefined ||
+    parsed.modalIncludeGit ||
+    parsed.modalMemoryMiB !== undefined ||
+    parsed.modalSecrets.length > 0 ||
+    parsed.modalTimeoutSeconds !== undefined
+  );
 }
 
 function renderConfig(agent: AgentName): string {
@@ -930,6 +1038,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.docker || parsed.dockerArgs.length > 0 || parsed.dockerEnv.length > 0) {
         throw new CliError(`--docker, --docker-arg, and --docker-env cannot be used with docker ${parsed.dockerCommand}`);
       }
+      if (parsed.modal || hasModalOptions(parsed)) {
+        throw new CliError(`--modal and --modal-* cannot be used with docker ${parsed.dockerCommand}`);
+      }
       if (parsed.tmux || parsed.json || parsed.debug || parsed.list || parsed.check || parsed.showConfig) {
         throw new CliError(`unsupported option for docker ${parsed.dockerCommand}`);
       }
@@ -956,6 +1067,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.rename) {
       if (parsed.docker) {
         throw new CliError("--docker cannot be used with rename");
+      }
+      if (parsed.modal) {
+        throw new CliError("--modal cannot be used with rename");
       }
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with rename");
@@ -990,6 +1104,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.send) {
       if (parsed.docker) {
         throw new CliError("--docker cannot be used with send");
+      }
+      if (parsed.modal) {
+        throw new CliError("--modal cannot be used with send");
       }
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with send");
@@ -1029,6 +1146,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.list && parsed.docker) {
       throw new CliError("--docker cannot be used with --list");
     }
+    if (parsed.list && parsed.modal) {
+      throw new CliError("--modal cannot be used with --list");
+    }
     if (parsed.list) {
       stdout(await listHeadlessTmuxSessions(parsed.agent, env));
       return 0;
@@ -1039,11 +1159,20 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     ) {
       throw new CliError("--docker-image, --docker-arg, and --docker-env require --docker");
     }
+    if (!parsed.modal && hasModalOptions(parsed)) {
+      throw new CliError("--modal-* options require --modal");
+    }
+    if (parsed.docker && parsed.modal) {
+      throw new CliError("--docker cannot be used with --modal");
+    }
     if (!parsed.agent) {
-      parsed.agent = parsed.docker ? autoAgentPreference[0] : selectDefaultAgent(env);
+      parsed.agent = parsed.docker || parsed.modal ? autoAgentPreference[0] : selectDefaultAgent(env);
     }
     if (parsed.tmux && parsed.docker) {
       throw new CliError("--docker cannot be used with --tmux");
+    }
+    if (parsed.tmux && parsed.modal) {
+      throw new CliError("--modal cannot be used with --tmux");
     }
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
@@ -1124,7 +1253,20 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     if (parsed.printCommand) {
-      stdout(`${quoteCommand(command)}\n`);
+      const printableCommand = parsed.modal
+        ? buildModalRunSummary({
+            appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
+            command,
+            cpu: parsed.modalCpu ?? DEFAULT_MODAL_CPU,
+            image: parsed.modalImage ?? DEFAULT_MODAL_IMAGE,
+            imageSecret: parsed.modalImageSecret,
+            memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
+            modalSecrets: parsed.modalSecrets,
+            timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
+            workDir: cwd ?? process.cwd(),
+          })
+        : command;
+      stdout(`${quoteCommand(printableCommand)}\n`);
       return 0;
     }
     if (parsed.docker && !commandExists("docker", env)) {
@@ -1136,10 +1278,34 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       : parsed.debug
         ? "capture-and-stream"
         : "capture";
-    const result = await executeCommand(parsed.agent, command, cwd, env, stderr, {
-      stdout,
-      stdoutHandling,
-    });
+    const result = parsed.modal
+      ? await executeModalAgent({
+          agent: parsed.agent,
+          appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
+          command,
+          cpu: parsed.modalCpu ?? DEFAULT_MODAL_CPU,
+          env,
+          image: parsed.modalImage ?? DEFAULT_MODAL_IMAGE,
+          imageSecret: parsed.modalImageSecret,
+          includeGit: parsed.modalIncludeGit,
+          memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
+          modalEnv: parsed.modalEnv,
+          modalSecrets: parsed.modalSecrets,
+          stderr: (text) => {
+            const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
+            if (filtered) {
+              stderr(filtered);
+            }
+          },
+          stdout,
+          stdoutHandling,
+          timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
+          workDir: cwd ?? process.cwd(),
+        })
+      : await executeCommand(parsed.agent, command, cwd, env, stderr, {
+          stdout,
+          stdoutHandling,
+        });
     if (parsed.json) {
       return result.code;
     }

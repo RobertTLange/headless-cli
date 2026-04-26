@@ -53,6 +53,8 @@ headless codex --prompt "Fix the failing tests" --debug
 headless codex --prompt "Fix the failing tests" --tmux
 # Run the agent inside the default Docker image.
 headless codex --prompt "Fix the failing tests" --docker
+# Run the agent in a Modal CPU sandbox and sync edits back.
+headless codex --prompt "Fix the failing tests" --modal --modal-secret openai
 # Check Docker setup and image availability.
 headless docker doctor
 # Restrict tool permissions to read-only actions.
@@ -87,7 +89,7 @@ By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--
 By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
-## 5 Execution Modes
+## 6 Execution Modes
 
 ### 1) Raw mode (default)
 
@@ -173,6 +175,27 @@ headless rename headless-codex-12345 work
 headless send headless-codex-work --prompt "Run the focused tests now"
 ```
 
+### 6) Modal mode (`--modal`)
+
+Modal mode runs one-shot headless execution in a CPU Modal Sandbox. It uploads the target workdir, runs the selected agent in `ghcr.io/roberttlange/headless:latest` by default, downloads the remote workspace afterward, and applies changed files back locally when the local copy has not changed since upload.
+
+```bash
+headless codex --prompt "Fix the failing tests" --modal
+headless claude --prompt-file task.md --work-dir /path/to/project --modal --modal-secret anthropic
+headless pi --prompt "Summarize this repo" --modal --modal-cpu 4 --modal-memory 8192
+```
+
+Use `--modal-env NAME` to pass one extra host environment variable, `--modal-env NAME=value` to set one inline value, and repeat `--modal-secret <name>` to inject named Modal Secrets. Modal authentication uses the standard Modal SDK configuration, either `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or `~/.modal.toml`.
+
+```bash
+headless codex --prompt "Use the private provider" --modal --modal-env OPENROUTER_API_KEY
+headless gemini --prompt "Inspect this repo" --modal --modal-secret gemini
+```
+
+Modal mode requires a git workdir. By default, it uploads tracked and untracked non-ignored git files, without `.git`. Pass `--modal-include-git` when the remote agent needs repository metadata. Ignored files remain excluded. If a local file changes while the sandbox is running, Headless skips that path during sync-back and reports the conflict instead of overwriting local edits.
+
+Modal mode is only for headless execution. It cannot be combined with `--docker`, `--tmux`, `send`, `rename`, or `--list`.
+
 ## CLI Reference
 
 ```bash
@@ -194,6 +217,16 @@ Options:
 - `--docker-image`: Docker image override. Defaults to `ghcr.io/roberttlange/headless:latest`.
 - `--docker-arg`: extra `docker run` argument. Repeat for multiple args.
 - `--docker-env`: pass env into Docker as `NAME` or `NAME=value`. Repeatable.
+- `--modal`: run the agent in a Modal CPU sandbox for one-shot headless execution.
+- `--modal-image`: Modal sandbox image override. Defaults to `ghcr.io/roberttlange/headless:latest`.
+- `--modal-image-secret`: Modal Secret for private registry image pulls.
+- `--modal-app`: Modal app name. Defaults to `headless-cli`.
+- `--modal-cpu`: Modal CPU reservation. Defaults to `2`.
+- `--modal-memory`: Modal memory reservation in MiB. Defaults to `4096`.
+- `--modal-timeout`: Modal sandbox and command timeout in seconds. Defaults to `3600`.
+- `--modal-secret`: inject a named Modal Secret. Repeatable.
+- `--modal-env`: pass env into Modal as `NAME` or `NAME=value`. Repeatable.
+- `--modal-include-git`: include `.git` metadata in the uploaded workspace.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
@@ -220,7 +253,7 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 - `PI_CODING_AGENT_MODEL`: default Pi model when `--model` is omitted.
 - `PI_CODING_AGENT_MODELS`: passed to Pi as `--models`.
 
-Docker mode also passes common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` for anything else.
+Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.
 
 ## Development
 
@@ -240,6 +273,7 @@ npm run check
 src/cli.ts      CLI parsing, validation, execution
 src/agents.ts   Agent registry and command builders
 src/output.ts   Final-message extraction from agent JSON traces
+src/modal.ts    Modal sandbox execution and workspace sync
 src/shell.ts    Shell-safe dry-run rendering
 src/types.ts    Shared TypeScript contracts
 tests/          CLI and command-builder coverage
