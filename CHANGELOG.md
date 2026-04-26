@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-04-26
 
-- Added Modal CPU sandbox execution with workspace upload, sync-back, resource flags, env forwarding, and named Modal Secret support. Thanks @RobertTLange for PR #4.
+- Added normalized `--reasoning-effort low|medium|high|xhigh` support across Claude, Codex, OpenCode one-shot, and Pi, with warnings for unsupported agent modes.
+- Added managed named tmux sessions, tmux session state reporting, and `headless send` for sending follow-up prompts to existing sessions.
 - Added Docker execution mode, Docker setup checks, local image builds, and packaged Docker image support. Thanks @RobertTLange for PR #3.
+- Added Modal CPU sandbox execution with workspace upload, sync-back, resource flags, env forwarding, and named Modal Secret support. Thanks @RobertTLange for PR #4.
+- Changed Codex command building to leave model selection to the Codex CLI when `--model` and `CODEX_MODEL` are unset.
+- Fixed Docker credential mounting, Docker image metadata, Modal credential seeding, Modal workspace upload scope, Modal sync-back conflict handling, and Modal archive extraction hardening.
+- Fixed default agent permission behavior so backend adapters default consistently to yolo/auto-approve mode.
 
 ## 0.1.1 - 2026-04-24
 
