@@ -14,7 +14,7 @@
   <img alt="npm package" src="https://img.shields.io/badge/npm-%40roberttlange%2Fheadless-CB3837?logo=npm&logoColor=white" />
 </p>
 
-Headless normalizes the small but annoying differences between coding-agent CLIs. It gives each agent the same prompt, model, workdir, dry-run, and config-inspection interface while preserving the native command flags needed for non-interactive execution.
+Headless normalizes the small but annoying differences between coding-agent CLIs. It gives each agent the same prompt, model, reasoning-effort, workdir, dry-run, and config-inspection interface while preserving the native command flags needed for non-interactive execution.
 Pass `--tmux` when you want the same prompt launched in an interactive agent session instead.
 
 ## Quick Start
@@ -38,7 +38,9 @@ headless codex --prompt "Hello world"
 # Use default configured provider with an inline prompt.
 headless --prompt "Inspect this repository"
 # Run Codex with an explicit model override.
-headless codex --prompt "Run the tests and fix failures" --model gpt-5.2
+headless codex --prompt "Run the tests and fix failures" --model gpt-5
+# Run with a normalized reasoning effort where the selected agent supports it.
+headless codex --prompt "Plan the migration" --reasoning-effort high
 # Load prompt from file and target another repo path.
 headless claude --prompt-file prompt.md --work-dir /path/to/project
 # Print resolved OpenCode adapter configuration and exit.
@@ -85,6 +87,7 @@ printf "Review this diff" | headless pi --model claude-opus
 | `pi` | `pi --no-session --mode json --tools read,bash,edit,write ...` |
 
 By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only/planning mode where available.
+Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot agent command. In tmux mode, Claude, Codex, and Pi receive their interactive effort flags. Cursor, Gemini, and OpenCode tmux currently do not expose stable per-run reasoning-effort flags through their CLIs, so Headless accepts the option for them, leaves the command unchanged, and prints a warning.
 
 By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
@@ -211,6 +214,7 @@ Options:
 - `--prompt`, `-p`: prompt text.
 - `--prompt-file`: read prompt from a file.
 - `--model`, `--agent-model`: model override passed to the agent CLI.
+- `--reasoning-effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
 - `--allow`: permission mode, either `read-only` or `yolo`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
@@ -245,7 +249,7 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 
 ## Environment
 
-- `CODEX_MODEL`: default Codex model when `--model` is omitted. Falls back to `gpt-5.2`.
+- `CODEX_MODEL`: default Codex model when `--model` is omitted. When unset, Headless leaves model selection to the Codex CLI.
 - `CURSOR_CLI_BIN`: Cursor CLI binary override. Defaults to `agent`.
 - `CURSOR_API_KEY`: passed to Cursor as `--api-key`.
 - `PI_CODING_AGENT_BIN`: Pi CLI binary override. Defaults to `pi`.

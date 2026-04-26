@@ -40,7 +40,7 @@ import {
 } from "./modal.js";
 import { extractFinalMessage } from "./output.js";
 import { quoteCommand } from "./shell.js";
-import type { AgentName, AllowMode, BuiltCommand, Env } from "./types.js";
+import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
   send: boolean;
@@ -53,6 +53,7 @@ interface ParsedArgs {
   prompt?: string;
   promptFile?: string;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   allow?: AllowMode;
   workDir?: string;
   tmuxName?: string;
@@ -107,6 +108,7 @@ function usage(): string {
     "",
     "Options:",
     "  --model <name>        Agent model override.",
+    "  --reasoning-effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
@@ -207,6 +209,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--model":
       case "--agent-model":
         parsed.model = takeValue(args, arg);
+        break;
+      case "--reasoning-effort":
+        parsed.reasoningEffort = parseReasoningEffort(takeValue(args, arg));
         break;
       case "--allow":
         parsed.allow = parseAllowMode(takeValue(args, arg));
@@ -328,6 +333,13 @@ function parseAllowMode(value: string): AllowMode {
   throw new CliError(`unsupported allow mode: ${value}`);
 }
 
+function parseReasoningEffort(value: string): ReasoningEffort {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+    return value;
+  }
+  throw new CliError(`unsupported reasoning effort: ${value}`);
+}
+
 function parseDockerEnv(value: string): string {
   return parseForwardedEnv(value, "docker");
 }
@@ -365,6 +377,23 @@ function parsePositiveInteger(value: string, flag: string | undefined): number {
     throw new CliError(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+function unsupportedReasoningEffortWarning(
+  agent: AgentName,
+  effort: ReasoningEffort | undefined,
+  mode: "headless" | "tmux",
+): string | undefined {
+  if (!effort) {
+    return undefined;
+  }
+  if (mode === "tmux" && agent === "opencode") {
+    return "headless: reasoning effort is not supported by opencode in tmux mode and was ignored\n";
+  }
+  if (agent === "cursor" || agent === "gemini") {
+    return `headless: reasoning effort is not supported by ${agent} and was ignored\n`;
+  }
+  return undefined;
 }
 
 function parseDockerCommand(value: string | undefined): "build" | "doctor" {
@@ -1201,9 +1230,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           prompt: prompt.prompt,
           model: parsed.model,
           allow: parsed.allow,
+          reasoningEffort: parsed.reasoningEffort,
         },
         env,
       );
+      const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, parsed.reasoningEffort, "tmux");
+      if (reasoningWarning) {
+        stderr(reasoningWarning);
+      }
       const tmuxCommands = buildTmuxCommands(parsed.agent, tmuxCommand, prompt.prompt, cwd, env, parsed.tmuxName);
 
       if (parsed.printCommand) {
@@ -1236,9 +1270,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         promptFile: prompt.promptFile,
         model: parsed.model,
         allow: parsed.allow,
+        reasoningEffort: parsed.reasoningEffort,
       },
       env,
     );
+    const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, parsed.reasoningEffort, "headless");
+    if (reasoningWarning) {
+      stderr(reasoningWarning);
+    }
     if (parsed.docker) {
       command = buildDockerAgentCommand({
         agent: parsed.agent,

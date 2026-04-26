@@ -4,6 +4,8 @@ export type PromptFileMode = "argument" | "stdin";
 
 export type AllowMode = "read-only" | "yolo";
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
 export type Env = Record<string, string | undefined>;
 
 export interface BuildOptions {
@@ -11,6 +13,7 @@ export interface BuildOptions {
   promptFile?: string;
   model?: string;
   allow?: AllowMode;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface BuiltCommand {

@@ -1,4 +1,13 @@
-import type { AgentConfig, AgentHarness, AgentName, AllowMode, BuildOptions, BuiltCommand, Env } from "./types.js";
+import type {
+  AgentConfig,
+  AgentHarness,
+  AgentName,
+  AllowMode,
+  BuildOptions,
+  BuiltCommand,
+  Env,
+  ReasoningEffort,
+} from "./types.js";
 
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const opencodeReadOnlyConfig = JSON.stringify({
@@ -14,6 +23,10 @@ const opencodeReadOnlyConfig = JSON.stringify({
 
 function withModel(args: string[], model: string | undefined): string[] {
   return model ? [...args, "--model", model] : args;
+}
+
+function withClaudeEffort(args: string[], effort: ReasoningEffort | undefined): string[] {
+  return effort ? [...args, "--effort", effort] : args;
 }
 
 function withClaudeAllow(args: string[], allow: AllowMode | undefined): string[] {
@@ -51,24 +64,26 @@ function buildClaude(options: BuildOptions): BuiltCommand {
 
   if (options.promptFile) {
     args.push("--output-format", "stream-json", "--verbose");
+    args.push(...withClaudeEffort([], options.reasoningEffort));
     args.push(...withClaudeAllow([], options.allow));
     return { command: "claude", args, stdinFile: options.promptFile };
   }
 
   args.push(options.prompt, "--output-format", "stream-json", "--verbose");
+  args.push(...withClaudeEffort([], options.reasoningEffort));
   args.push(...withClaudeAllow([], options.allow));
   return { command: "claude", args };
 }
 
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL || "gpt-5.2";
+  const model = options.model || env.CODEX_MODEL;
   const args = [
     ...(options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
       : ["--dangerously-bypass-approvals-and-sandbox"]),
     "exec",
-    "--model",
-    model,
+    ...withModel([], model),
+    ...(options.reasoningEffort ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
     "--json",
     "--skip-git-repo-check",
   ];
@@ -91,6 +106,9 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : [];
   args.push(...withModel([], model));
+  if (options.reasoningEffort) {
+    args.push("-c", `model_reasoning_effort="${options.reasoningEffort}"`);
+  }
   args.push(options.prompt);
   return { command: "codex", args };
 }
@@ -160,6 +178,9 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
   if (options.model) {
     args.push("--model", options.model);
   }
+  if (options.reasoningEffort) {
+    args.push("--variant", options.reasoningEffort);
+  }
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--dangerously-skip-permissions");
   }
@@ -191,6 +212,9 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }
+  if (options.reasoningEffort) {
+    args.push("--thinking", options.reasoningEffort);
+  }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
   } else if (options.allow === "yolo" || options.allow === undefined) {
@@ -216,6 +240,9 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }
+  if (options.reasoningEffort) {
+    args.push("--thinking", options.reasoningEffort);
+  }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
   } else if (options.allow === "yolo" || options.allow === undefined) {
@@ -236,6 +263,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     buildCommand: buildClaude,
     buildInteractiveCommand: (options) => {
       const args = withModel([], options.model);
+      args.push(...withClaudeEffort([], options.reasoningEffort));
       args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);
       return { command: "claude", args };

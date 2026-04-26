@@ -24,8 +24,6 @@ test("builds read-only commands for supported agents", () => {
       "--ask-for-approval",
       "never",
       "exec",
-      "--model",
-      "gpt-5.2",
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -67,8 +65,6 @@ test("builds explicit yolo commands for supported agents", () => {
   assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", allow: "yolo" }, {}).args, [
     "--dangerously-bypass-approvals-and-sandbox",
     "exec",
-    "--model",
-    "gpt-5.2",
     "--json",
     "--skip-git-repo-check",
     "-",
@@ -172,6 +168,16 @@ test("CLI rejects invalid allow mode", async () => {
   assert.match(stderr.join(""), /unsupported allow mode: maybe/);
 });
 
+test("CLI rejects invalid reasoning effort", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["codex", "--reasoning-effort", "max", "--prompt", "hello"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /unsupported reasoning effort: max/);
+});
+
 test("CLI print-command includes allow mode flags", async () => {
   const stdout: string[] = [];
   const code = await runCli(["gemini", "--allow", "read-only", "--prompt", "hello", "--print-command"], {
@@ -180,6 +186,65 @@ test("CLI print-command includes allow mode flags", async () => {
 
   assert.equal(code, 0);
   assert.equal(stdout.join(""), "gemini -p hello --output-format stream-json --approval-mode plan\n");
+});
+
+test("CLI print-command includes reasoning effort flags", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["codex", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /-c 'model_reasoning_effort="high"'/);
+});
+
+test("CLI warns when reasoning effort is unsupported", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runCli(["cursor", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.join(""), "agent -p --force --output-format stream-json hello\n");
+  assert.match(stderr.join(""), /reasoning effort is not supported by cursor and was ignored/);
+});
+
+test("CLI warns when Gemini reasoning effort is unsupported", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runCli(["gemini", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.join(""), "gemini -p hello --output-format stream-json --approval-mode yolo\n");
+  assert.match(stderr.join(""), /reasoning effort is not supported by gemini and was ignored/);
+});
+
+test("CLI tmux print-command includes reasoning effort flags", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["codex", "--tmux", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /codex .* -c '\\''model_reasoning_effort="high"'\\'' hello/);
+});
+
+test("CLI tmux warns when reasoning effort is unsupported", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runCli(["opencode", "--tmux", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /opencode --dangerously-skip-permissions/);
+  assert.match(stderr.join(""), /reasoning effort is not supported by opencode in tmux mode and was ignored/);
 });
 
 test("CLI tmux print-command includes allow mode flags", async () => {
