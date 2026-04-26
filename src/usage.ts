@@ -59,6 +59,10 @@ function asNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function nonOverlappingInputTokens(inputTokens: number, cacheReadTokens: number, cacheWriteTokens = 0): number {
+  return Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+}
+
 function parseJsonValues(stdout: string): unknown[] {
   const values: unknown[] = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -135,11 +139,14 @@ function summarizeUsage(options: {
   cost?: UsageCostBreakdown | null;
   pricingSource?: UsageSummary["pricingSource"];
   pricingStatus?: UsageSummary["pricingStatus"];
+  reasoningOutputIncludedInOutput?: boolean;
   modelBreakdowns?: UsagePart[];
 }): UsageSummary {
   const cacheReadTokens = options.cacheReadTokens ?? 0;
   const cacheWriteTokens = options.cacheWriteTokens ?? 0;
   const reasoningOutputTokens = options.reasoningOutputTokens ?? 0;
+  const extraReasoningTokens = options.reasoningOutputIncludedInOutput === false ? reasoningOutputTokens : 0;
+  const totalTokens = options.inputTokens + cacheReadTokens + cacheWriteTokens + options.outputTokens + extraReasoningTokens;
   return {
     agent: options.agent,
     provider: options.provider ?? defaultProvider(options.agent) ?? null,
@@ -149,7 +156,7 @@ function summarizeUsage(options: {
     cacheWriteTokens,
     outputTokens: options.outputTokens,
     reasoningOutputTokens,
-    totalTokens: options.inputTokens + options.outputTokens,
+    totalTokens,
     cost: options.cost ?? null,
     pricingSource: options.pricingSource ?? null,
     pricingStatus: options.pricingStatus ?? "missing",
@@ -212,12 +219,13 @@ function extractCodexUsage(records: JsonRecord[], context: { provider?: string; 
   if (!record) return undefined;
   const usage = asRecord(record.usage);
   const requested = requestedProviderModel(context);
+  const cacheReadTokens = asNumber(usage.cached_input_tokens);
   return summarizeUsage({
     agent: "codex",
     provider: requested.provider ?? "openai",
     model: extractModel(records, context),
-    inputTokens: asNumber(usage.input_tokens),
-    cacheReadTokens: asNumber(usage.cached_input_tokens),
+    inputTokens: nonOverlappingInputTokens(asNumber(usage.input_tokens), cacheReadTokens),
+    cacheReadTokens,
     outputTokens: asNumber(usage.output_tokens),
     reasoningOutputTokens: asNumber(usage.reasoning_output_tokens),
   });
@@ -246,11 +254,12 @@ function extractGeminiUsage(records: JsonRecord[], context: { provider?: string;
   const modelEntries = Object.entries(models)
     .map(([model, value]) => {
       const usage = asRecord(value);
+      const cacheReadTokens = asNumber(usage.cached);
       return {
         provider: "google",
         model,
-        inputTokens: asNumber(usage.input_tokens),
-        cacheReadTokens: asNumber(usage.cached),
+        inputTokens: nonOverlappingInputTokens(asNumber(usage.input_tokens), cacheReadTokens),
+        cacheReadTokens,
         cacheWriteTokens: 0,
         outputTokens: asNumber(usage.output_tokens),
       };
@@ -269,12 +278,13 @@ function extractGeminiUsage(records: JsonRecord[], context: { provider?: string;
     });
   }
 
+  const cacheReadTokens = asNumber(stats.cached);
   return summarizeUsage({
     agent: "gemini",
     provider: "google",
     model: extractModel(records, context),
-    inputTokens: asNumber(stats.input_tokens ?? stats.input),
-    cacheReadTokens: asNumber(stats.cached),
+    inputTokens: nonOverlappingInputTokens(asNumber(stats.input_tokens ?? stats.input), cacheReadTokens),
+    cacheReadTokens,
     outputTokens: asNumber(stats.output_tokens),
   });
 }
@@ -296,6 +306,7 @@ function extractOpencodeUsage(records: JsonRecord[], context: { provider?: strin
     cacheWriteTokens: asNumber(cache.write),
     outputTokens: asNumber(tokens.output),
     reasoningOutputTokens: asNumber(tokens.reasoning),
+    reasoningOutputIncludedInOutput: false,
     cost: totalCost > 0 ? nativeCost(totalCost) : null,
     pricingSource: totalCost > 0 ? "native" : null,
     pricingStatus: totalCost > 0 ? "native" : "missing",

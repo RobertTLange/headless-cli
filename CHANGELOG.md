@@ -3,7 +3,7 @@
 ## 0.2.0 - 2026-04-26
 
 - Added normalized `--reasoning-effort low|medium|high|xhigh` support across Claude, Codex, OpenCode one-shot, and Pi, with warnings for unsupported agent modes.
-- Added `--usage` accounting for one-shot runs, with normalized token counts and native or models.dev-backed cost summaries across all six agents.
+- Added `--usage` accounting for one-shot runs, with normalized token counts and native or models.dev-backed cost summaries across all six agents. Thanks @RobertTLange for PR #5.
 - Added Headless default models for omitted `--model` values: Codex uses `gpt-5.5`, and Claude uses `claude-opus-4-6`.
 - Added managed named tmux sessions, tmux session state reporting, and `headless send` for sending follow-up prompts to existing sessions.
 - Added Docker execution mode, Docker setup checks, local image builds, and packaged Docker image support. Thanks @RobertTLange for PR #3.

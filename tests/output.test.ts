@@ -165,18 +165,18 @@ test("extracts Codex usage from turn completed trace and prices with models.dev 
     agent: "codex",
     provider: "openai",
     model: "gpt-5",
-    inputTokens: 1000,
+    inputTokens: 600,
     cacheReadTokens: 400,
     cacheWriteTokens: 0,
     outputTokens: 100,
     reasoningOutputTokens: 25,
     totalTokens: 1100,
     cost: {
-      input: 0.00125,
+      input: 0.00075,
       cacheRead: 0.00005,
       cacheWrite: 0,
       output: 0.001,
-      total: 0.0023,
+      total: 0.0018,
     },
     pricingSource: "models.dev",
     pricingStatus: "priced",
@@ -213,7 +213,7 @@ test("extracts Claude usage and preserves native cost", () => {
     cacheWriteTokens: 29231,
     outputTokens: 8,
     reasoningOutputTokens: 0,
-    totalTokens: 11,
+    totalTokens: 29242,
     cost: {
       input: null,
       cacheRead: null,
@@ -304,17 +304,17 @@ test("extracts Gemini multi-model usage and sums priced costs", () => {
 
   const summary = priceUsageSummary(extractUsageSummary("gemini", trace), pricingFixture());
 
-  assert.equal(summary.inputTokens, 3000);
+  assert.equal(summary.inputTokens, 2800);
   assert.equal(summary.cacheReadTokens, 200);
   assert.equal(summary.outputTokens, 44);
   assert.equal(summary.provider, "google");
   assert.equal(summary.model, "mixed");
   assert.deepEqual(summary.cost, {
-    input: 0.0011,
+    input: 0.00108,
     cacheRead: 0.000005,
     cacheWrite: 0,
     output: 0.000028,
-    total: 0.001133,
+    total: 0.001113,
   });
   assert.equal(summary.pricingStatus, "priced");
 });
@@ -338,6 +338,7 @@ test("extracts OpenCode native usage cost", () => {
   assert.equal(summary.inputTokens, 15777);
   assert.equal(summary.outputTokens, 24);
   assert.equal(summary.reasoningOutputTokens, 192);
+  assert.equal(summary.totalTokens, 15993);
   assert.deepEqual(summary.cost, {
     input: null,
     cacheRead: null,
@@ -380,7 +381,7 @@ test("extracts Pi usage and native cost", () => {
     cacheWriteTokens: 20,
     outputTokens: 7,
     reasoningOutputTokens: 0,
-    totalTokens: 2317,
+    totalTokens: 2347,
     cost: {
       input: 0.01155,
       output: 0.000175,
