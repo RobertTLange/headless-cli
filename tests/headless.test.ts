@@ -1492,3 +1492,27 @@ test("CLI entrypoint runs when invoked as a script", () => {
   assert.equal(run.status, 0);
   assert.match(run.stdout, /Usage: headless \[agent\]/);
 });
+
+test("CLI help lists all Modal options", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["--help"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  const help = stdout.join("");
+  for (const flag of [
+    "--modal",
+    "--modal-image",
+    "--modal-image-secret",
+    "--modal-app",
+    "--modal-cpu",
+    "--modal-memory",
+    "--modal-timeout",
+    "--modal-secret",
+    "--modal-env",
+    "--modal-include-git",
+  ]) {
+    assert.match(help, new RegExp(flag));
+  }
+});
