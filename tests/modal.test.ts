@@ -195,6 +195,61 @@ test("executeModalAgent runs through a Modal client and syncs results back", asy
   }
 });
 
+test("executeModalAgent seeds forwarded file-backed credentials", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-credentials-"));
+  try {
+    const home = join(dir, "home");
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    const googleCredentials = join(dir, "gcp.json");
+    mkdirSync(join(home, ".aws"), { recursive: true });
+    mkdirSync(work);
+    mkdirSync(remote);
+    writeFileSync(join(home, ".aws", "credentials"), "[default]\naws_access_key_id=test\n");
+    writeFileSync(googleCredentials, "{}\n");
+    writeFileSync(join(work, "input.txt"), "local");
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+
+    await executeModalAgent({
+      agent: "codex",
+      appName: "headless-test",
+      command: { command: "codex", args: ["exec", "--json", "-"], stdinText: "prompt" },
+      cpu: DEFAULT_MODAL_CPU,
+      env: {
+        AWS_PROFILE: "default",
+        GOOGLE_APPLICATION_CREDENTIALS: googleCredentials,
+        HOME: home,
+        OPENAI_API_KEY: "sk-test",
+      },
+      image: DEFAULT_MODAL_IMAGE,
+      includeGit: false,
+      memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+      modalEnv: [],
+      modalSecrets: [],
+      stderr: () => {},
+      stdout: () => {},
+      stdoutHandling: "capture",
+      timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+      workDir: work,
+      clientFactory: async () => client,
+    });
+
+    assert.equal(
+      sandbox.createParams?.env?.GOOGLE_APPLICATION_CREDENTIALS,
+      "/home/node/.config/headless/google-application-credentials.json",
+    );
+    assert.equal(
+      sandbox.agentEnv?.GOOGLE_APPLICATION_CREDENTIALS,
+      "/home/node/.config/headless/google-application-credentials.json",
+    );
+    assert.equal(readFileSync(join(remote, "host-home", ".aws", "credentials"), "utf8"), "[default]\naws_access_key_id=test\n");
+    assert.equal(readFileSync(join(remote, "host-home", ".config", "headless", "google-application-credentials.json"), "utf8"), "{}\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent rejects unsafe result archive entries before local extraction", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-unsafe-archive-"));
   try {
@@ -284,6 +339,7 @@ class FakeModalClient implements ModalClientLike {
 
 class FakeSandbox implements ModalSandboxLike {
   agentCommand?: string[];
+  agentEnv?: Record<string, string>;
   agentStdin = "";
   commands: string[][] = [];
   createParams?: ModalSandboxCreateParams;
@@ -360,6 +416,7 @@ class FakeProcess implements ModalProcessLike<string | Uint8Array> {
     }
     if (this.command[0] === "sh") {
       this.sandbox.agentCommand = this.command;
+      this.sandbox.agentEnv = this.params?.env;
       this.sandbox.agentStdin = this.stdin.text;
       const workspace = this.mapPath("/workspace");
       writeFileSync(join(workspace, "input.txt"), "remote");

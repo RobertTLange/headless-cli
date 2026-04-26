@@ -33,6 +33,8 @@ export const DEFAULT_MODAL_TIMEOUT_SECONDS = 3600;
 const remoteWorkDir = "/workspace";
 const remoteHome = "/home/node";
 const remoteHostHome = "/tmp/headless-host-home";
+const remoteGoogleCredentialsRelPath = ".config/headless/google-application-credentials.json";
+const remoteGoogleCredentialsPath = `${remoteHome}/${remoteGoogleCredentialsRelPath}`;
 const localTarCommand = process.platform === "win32" ? "tar" : "/usr/bin/tar";
 const remoteTarCommand = "/usr/bin/tar";
 const sandboxUser = "node";
@@ -194,11 +196,24 @@ export function buildModalRunSummary(options: {
   };
 }
 
-export function collectModalEnv(env: Env, commandEnv: Env | undefined, explicitModalEnv: string[]): Record<string, string> {
+export function collectModalEnv(
+  env: Env,
+  commandEnv: Env | undefined,
+  explicitModalEnv: string[],
+  options: { workDir?: string } = {},
+): Record<string, string> {
   const result: Record<string, string> = {};
   for (const entry of collectForwardedEnvEntries(env, commandEnv, explicitModalEnv)) {
     if (entry.actualValue !== undefined) {
       result[entry.name] = entry.actualValue;
+    }
+  }
+  if (options.workDir && result.GOOGLE_APPLICATION_CREDENTIALS) {
+    const localPath = resolve(options.workDir, result.GOOGLE_APPLICATION_CREDENTIALS);
+    if (existsSync(localPath) && lstatSync(localPath).isFile()) {
+      result.GOOGLE_APPLICATION_CREDENTIALS = isWithin(options.workDir, localPath)
+        ? `${remoteWorkDir}/${normalizeRelative(options.workDir, localPath)}`
+        : remoteGoogleCredentialsPath;
     }
   }
   result.HOME = remoteHome;
@@ -208,7 +223,7 @@ export function collectModalEnv(env: Env, commandEnv: Env | undefined, explicitM
 export async function executeModalAgent(options: ExecuteModalOptions): Promise<ExecuteModalResult> {
   const workDir = realpathSync(options.workDir);
   const timeoutMs = options.timeoutSeconds * 1000;
-  const env = collectModalEnv(options.env, options.command.env, options.modalEnv);
+  const env = collectModalEnv(options.env, options.command.env, options.modalEnv, { workDir });
   const client = await (options.clientFactory ?? createModalClient)();
   const app = await client.apps.fromName(options.appName, { createIfMissing: true });
   const imageSecret = options.imageSecret ? await client.secrets.fromName(options.imageSecret) : undefined;
@@ -239,6 +254,11 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
     if (seedArchive.length > 0) {
       await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
       await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, seedArchive);
+    }
+    const credentialArchive = await createCredentialSeedArchive(options.env, options.command.env, options.modalEnv, workDir);
+    if (credentialArchive.length > 0) {
+      await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
+      await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, credentialArchive);
     }
 
     const runProcess = await sandbox.exec(
@@ -336,6 +356,44 @@ async function createAgentSeedArchive(agent: AgentName, env: Env): Promise<Uint8
   } finally {
     rmSync(seedDir, { force: true, recursive: true });
   }
+}
+
+async function createCredentialSeedArchive(
+  env: Env,
+  commandEnv: Env | undefined,
+  explicitModalEnv: string[],
+  workDir: string,
+): Promise<Uint8Array> {
+  const seedDir = mkdtempSync(join(tmpdir(), "headless-modal-credentials-"));
+  const paths: string[] = [];
+  try {
+    const awsProfile = forwardedEnvValue(env, commandEnv, explicitModalEnv, "AWS_PROFILE");
+    const awsDir = env.HOME ? join(env.HOME, ".aws") : undefined;
+    if (awsProfile && awsDir && existsSync(awsDir) && lstatSync(awsDir).isDirectory()) {
+      cpSync(awsDir, join(seedDir, ".aws"), { recursive: true, verbatimSymlinks: true });
+      paths.push(".aws");
+    }
+
+    const googleCredentials = forwardedEnvValue(env, commandEnv, explicitModalEnv, "GOOGLE_APPLICATION_CREDENTIALS");
+    if (googleCredentials) {
+      const googlePath = resolve(workDir, googleCredentials);
+      if (existsSync(googlePath) && lstatSync(googlePath).isFile() && !isWithin(workDir, googlePath)) {
+        const target = join(seedDir, remoteGoogleCredentialsRelPath);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(googlePath, target);
+        chmodSync(target, lstatSync(googlePath).mode & 0o777);
+        paths.push(remoteGoogleCredentialsRelPath);
+      }
+    }
+
+    return paths.length > 0 ? await runLocalTar(seedDir, paths) : new Uint8Array();
+  } finally {
+    rmSync(seedDir, { force: true, recursive: true });
+  }
+}
+
+function forwardedEnvValue(env: Env, commandEnv: Env | undefined, explicitEnv: string[], name: string): string | undefined {
+  return collectForwardedEnvEntries(env, commandEnv, explicitEnv).find((entry) => entry.name === name)?.actualValue;
 }
 
 function collectGeneratedSeedFiles(agent: AgentName, env: Env, selectedPaths: string[]): GeneratedSeedFile[] {
