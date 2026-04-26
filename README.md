@@ -192,7 +192,7 @@ headless codex --prompt "Use the private provider" --modal --modal-env OPENROUTE
 headless gemini --prompt "Inspect this repo" --modal --modal-secret gemini
 ```
 
-By default, Modal uploads tracked and untracked non-ignored git files, without `.git`. Pass `--modal-include-git` when the remote agent needs repository metadata. If a local file changes while the sandbox is running, Headless skips that path during sync-back and reports the conflict instead of overwriting local edits.
+Modal mode requires a git workdir. By default, it uploads tracked and untracked non-ignored git files, without `.git`. Pass `--modal-include-git` when the remote agent needs repository metadata. Ignored files remain excluded. If a local file changes while the sandbox is running, Headless skips that path during sync-back and reports the conflict instead of overwriting local edits.
 
 Modal mode is only for headless execution. It cannot be combined with `--docker`, `--tmux`, `send`, `rename`, or `--list`.
 

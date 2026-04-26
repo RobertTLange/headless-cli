@@ -147,6 +147,7 @@ test("executeModalAgent runs through a Modal client and syncs results back", asy
     const remote = join(dir, "remote");
     mkdirSync(work);
     mkdirSync(remote);
+    initGitWorkdir(work);
     writeFileSync(join(work, "input.txt"), "local");
     const sandbox = new FakeSandbox(remote);
     const client = new FakeModalClient(sandbox);
@@ -205,6 +206,7 @@ test("executeModalAgent seeds forwarded file-backed credentials", async () => {
     mkdirSync(join(home, ".aws"), { recursive: true });
     mkdirSync(work);
     mkdirSync(remote);
+    initGitWorkdir(work);
     writeFileSync(join(home, ".aws", "credentials"), "[default]\naws_access_key_id=test\n");
     writeFileSync(googleCredentials, "{}\n");
     writeFileSync(join(work, "input.txt"), "local");
@@ -250,6 +252,87 @@ test("executeModalAgent seeds forwarded file-backed credentials", async () => {
   }
 });
 
+test("executeModalAgent rejects non-git workdirs instead of recursively uploading everything", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-non-git-"));
+  try {
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    writeFileSync(join(work, ".env"), "SECRET=1\n");
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+
+    await assert.rejects(
+      () =>
+        executeModalAgent({
+          agent: "codex",
+          appName: "headless-test",
+          command: { command: "codex", args: ["exec", "--json", "-"], stdinText: "prompt" },
+          cpu: DEFAULT_MODAL_CPU,
+          env: { HOME: join(dir, "home"), OPENAI_API_KEY: "sk-test" },
+          image: DEFAULT_MODAL_IMAGE,
+          includeGit: false,
+          memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+          modalEnv: [],
+          modalSecrets: [],
+          stderr: () => {},
+          stdout: () => {},
+          stdoutHandling: "capture",
+          timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+          workDir: work,
+          clientFactory: async () => client,
+        }),
+      /Modal workspace upload requires a git workdir/,
+    );
+    assert.equal(existsSync(join(remote, "workspace", ".env")), false);
+    assert.equal(sandbox.terminated, true);
+    assert.equal(client.closed, true);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("executeModalAgent includeGit uploads git metadata without ignored files", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-include-git-"));
+  try {
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    writeFileSync(join(work, ".gitignore"), ".env\n");
+    writeFileSync(join(work, ".env"), "SECRET=1\n");
+    writeFileSync(join(work, "input.txt"), "local");
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+
+    await executeModalAgent({
+      agent: "codex",
+      appName: "headless-test",
+      command: { command: "codex", args: ["exec", "--json", "-"], stdinText: "prompt" },
+      cpu: DEFAULT_MODAL_CPU,
+      env: { HOME: join(dir, "home"), OPENAI_API_KEY: "sk-test" },
+      image: DEFAULT_MODAL_IMAGE,
+      includeGit: true,
+      memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+      modalEnv: [],
+      modalSecrets: [],
+      stderr: () => {},
+      stdout: () => {},
+      stdoutHandling: "capture",
+      timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+      workDir: work,
+      clientFactory: async () => client,
+    });
+
+    assert.equal(existsSync(join(remote, "workspace", ".git", "HEAD")), true);
+    assert.equal(existsSync(join(remote, "workspace", ".env")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent rejects unsafe result archive entries before local extraction", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-unsafe-archive-"));
   try {
@@ -257,6 +340,7 @@ test("executeModalAgent rejects unsafe result archive entries before local extra
     const remote = join(dir, "remote");
     mkdirSync(work);
     mkdirSync(remote);
+    initGitWorkdir(work);
     writeFileSync(join(work, "input.txt"), "local");
     const sandbox = new FakeSandbox(remote, {
       resultArchive: makeTarGz([{ content: "outside", name: "../../outside.txt" }]),
@@ -437,6 +521,11 @@ class FakeProcess implements ModalProcessLike<string | Uint8Array> {
 
 function isTarCommand(command: string): boolean {
   return command === "tar" || command === "/usr/bin/tar";
+}
+
+function initGitWorkdir(workDir: string): void {
+  const result = spawnSync("git", ["init"], { cwd: workDir, stdio: "ignore" });
+  assert.equal(result.status, 0);
 }
 
 function makeTarGz(entries: { content: string; name: string }[]): Uint8Array {

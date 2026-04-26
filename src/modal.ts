@@ -306,12 +306,11 @@ async function createModalClient(): Promise<ModalClientLike> {
 }
 
 async function createWorkspaceArchive(workDir: string, includeGit: boolean): Promise<Uint8Array> {
-  const files = includeGit ? listFilesRecursive(workDir) : await listGitFiles(workDir);
-  const selected =
-    files ??
-    listFilesRecursive(workDir, { ignoredDirs: new Set([".cache", "coverage", "dist", "node_modules"]) }).filter(
-      (path) => path !== ".git" && !path.startsWith(".git/"),
-    );
+  const files = await listGitFiles(workDir);
+  if (!files) {
+    throw new Error("Modal workspace upload requires a git workdir");
+  }
+  const selected = includeGit ? [...files, ...listGitMetadataFiles(workDir)] : files;
   return await runLocalTar(workDir, selected);
 }
 
@@ -456,6 +455,21 @@ function listFilesRecursive(root: string, options: { ignoredDirs?: Set<string> }
   };
   walk(root);
   return result.sort();
+}
+
+function listGitMetadataFiles(workDir: string): string[] {
+  const gitPath = join(workDir, ".git");
+  if (!existsSync(gitPath)) {
+    return [];
+  }
+  const stat = lstatSync(gitPath);
+  if (stat.isFile() || stat.isSymbolicLink()) {
+    return [".git"];
+  }
+  if (!stat.isDirectory()) {
+    return [];
+  }
+  return listFilesRecursive(gitPath).map((path) => `.git/${path}`);
 }
 
 async function runLocalTar(cwd: string, paths: string[]): Promise<Uint8Array> {
