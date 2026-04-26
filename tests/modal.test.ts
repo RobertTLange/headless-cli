@@ -140,6 +140,30 @@ test("syncWorkspace replaces a baseline directory with a remote file", () => {
   }
 });
 
+test("syncWorkspace does not delete local-only descendants when a remote directory is removed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-sync-local-descendant-"));
+  try {
+    const baseline = join(dir, "baseline");
+    const result = join(dir, "result");
+    const work = join(dir, "work");
+    mkdirSync(join(baseline, "config"), { recursive: true });
+    mkdirSync(result);
+    mkdirSync(join(work, "config"), { recursive: true });
+    writeFileSync(join(baseline, "config", "base.json"), "{}\n");
+    writeFileSync(join(work, "config", "base.json"), "{}\n");
+    writeFileSync(join(work, "config", "local.json"), "local\n");
+
+    const sync = syncWorkspace({ baselineDir: baseline, resultDir: result, workDir: work });
+
+    assert.deepEqual(sync.changed, []);
+    assert.deepEqual(sync.conflicts, ["config"]);
+    assert.equal(readFileSync(join(work, "config", "local.json"), "utf8"), "local\n");
+    assert.equal(readFileSync(join(work, "config", "base.json"), "utf8"), "{}\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent runs through a Modal client and syncs results back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-exec-"));
   try {

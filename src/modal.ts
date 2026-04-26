@@ -721,6 +721,7 @@ async function readBytes(stream: ModalReadStreamLike<Uint8Array>): Promise<Uint8
 export function syncWorkspace(options: { baselineDir: string; resultDir: string; workDir: string }): WorkspaceSyncResult {
   const baseline = snapshotTree(options.baselineDir);
   const result = snapshotTree(options.resultDir);
+  const localTree = snapshotTree(options.workDir);
   const allPaths = new Set([...baseline.keys(), ...result.keys()]);
   const changed: string[] = [];
   const conflicts: string[] = [];
@@ -744,13 +745,18 @@ export function syncWorkspace(options: { baselineDir: string; resultDir: string;
       conflicts.push(relPath);
       continue;
     }
-    const local = snapshotPath(options.workDir, relPath);
+    const local = localTree.get(relPath);
     if (!before && local) {
       conflicts.push(relPath);
       continue;
     }
     if (before && !sameState(before, local)) {
       conflicts.push(relPath);
+      continue;
+    }
+    if (before?.type === "directory" && after?.type !== "directory" && treeHasLocalChanges(relPath, baseline, localTree)) {
+      conflicts.push(relPath);
+      replacedAncestors.add(relPath);
       continue;
     }
     if (!after) {
@@ -835,6 +841,34 @@ function sameState(left: FileState | undefined, right: FileState | undefined): b
     return left === right;
   }
   return left.type === right.type && left.hash === right.hash && left.mode === right.mode && left.target === right.target;
+}
+
+function treeHasLocalChanges(
+  relPath: string,
+  baseline: Map<string, FileState>,
+  localTree: Map<string, FileState>,
+): boolean {
+  const descendants = new Set<string>();
+  for (const path of baseline.keys()) {
+    if (isDescendantPath(path, relPath)) {
+      descendants.add(path);
+    }
+  }
+  for (const path of localTree.keys()) {
+    if (isDescendantPath(path, relPath)) {
+      descendants.add(path);
+    }
+  }
+  for (const path of descendants) {
+    if (!sameState(baseline.get(path), localTree.get(path))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isDescendantPath(path: string, ancestor: string): boolean {
+  return path.startsWith(`${ancestor}/`);
 }
 
 function readlinkText(path: string): string {
