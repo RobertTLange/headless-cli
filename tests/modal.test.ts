@@ -276,6 +276,82 @@ test("executeModalAgent seeds forwarded file-backed credentials", async () => {
   }
 });
 
+test("executeModalAgent seeds only the selected AWS profile", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-aws-profile-"));
+  try {
+    const home = join(dir, "home");
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    mkdirSync(join(home, ".aws", "sso", "cache"), { recursive: true });
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    writeFileSync(
+      join(home, ".aws", "credentials"),
+      [
+        "[default]",
+        "aws_access_key_id=default",
+        "[prod]",
+        "aws_access_key_id=prod",
+        "[dev]",
+        "aws_access_key_id=dev",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(home, ".aws", "config"),
+      [
+        "[default]",
+        "region=us-west-2",
+        "[profile prod]",
+        "region=us-east-1",
+        "sso_session=prod-session",
+        "[profile dev]",
+        "region=eu-central-1",
+        "[sso-session prod-session]",
+        "sso_region=us-east-1",
+        "[sso-session dev-session]",
+        "sso_region=eu-central-1",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(home, ".aws", "sso", "cache", "token.json"), "{}\n");
+    writeFileSync(join(work, "input.txt"), "local");
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+
+    await executeModalAgent({
+      agent: "codex",
+      appName: "headless-test",
+      command: { command: "codex", args: ["exec", "--json", "-"], stdinText: "prompt" },
+      cpu: DEFAULT_MODAL_CPU,
+      env: { AWS_PROFILE: "prod", HOME: home, OPENAI_API_KEY: "sk-test" },
+      image: DEFAULT_MODAL_IMAGE,
+      includeGit: false,
+      memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+      modalEnv: [],
+      modalSecrets: [],
+      stderr: () => {},
+      stdout: () => {},
+      stdoutHandling: "capture",
+      timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+      workDir: work,
+      clientFactory: async () => client,
+    });
+
+    const remoteCredentials = readFileSync(join(remote, "host-home", ".aws", "credentials"), "utf8");
+    const remoteConfig = readFileSync(join(remote, "host-home", ".aws", "config"), "utf8");
+    assert.match(remoteCredentials, /\[prod\]/);
+    assert.doesNotMatch(remoteCredentials, /\[default\]|\[dev\]/);
+    assert.match(remoteConfig, /\[profile prod\]/);
+    assert.match(remoteConfig, /\[sso-session prod-session\]/);
+    assert.doesNotMatch(remoteConfig, /\[profile dev\]|\[sso-session dev-session\]/);
+    assert.equal(existsSync(join(remote, "host-home", ".aws", "sso", "cache", "token.json")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent rejects non-git workdirs instead of recursively uploading everything", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-non-git-"));
   try {
