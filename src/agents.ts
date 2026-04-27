@@ -8,14 +8,15 @@ import type {
   Env,
   ReasoningEffort,
 } from "./types.js";
+import { BUILTIN_AGENT_DEFAULTS } from "./config.js";
 
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
-const defaultClaudeModel = "claude-opus-4-6";
-const defaultCodexModel = "gpt-5.5";
-export const DEFAULT_CURSOR_MODEL = "gpt-5.5";
-export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
-export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5.4";
-export const DEFAULT_PI_MODEL = "openai-codex/gpt-5.5";
+const defaultClaudeModel = BUILTIN_AGENT_DEFAULTS.claude.model;
+const defaultCodexModel = BUILTIN_AGENT_DEFAULTS.codex.model;
+export const DEFAULT_CURSOR_MODEL = BUILTIN_AGENT_DEFAULTS.cursor.model ?? "gpt-5.5";
+export const DEFAULT_GEMINI_MODEL = BUILTIN_AGENT_DEFAULTS.gemini.model ?? "gemini-3.1-pro-preview";
+export const DEFAULT_OPENCODE_MODEL = BUILTIN_AGENT_DEFAULTS.opencode.model ?? "openai/gpt-5.4";
+export const DEFAULT_PI_MODEL = BUILTIN_AGENT_DEFAULTS.pi.model ?? "openai-codex/gpt-5.5";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",

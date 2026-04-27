@@ -94,6 +94,24 @@ Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasonin
 By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message. Pass `--usage` to append normalized token usage and cost JSON for one-shot runs. Headless uses native agent costs when available and fetches live fallback pricing from `https://models.dev/api.json`; if a model cannot be priced, token counts are still returned with `cost: null`. When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
 
+## User Defaults
+
+Headless reads optional model and reasoning defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults. CLI flags override config values; existing provider environment model overrides for Codex and Pi also keep their precedence over config values. See `config.toml.example` for the full template.
+
+```toml
+[agents.opencode]
+model = "openai/gpt-5.5"
+reasoning_effort = "high"
+
+[agents.cursor]
+model = "gpt-5.5"
+reasoning_effort = "xhigh"
+
+[agents.pi]
+model = "openai-codex/gpt-5.5"
+reasoning_effort = "xhigh"
+```
+
 ## 6 Execution Modes
 
 ### 1) Raw mode (default)

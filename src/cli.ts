@@ -27,6 +27,7 @@ import {
   listAgents,
 } from "./agents.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
+import { loadHeadlessConfig, resolveAgentDefaults, type AgentDefaults } from "./config.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -547,26 +548,26 @@ function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
   return command.env ? { ...baseEnv, ...command.env } : baseEnv;
 }
 
-function usageContext(agent: AgentName, parsed: ParsedArgs, env: Env): { provider?: string; model?: string } {
+function usageContext(agent: AgentName, defaults: AgentDefaults, env: Env): { provider?: string; model?: string } {
   if (agent === "codex") {
-    return { provider: "openai", model: parsed.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
+    return { provider: "openai", model: defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
   }
   if (agent === "claude") {
-    return { provider: "anthropic", model: parsed.model ?? "claude-opus-4-6" };
+    return { provider: "anthropic", model: defaults.model ?? "claude-opus-4-6" };
   }
   if (agent === "gemini") {
-    return { provider: "google", model: parsed.model ?? DEFAULT_GEMINI_MODEL };
+    return { provider: "google", model: defaults.model ?? DEFAULT_GEMINI_MODEL };
   }
   if (agent === "pi") {
-    return piModelSpec(parsed.model, env);
+    return piModelSpec(defaults.model, env);
   }
   if (agent === "opencode") {
-    return { provider: "openai", model: parsed.model ?? DEFAULT_OPENCODE_MODEL };
+    return { provider: "openai", model: defaults.model ?? DEFAULT_OPENCODE_MODEL };
   }
   if (agent === "cursor") {
-    return { model: cursorModel({ model: parsed.model, reasoningEffort: parsed.reasoningEffort }) };
+    return { model: cursorModel(defaults) };
   }
-  return { model: parsed.model };
+  return { model: defaults.model };
 }
 
 async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
@@ -1285,6 +1286,17 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
+    let configuredDefaults: AgentDefaults;
+    try {
+      configuredDefaults = resolveAgentDefaults(
+        parsed.agent,
+        { model: parsed.model, reasoningEffort: parsed.reasoningEffort },
+        env,
+        loadHeadlessConfig(env),
+      );
+    } catch (error) {
+      throw new CliError(error instanceof Error ? error.message : String(error));
+    }
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux });
 
@@ -1293,13 +1305,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         parsed.agent,
         {
           prompt: prompt.prompt,
-          model: parsed.model,
+          model: configuredDefaults.model,
           allow: parsed.allow,
-          reasoningEffort: parsed.reasoningEffort,
+          reasoningEffort: configuredDefaults.reasoningEffort,
         },
         env,
       );
-      const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, parsed.reasoningEffort, "tmux");
+      const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "tmux");
       if (reasoningWarning) {
         stderr(reasoningWarning);
       }
@@ -1333,13 +1345,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       {
         prompt: prompt.prompt,
         promptFile: prompt.promptFile,
-        model: parsed.model,
+        model: configuredDefaults.model,
         allow: parsed.allow,
-        reasoningEffort: parsed.reasoningEffort,
+        reasoningEffort: configuredDefaults.reasoningEffort,
       },
       env,
     );
-    const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, parsed.reasoningEffort, "headless");
+    const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
     if (reasoningWarning) {
       stderr(reasoningWarning);
     }
@@ -1425,7 +1437,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(`${finalMessage}\n`);
       }
       if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, parsed, env)));
+        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
     }

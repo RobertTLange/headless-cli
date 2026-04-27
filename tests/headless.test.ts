@@ -447,6 +447,107 @@ test("quotes commands with stdin text for print-command output", () => {
   );
 });
 
+test("CLI applies model and reasoning defaults from ~/.headless/config.toml", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      [
+        "[agents.opencode]",
+        'model = "openai/gpt-5.5"',
+        'reasoning_effort = "high"',
+        "",
+        "[agents.cursor]",
+        'model = "gpt-5.5"',
+        'reasoning_effort = "xhigh"',
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const opencodeCode = await runCli(["opencode", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(opencodeCode, 0);
+    assert.equal(
+      stdout.join(""),
+      "opencode run --format json --model openai/gpt-5.5 --variant high --dangerously-skip-permissions hello\n",
+    );
+
+    stdout.length = 0;
+    const cursorCode = await runCli(["cursor", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(cursorCode, 0);
+    assert.equal(stdout.join(""), "agent -p --force --output-format stream-json --model gpt-5.5-extra-high hello\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI flags override ~/.headless/config.toml defaults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[agents.opencode]", 'model = "openai/gpt-5.5"', 'reasoning_effort = "high"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      [
+        "opencode",
+        "--model",
+        "openai/gpt-5.4",
+        "--reasoning-effort",
+        "low",
+        "--prompt",
+        "hello",
+        "--print-command",
+      ],
+      {
+        env: { ...process.env, HOME: home },
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    assert.equal(code, 0);
+    assert.equal(
+      stdout.join(""),
+      "opencode run --format json --model openai/gpt-5.4 --variant low --dangerously-skip-permissions hello\n",
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI falls back to built-in defaults when ~/.headless/config.toml is missing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["opencode", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(
+      stdout.join(""),
+      "opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions hello\n",
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("quotes config assignments that contain shell syntax", () => {
   assert.equal(
     quoteCommand({ command: "codex", args: ["-c", 'model_reasoning_effort="high"', "hello"] }),

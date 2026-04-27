@@ -1,0 +1,27 @@
+# Example user config for ~/.headless/config.toml.
+# CLI flags override these values. If this file is missing or unreadable,
+# Headless falls back to its built-in defaults.
+
+[agents.claude]
+model = "claude-opus-4-6"
+# reasoning_effort = "xhigh"
+
+[agents.codex]
+model = "gpt-5.5"
+# reasoning_effort = "xhigh"
+
+[agents.cursor]
+model = "gpt-5.5"
+reasoning_effort = "medium"
+
+[agents.gemini]
+model = "gemini-3.1-pro-preview"
+# Gemini does not expose a stable per-run reasoning effort flag.
+
+[agents.opencode]
+model = "openai/gpt-5.4"
+# reasoning_effort = "high"
+
+[agents.pi]
+model = "openai-codex/gpt-5.5"
+# reasoning_effort = "xhigh"
