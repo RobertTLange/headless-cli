@@ -58,15 +58,38 @@ function supportsCursorReasoningVariants(model: string): boolean {
   return /^gpt-\d/i.test(model);
 }
 
+function cursorReasoningVariant(model: string, effort: ReasoningEffort): string | undefined {
+  const variants: Partial<Record<ReasoningEffort, string>> =
+    model === "gpt-5.5"
+      ? { medium: "gpt-5.5-medium", high: "gpt-5.5-high", xhigh: "gpt-5.5-extra-high" }
+      : model === "gpt-5.4" ||
+          model === "gpt-5.4-mini" ||
+          model === "gpt-5.4-nano" ||
+          model === "gpt-5.2" ||
+          model.endsWith("-codex") ||
+          model.endsWith("-codex-spark-preview")
+        ? {
+            low: `${model}-low`,
+            high: `${model}-high`,
+            xhigh: `${model}-xhigh`,
+            ...(model === "gpt-5.4" || model === "gpt-5.4-mini" || model === "gpt-5.4-nano"
+              ? { medium: `${model}-medium` }
+              : {}),
+          }
+        : model === "gpt-5.1"
+          ? { low: "gpt-5.1-low", high: "gpt-5.1-high" }
+          : {};
+
+  return variants[effort];
+}
+
 export function cursorModel(options: Pick<BuildOptions, "model" | "reasoningEffort">): string {
   const model = options.model ?? DEFAULT_CURSOR_MODEL;
   if (isCursorReasoningVariant(model)) return model;
   if (!supportsCursorReasoningVariants(model)) return model;
-  const effort = options.reasoningEffort ?? "medium";
-  if (effort === "xhigh") {
-    return model === "gpt-5.5" ? `${model}-extra-high` : `${model}-xhigh`;
-  }
-  return `${model}-${effort}`;
+  const effort = options.reasoningEffort ?? (options.model ? undefined : "medium");
+  if (!effort) return model;
+  return cursorReasoningVariant(model, effort) ?? model;
 }
 
 export function piModelSpec(modelSpec: string | undefined, env: Env): { provider?: string; model: string } {

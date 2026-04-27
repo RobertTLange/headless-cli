@@ -137,6 +137,26 @@ test("maps Cursor reasoning effort to model variants and leaves Gemini unchanged
     args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.4-xhigh", "hello"],
   });
 
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.2" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.2", "hello"],
+  });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.2", reasoningEffort: "high" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.2-high", "hello"],
+  });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.2", reasoningEffort: "medium" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.2", "hello"],
+  });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.5", reasoningEffort: "low" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5", "hello"],
+  });
+
   assert.deepEqual(
     buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.5-extra-high", reasoningEffort: "medium" }, {}),
     {
