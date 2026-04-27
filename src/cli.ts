@@ -19,9 +19,8 @@ import {
   buildInteractiveAgentCommand,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OPENCODE_MODEL,
-  DEFAULT_PI_MODEL,
-  DEFAULT_PI_PROVIDER,
   cursorModel,
+  piModelSpec,
   getAgentConfig,
   getAgentHarness,
   isAgentName,
@@ -559,9 +558,7 @@ function usageContext(agent: AgentName, parsed: ParsedArgs, env: Env): { provide
     return { provider: "google", model: parsed.model ?? DEFAULT_GEMINI_MODEL };
   }
   if (agent === "pi") {
-    const provider =
-      env.PI_CODING_AGENT_PROVIDER ?? (parsed.model || env.PI_CODING_AGENT_MODEL ? undefined : DEFAULT_PI_PROVIDER);
-    return { provider, model: parsed.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL };
+    return piModelSpec(parsed.model, env);
   }
   if (agent === "opencode") {
     return { provider: "openai", model: parsed.model ?? DEFAULT_OPENCODE_MODEL };

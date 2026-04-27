@@ -15,8 +15,7 @@ const defaultCodexModel = "gpt-5.5";
 export const DEFAULT_CURSOR_MODEL = "gpt-5.5-medium";
 export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5.4";
-export const DEFAULT_PI_PROVIDER = "openai-codex";
-export const DEFAULT_PI_MODEL = "gpt-5.5";
+export const DEFAULT_PI_MODEL = "openai-codex/gpt-5.5";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",
@@ -58,6 +57,21 @@ function defaultCursorModel(effort: ReasoningEffort | undefined): string {
 
 export function cursorModel(options: Pick<BuildOptions, "model" | "reasoningEffort">): string {
   return options.model ?? defaultCursorModel(options.reasoningEffort);
+}
+
+export function piModelSpec(modelSpec: string | undefined, env: Env): { provider?: string; model: string } {
+  const rawModel = modelSpec ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
+  const slashIndex = rawModel.indexOf("/");
+  if (slashIndex > 0 && slashIndex < rawModel.length - 1) {
+    return {
+      provider: rawModel.slice(0, slashIndex),
+      model: rawModel.slice(slashIndex + 1),
+    };
+  }
+  return {
+    provider: env.PI_CODING_AGENT_PROVIDER,
+    model: rawModel,
+  };
 }
 
 function withGeminiAllow(args: string[], allow: AllowMode | undefined): string[] {
@@ -215,9 +229,7 @@ function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
 function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args = ["--no-session", "--mode", "json"];
-  const model = options.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
-  const provider =
-    env.PI_CODING_AGENT_PROVIDER ?? (options.model || env.PI_CODING_AGENT_MODEL ? undefined : DEFAULT_PI_PROVIDER);
+  const { provider, model } = piModelSpec(options.model, env);
 
   if (provider) {
     args.push("--provider", provider);
@@ -242,9 +254,7 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
 function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args: string[] = [];
-  const model = options.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
-  const provider =
-    env.PI_CODING_AGENT_PROVIDER ?? (options.model || env.PI_CODING_AGENT_MODEL ? undefined : DEFAULT_PI_PROVIDER);
+  const { provider, model } = piModelSpec(options.model, env);
 
   if (provider) {
     args.push("--provider", provider);

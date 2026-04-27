@@ -266,8 +266,8 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 - `CURSOR_CLI_BIN`: Cursor CLI binary override. Defaults to `agent`.
 - `CURSOR_API_KEY`: passed to Cursor as `--api-key`.
 - `PI_CODING_AGENT_BIN`: Pi CLI binary override. Defaults to `pi`.
-- `PI_CODING_AGENT_PROVIDER`: Pi provider override when `--model` is omitted. When unset with no Pi model override, Headless defaults Pi to `openai-codex`.
-- `PI_CODING_AGENT_MODEL`: Pi model override when `--model` is omitted. When unset, Headless defaults Pi to `gpt-5.5`.
+- `PI_CODING_AGENT_PROVIDER`: Pi provider override used when the Pi model value does not include `provider/model`.
+- `PI_CODING_AGENT_MODEL`: Pi model override when `--model` is omitted. Accepts `provider/model` (for example, `openai-codex/gpt-5.5`) or a bare model paired with `PI_CODING_AGENT_PROVIDER`. When unset, Headless defaults Pi to `openai-codex/gpt-5.5`.
 - `PI_CODING_AGENT_MODELS`: passed to Pi as `--models`.
 
 Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.

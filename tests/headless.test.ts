@@ -228,6 +228,22 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
     command: "pi",
     args: ["--no-session", "--mode", "json", "--model", "pi-model", "--tools", "read,bash,edit,write", "hello"],
   });
+
+  assert.deepEqual(buildAgentCommand("pi", { prompt: "hello", model: "openai-codex/gpt-5.4" }, {}), {
+    command: "pi",
+    args: [
+      "--no-session",
+      "--mode",
+      "json",
+      "--provider",
+      "openai-codex",
+      "--model",
+      "gpt-5.4",
+      "--tools",
+      "read,bash,edit,write",
+      "hello",
+    ],
+  });
 });
 
 test("builds interactive commands for tmux mode", () => {
@@ -250,6 +266,18 @@ test("builds interactive commands for tmux mode", () => {
     command: "opencode",
     args: ["--model", "oc-model", "--dangerously-skip-permissions"],
   });
+
+  assert.deepEqual(
+    buildInteractiveAgentCommand(
+      "pi",
+      { prompt: "hello", model: "openai-codex/gpt-5.4" },
+      {},
+    ),
+    {
+      command: "pi",
+      args: ["--provider", "openai-codex", "--model", "gpt-5.4", "--tools", "read,bash,edit,write", "hello"],
+    },
+  );
 
   assert.deepEqual(
     buildInteractiveAgentCommand(
@@ -1084,6 +1112,43 @@ test("CLI --usage reports Cursor reasoning model variant", async () => {
     assert.equal(code, 0);
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
     assert.equal(usage.model, "gpt-5.5-extra-high");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --usage splits Pi provider/model specs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'message', role: 'assistant', content: 'final answer' }));",
+          "console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 } } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["pi", "--model", "openai-codex/gpt-5.4", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
+    assert.equal(usage.provider, "openai-codex");
+    assert.equal(usage.model, "gpt-5.4");
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
