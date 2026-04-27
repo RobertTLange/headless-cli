@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -63,13 +63,13 @@ test("CLI --check prints installed status and numeric versions for all agents", 
 
     const output = stdout.join("");
     assert.equal(code, 0);
-    assert.match(output, /^Agent\s+Status\s+Version\s+Binary/m);
-    assert.match(output, /^codex\s+✓\s+1\.2\.3\s+codex$/m);
-    assert.match(output, /^gemini\s+✓\s+0\.39\.1\s+gemini$/m);
-    assert.match(output, /^opencode\s+✓\s+1\.4\.10\s+opencode$/m);
-    assert.match(output, /^pi\s+✓\s+4\.5\.6\s+pi-agent$/m);
-    assert.match(output, /^claude\s+✗\s+-\s+claude$/m);
-    assert.match(output, /^cursor\s+✗\s+-\s+agent$/m);
+    assert.match(output, /^Agent\s+Status\s+Auth\s+Version\s+Binary/m);
+    assert.match(output, /^codex\s+✓\s+-\s+1\.2\.3\s+codex$/m);
+    assert.match(output, /^gemini\s+✓\s+-\s+0\.39\.1\s+gemini$/m);
+    assert.match(output, /^opencode\s+✓\s+-\s+1\.4\.10\s+opencode$/m);
+    assert.match(output, /^pi\s+✓\s+-\s+4\.5\.6\s+pi-agent$/m);
+    assert.match(output, /^claude\s+✗\s+-\s+-\s+claude$/m);
+    assert.match(output, /^cursor\s+✗\s+-\s+-\s+agent$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -97,7 +97,7 @@ test("CLI --check uses cursor env binary and strips hash suffixes", async () => 
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^cursor\s+✓\s+2026\.04\.17\s+cursor-agent$/m);
+    assert.match(stdout.join(""), /^cursor\s+✓\s+-\s+2026\.04\.17\s+cursor-agent$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -125,7 +125,7 @@ test("CLI --check keeps installed status when version probe fails", async () => 
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^cursor\s+✓\s+unknown\s+cursor-agent$/m);
+    assert.match(stdout.join(""), /^cursor\s+✓\s+-\s+unknown\s+cursor-agent$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -157,7 +157,7 @@ test("CLI --check retries transient empty version output", async () => {
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^cursor\s+✓\s+9\.8\.7\s+cursor-agent$/m);
+    assert.match(stdout.join(""), /^cursor\s+✓\s+-\s+9\.8\.7\s+cursor-agent$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -188,6 +188,101 @@ test("CLI --check reports docker and default image status", async () => {
     assert.equal(code, 0);
     assert.match(stdout.join(""), /^Docker\s+Status\s+Version\s+Default image$/m);
     assert.match(stdout.join(""), /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/roberttlange\/headless:latest \(present\)$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check reports API auth from environment variables", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { PATH: join(dir, "bin"), OPENAI_API_KEY: "sk-test" },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^codex\s+✗\s+api\s+-\s+codex$/m);
+    assert.match(stdout.join(""), /^opencode\s+✗\s+api\s+-\s+opencode$/m);
+    assert.match(stdout.join(""), /^pi\s+✗\s+api\s+-\s+pi$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check reports OAuth auth from local seed files", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(join(home, ".codex", "auth.json"), "{}\n");
+
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { HOME: home, PATH: join(dir, "bin") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^codex\s+✗\s+oauth\s+-\s+codex$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check reports combined API and OAuth auth", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(join(home, ".codex", "auth.json"), "{}\n");
+
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { CODEX_API_KEY: "codex-test", HOME: home, PATH: join(dir, "bin") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^codex\s+✗\s+api\+oauth\s+-\s+codex$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check reports Pi API auth from AWS credentials for Bedrock provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: {
+        AWS_PROFILE: "dev",
+        PATH: join(dir, "bin"),
+        PI_CODING_AGENT_PROVIDER: "bedrock",
+        PI_CODING_AGENT_MODEL: "opus",
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^pi\s+✗\s+api\s+-\s+pi$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check does not report Pi AWS auth for the default OpenAI provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { AWS_PROFILE: "dev", PATH: join(dir, "bin") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^pi\s+✗\s+-\s+-\s+pi$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

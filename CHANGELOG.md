@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added API/OAuth credential signal reporting to `headless --check` for supported agent backends.
 - Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`. Thanks @RobertTLange for PR #7.
 - Added a local integration suite plus a tracked pre-push hook that builds the local CLI before running integration coverage.
 - Added expanded Docker and Modal integration coverage for Codex `--json`, `--debug`, and `--usage` modes.

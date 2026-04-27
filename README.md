@@ -294,7 +294,7 @@ Options:
 - `rename <session-name> <new-name>`: rename an existing Headless tmux session.
 - `docker doctor`: check Docker setup and image availability.
 - `docker build`: build the packaged Dockerfile as `headless-local:dev`, or `--docker-image <image>`.
-- `--check`: check which supported agent binaries are installed and print their versions.
+- `--check`: check which supported agent binaries are installed, print their versions, and report local API/OAuth credential signals.
 - `--list`: list active tmux sessions created by Headless, including state and timestamps.
 - `--print-command`: print the shell command without executing it.
 - `--show-config`: print config paths and auth seed paths for an agent.
