@@ -102,7 +102,7 @@ test("builds reasoning effort flags for supported agents", () => {
     "--provider",
     "openai-codex",
     "--model",
-    "gpt-5.3-codex",
+    "gpt-5.5",
     "--thinking",
     "low",
     "--tools",
@@ -303,7 +303,7 @@ test("builds reasoning effort flags for supported interactive commands", () => {
       "--provider",
       "openai-codex",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.5",
       "--thinking",
       "low",
       "--tools",
@@ -437,7 +437,7 @@ test("CLI accepts stdin fallback", async () => {
   assert.equal(code, 0);
   assert.equal(
     stdout.join(""),
-    "pi --no-session --mode json --provider openai-codex --model gpt-5.3-codex --tools 'read,bash,edit,write' 'stdin prompt'\n",
+    "pi --no-session --mode json --provider openai-codex --model gpt-5.5 --tools 'read,bash,edit,write' 'stdin prompt'\n",
   );
 });
 
@@ -746,7 +746,7 @@ test("CLI auto-selection follows fallback order and env-backed binaries", async 
     assert.equal(code, 0);
     assert.equal(
       stdout.join(""),
-      "pi-agent --no-session --mode json --provider openai-codex --model gpt-5.3-codex --tools 'read,bash,edit,write' hello\n",
+      "pi-agent --no-session --mode json --provider openai-codex --model gpt-5.5 --tools 'read,bash,edit,write' hello\n",
     );
   } finally {
     rmSync(dir, { force: true, recursive: true });

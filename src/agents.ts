@@ -16,7 +16,7 @@ export const DEFAULT_CURSOR_MODEL = "gpt-5.5-medium";
 export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5.4";
 export const DEFAULT_PI_PROVIDER = "openai-codex";
-export const DEFAULT_PI_MODEL = "gpt-5.3-codex";
+export const DEFAULT_PI_MODEL = "gpt-5.5";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",
