@@ -250,3 +250,40 @@ test("CLI --check reports combined API and OAuth auth", async () => {
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("CLI --check reports Pi API auth from AWS credentials for Bedrock provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: {
+        AWS_PROFILE: "dev",
+        PATH: join(dir, "bin"),
+        PI_CODING_AGENT_PROVIDER: "bedrock",
+        PI_CODING_AGENT_MODEL: "opus",
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^pi\s+✗\s+api\s+-\s+pi$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check does not report Pi AWS auth for the default OpenAI provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { AWS_PROFILE: "dev", PATH: join(dir, "bin") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^pi\s+✗\s+-\s+-\s+pi$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});

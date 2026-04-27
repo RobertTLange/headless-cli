@@ -79,6 +79,8 @@ const commonProviderApiEnvNames = [
   "OPENROUTER_API_KEY",
 ];
 
+const awsCredentialEnvNames = ["AWS_ACCESS_KEY_ID", "AWS_PROFILE"];
+
 const apiEnvNamesByAgent: Record<AgentName, string[]> = {
   claude: ["ANTHROPIC_API_KEY"],
   codex: ["CODEX_API_KEY", "OPENAI_API_KEY"],
@@ -107,7 +109,7 @@ const oauthPathsByAgent: Record<AgentName, string[]> = {
 };
 
 function detectAuth(agent: AgentName, env: Env): AuthLabel {
-  const hasApi = apiEnvNamesByAgent[agent].some((name) => Boolean(env[name]));
+  const hasApi = hasApiAuth(agent, env);
   const hasOauth =
     oauthEnvNamesByAgent[agent].some((name) => Boolean(env[name])) ||
     oauthPathsByAgent[agent].some((relPath) => homePathExists(env, relPath));
@@ -116,6 +118,21 @@ function detectAuth(agent: AgentName, env: Env): AuthLabel {
   if (hasApi) return "api";
   if (hasOauth) return "oauth";
   return "-";
+}
+
+function hasApiAuth(agent: AgentName, env: Env): boolean {
+  if (apiEnvNamesByAgent[agent].some((name) => Boolean(env[name]))) {
+    return true;
+  }
+  return agent === "pi" && piUsesAwsProvider(env) && awsCredentialEnvNames.some((name) => Boolean(env[name]));
+}
+
+function piUsesAwsProvider(env: Env): boolean {
+  const model = env.PI_CODING_AGENT_MODEL;
+  const slashIndex = model?.indexOf("/") ?? -1;
+  const provider = slashIndex > 0 ? model?.slice(0, slashIndex) : env.PI_CODING_AGENT_PROVIDER;
+  const normalized = provider?.toLowerCase();
+  return normalized === "aws" || normalized?.startsWith("aws-") === true || normalized?.includes("bedrock") === true;
 }
 
 function homePathExists(env: Env, relPath: string): boolean {
