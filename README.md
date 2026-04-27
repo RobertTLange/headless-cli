@@ -83,16 +83,52 @@ printf "Review this diff" | headless pi --model claude-opus
 | --- | --- |
 | `claude` | `claude -p ... --output-format stream-json --verbose --dangerously-skip-permissions` |
 | `codex` | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ...` |
-| `cursor` | `agent -p --force --output-format stream-json ...` |
-| `gemini` | `gemini -p ... --output-format stream-json --approval-mode yolo` |
-| `opencode` | `opencode run --format json --dangerously-skip-permissions ...` |
-| `pi` | `pi --no-session --mode json --tools read,bash,edit,write ...` |
+| `cursor` | `agent -p --force --output-format stream-json --model gpt-5.5-medium ...` |
+| `gemini` | `gemini --model gemini-3.1-pro-preview --skip-trust -p ... --output-format stream-json --approval-mode yolo` |
+| `opencode` | `opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions ...` |
+| `pi` | `pi --no-session --mode json --provider openai-codex --model gpt-5.5 --tools read,bash,edit,write ...` |
 
 By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only/planning mode where available.
-Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot agent command. In tmux mode, Claude, Codex, and Pi receive their interactive effort flags. Cursor, Gemini, and OpenCode tmux currently do not expose stable per-run reasoning-effort flags through their CLIs, so Headless accepts the option for them, leaves the command unchanged, and prints a warning.
+Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the requested model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. For example, `headless cursor --model gpt-5.5 --reasoning-effort xhigh` runs Cursor with `gpt-5.5-extra-high` and prices usage with the base `gpt-5.5` rates. Docker and Modal inherit the same one-shot agent command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Gemini and OpenCode tmux currently do not expose stable per-run reasoning-effort flags through their CLIs, so Headless accepts the option for them, leaves the command unchanged, and prints a warning.
 
-By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message. Pass `--usage` to append normalized token usage and cost JSON for one-shot runs. Headless uses native agent costs when available and fetches live fallback pricing from `https://models.dev/api.json`; if a model cannot be priced, token counts are still returned with `cost: null`. When `--model` is omitted, Headless defaults Codex to `gpt-5.5` and Claude to `claude-opus-4-6`.
+By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message. Pass `--usage` to append normalized token usage and cost JSON for one-shot runs. Headless uses native agent costs when available and fetches live fallback pricing from `https://models.dev/api.json`; if a model cannot be priced, token counts are still returned with `cost: null`. When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
+
+## User Defaults
+
+Headless reads optional model and reasoning defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults.
+
+```bash
+mkdir -p ~/.headless
+cp config.toml.example ~/.headless/config.toml
+```
+
+Supported sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`. Supported keys are `model` and `reasoning_effort`.
+
+Precedence is:
+
+1. CLI flags, such as `--model` and `--reasoning-effort`.
+2. Existing provider environment model overrides for Codex and Pi, such as `CODEX_MODEL` and `PI_CODING_AGENT_MODEL`.
+3. `~/.headless/config.toml`.
+4. Built-in defaults.
+
+Example:
+
+```toml
+[agents.opencode]
+model = "openai/gpt-5.5"
+reasoning_effort = "high"
+
+[agents.cursor]
+model = "gpt-5.5"
+reasoning_effort = "xhigh"
+
+[agents.pi]
+model = "openai-codex/gpt-5.5"
+reasoning_effort = "xhigh"
+```
+
+The full template is tracked as `config.toml.example`.
 
 ## 6 Execution Modes
 
@@ -266,8 +302,8 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 - `CURSOR_CLI_BIN`: Cursor CLI binary override. Defaults to `agent`.
 - `CURSOR_API_KEY`: passed to Cursor as `--api-key`.
 - `PI_CODING_AGENT_BIN`: Pi CLI binary override. Defaults to `pi`.
-- `PI_CODING_AGENT_PROVIDER`: passed to Pi as `--provider`.
-- `PI_CODING_AGENT_MODEL`: default Pi model when `--model` is omitted.
+- `PI_CODING_AGENT_PROVIDER`: Pi provider override used when the Pi model value does not include `provider/model`.
+- `PI_CODING_AGENT_MODEL`: Pi model override when `--model` is omitted. Accepts `provider/model` (for example, `openai-codex/gpt-5.5`) or a bare model paired with `PI_CODING_AGENT_PROVIDER`. When unset, Headless defaults Pi to `openai-codex/gpt-5.5`.
 - `PI_CODING_AGENT_MODELS`: passed to Pi as `--models`.
 
 Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.

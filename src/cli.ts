@@ -17,12 +17,17 @@ import { fileURLToPath } from "node:url";
 import {
   buildAgentCommand,
   buildInteractiveAgentCommand,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_OPENCODE_MODEL,
+  cursorModel,
+  piModelSpec,
   getAgentConfig,
   getAgentHarness,
   isAgentName,
   listAgents,
 } from "./agents.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
+import { loadHeadlessConfig, resolveAgentDefaults, type AgentDefaults } from "./config.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -38,7 +43,7 @@ import {
   DEFAULT_MODAL_TIMEOUT_SECONDS,
   executeModalAgent,
 } from "./modal.js";
-import { extractFinalMessage, extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./output.js";
+import { extractAgentError, extractFinalMessage, extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
@@ -396,7 +401,7 @@ function unsupportedReasoningEffortWarning(
   if (mode === "tmux" && agent === "opencode") {
     return "headless: reasoning effort is not supported by opencode in tmux mode and was ignored\n";
   }
-  if (agent === "cursor" || agent === "gemini") {
+  if (agent === "gemini") {
     return `headless: reasoning effort is not supported by ${agent} and was ignored\n`;
   }
   return undefined;
@@ -543,20 +548,26 @@ function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
   return command.env ? { ...baseEnv, ...command.env } : baseEnv;
 }
 
-function usageContext(agent: AgentName, parsed: ParsedArgs, env: Env): { provider?: string; model?: string } {
+function usageContext(agent: AgentName, defaults: AgentDefaults, env: Env): { provider?: string; model?: string } {
   if (agent === "codex") {
-    return { provider: "openai", model: parsed.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
+    return { provider: "openai", model: defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
   }
   if (agent === "claude") {
-    return { provider: "anthropic", model: parsed.model ?? "claude-opus-4-6" };
+    return { provider: "anthropic", model: defaults.model ?? "claude-opus-4-6" };
   }
   if (agent === "gemini") {
-    return { provider: "google", model: parsed.model };
+    return { provider: "google", model: defaults.model ?? DEFAULT_GEMINI_MODEL };
   }
   if (agent === "pi") {
-    return { provider: env.PI_CODING_AGENT_PROVIDER, model: parsed.model ?? env.PI_CODING_AGENT_MODEL };
+    return piModelSpec(defaults.model, env);
   }
-  return { model: parsed.model };
+  if (agent === "opencode") {
+    return { provider: "openai", model: defaults.model ?? DEFAULT_OPENCODE_MODEL };
+  }
+  if (agent === "cursor") {
+    return { model: cursorModel(defaults) };
+  }
+  return { model: defaults.model };
 }
 
 async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
@@ -1275,6 +1286,17 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
+    let configuredDefaults: AgentDefaults;
+    try {
+      configuredDefaults = resolveAgentDefaults(
+        parsed.agent,
+        { model: parsed.model, reasoningEffort: parsed.reasoningEffort },
+        env,
+        loadHeadlessConfig(env),
+      );
+    } catch (error) {
+      throw new CliError(error instanceof Error ? error.message : String(error));
+    }
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux });
 
@@ -1283,13 +1305,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         parsed.agent,
         {
           prompt: prompt.prompt,
-          model: parsed.model,
+          model: configuredDefaults.model,
           allow: parsed.allow,
-          reasoningEffort: parsed.reasoningEffort,
+          reasoningEffort: configuredDefaults.reasoningEffort,
         },
         env,
       );
-      const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, parsed.reasoningEffort, "tmux");
+      const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "tmux");
       if (reasoningWarning) {
         stderr(reasoningWarning);
       }
@@ -1323,13 +1345,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       {
         prompt: prompt.prompt,
         promptFile: prompt.promptFile,
-        model: parsed.model,
+        model: configuredDefaults.model,
         allow: parsed.allow,
-        reasoningEffort: parsed.reasoningEffort,
+        reasoningEffort: configuredDefaults.reasoningEffort,
       },
       env,
     );
-    const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, parsed.reasoningEffort, "headless");
+    const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
     if (reasoningWarning) {
       stderr(reasoningWarning);
     }
@@ -1415,9 +1437,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(`${finalMessage}\n`);
       }
       if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, parsed, env)));
+        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
+    }
+    const agentError = extractAgentError(parsed.agent, result.stdout);
+    if (agentError) {
+      stderr(`headless: ${agentError}\n`);
+      return result.code === 0 ? 1 : result.code;
     }
     if (result.code === 0) {
       stderr("headless: could not extract final message; rerun with --json for raw trace\n");

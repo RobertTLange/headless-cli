@@ -8,10 +8,15 @@ import type {
   Env,
   ReasoningEffort,
 } from "./types.js";
+import { BUILTIN_AGENT_DEFAULTS } from "./config.js";
 
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
-const defaultClaudeModel = "claude-opus-4-6";
-const defaultCodexModel = "gpt-5.5";
+const defaultClaudeModel = BUILTIN_AGENT_DEFAULTS.claude.model;
+const defaultCodexModel = BUILTIN_AGENT_DEFAULTS.codex.model;
+export const DEFAULT_CURSOR_MODEL = BUILTIN_AGENT_DEFAULTS.cursor.model ?? "gpt-5.5";
+export const DEFAULT_GEMINI_MODEL = BUILTIN_AGENT_DEFAULTS.gemini.model ?? "gemini-3.1-pro-preview";
+export const DEFAULT_OPENCODE_MODEL = BUILTIN_AGENT_DEFAULTS.opencode.model ?? "openai/gpt-5.4";
+export const DEFAULT_PI_MODEL = BUILTIN_AGENT_DEFAULTS.pi.model ?? "openai-codex/gpt-5.5";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",
@@ -43,6 +48,63 @@ function withCursorAllow(args: string[], allow: AllowMode | undefined): string[]
     return args;
   }
   return allow === "yolo" || allow === undefined ? [...args, "--force"] : args;
+}
+
+function isCursorReasoningVariant(model: string): boolean {
+  return /-(low|medium|high|xhigh|extra-high)(-fast)?$/i.test(model);
+}
+
+function supportsCursorReasoningVariants(model: string): boolean {
+  return /^gpt-\d/i.test(model);
+}
+
+function cursorReasoningVariant(model: string, effort: ReasoningEffort): string | undefined {
+  const variants: Partial<Record<ReasoningEffort, string>> =
+    model === "gpt-5.5"
+      ? { medium: "gpt-5.5-medium", high: "gpt-5.5-high", xhigh: "gpt-5.5-extra-high" }
+      : model === "gpt-5.4" ||
+          model === "gpt-5.4-mini" ||
+          model === "gpt-5.4-nano" ||
+          model === "gpt-5.2" ||
+          model.endsWith("-codex") ||
+          model.endsWith("-codex-spark-preview")
+        ? {
+            low: `${model}-low`,
+            high: `${model}-high`,
+            xhigh: `${model}-xhigh`,
+            ...(model === "gpt-5.4" || model === "gpt-5.4-mini" || model === "gpt-5.4-nano"
+              ? { medium: `${model}-medium` }
+              : {}),
+          }
+        : model === "gpt-5.1"
+          ? { low: "gpt-5.1-low", high: "gpt-5.1-high" }
+          : {};
+
+  return variants[effort];
+}
+
+export function cursorModel(options: Pick<BuildOptions, "model" | "reasoningEffort">): string {
+  const model = options.model ?? DEFAULT_CURSOR_MODEL;
+  if (isCursorReasoningVariant(model)) return model;
+  if (!supportsCursorReasoningVariants(model)) return model;
+  const effort = options.reasoningEffort ?? (options.model ? undefined : "medium");
+  if (!effort) return model;
+  return cursorReasoningVariant(model, effort) ?? model;
+}
+
+export function piModelSpec(modelSpec: string | undefined, env: Env): { provider?: string; model: string } {
+  const rawModel = modelSpec ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
+  const slashIndex = rawModel.indexOf("/");
+  if (slashIndex > 0 && slashIndex < rawModel.length - 1) {
+    return {
+      provider: rawModel.slice(0, slashIndex),
+      model: rawModel.slice(slashIndex + 1),
+    };
+  }
+  return {
+    provider: env.PI_CODING_AGENT_PROVIDER,
+    model: rawModel,
+  };
 }
 
 function withGeminiAllow(args: string[], allow: AllowMode | undefined): string[] {
@@ -118,13 +180,12 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args = ["-p", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
+  const model = cursorModel(options);
 
   if (env.CURSOR_API_KEY) {
     args.unshift("--api-key", env.CURSOR_API_KEY);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  }
+  args.push("--model", model);
   if (options.allow === "read-only") {
     args.push("--mode", "plan");
   }
@@ -136,13 +197,12 @@ function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
 function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args: string[] = [];
+  const model = cursorModel(options);
 
   if (env.CURSOR_API_KEY) {
     args.push("--api-key", env.CURSOR_API_KEY);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  }
+  args.push("--model", model);
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--force");
   }
@@ -155,7 +215,8 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 function buildGemini(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? DEFAULT_GEMINI_MODEL);
+  args.push("--skip-trust");
 
   if (options.promptFile) {
     args.push("--prompt", "", "--output-format", "stream-json", ...withGeminiAllow([], options.allow));
@@ -167,7 +228,7 @@ function buildGemini(options: BuildOptions): BuiltCommand {
 }
 
 function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? DEFAULT_GEMINI_MODEL);
   args.push("--skip-trust");
   args.push(...withGeminiAllow([], options.allow));
   args.push(options.prompt);
@@ -176,10 +237,9 @@ function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
 
 function buildOpencode(options: BuildOptions): BuiltCommand {
   const args = ["run", "--format", "json"];
+  const model = options.model ?? DEFAULT_OPENCODE_MODEL;
 
-  if (options.model) {
-    args.push("--model", options.model);
-  }
+  args.push("--model", model);
   if (options.reasoningEffort) {
     args.push("--variant", options.reasoningEffort);
   }
@@ -192,7 +252,7 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
 }
 
 function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? DEFAULT_OPENCODE_MODEL);
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--dangerously-skip-permissions");
   }
@@ -202,15 +262,12 @@ function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
 function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args = ["--no-session", "--mode", "json"];
+  const { provider, model } = piModelSpec(options.model, env);
 
-  if (env.PI_CODING_AGENT_PROVIDER) {
-    args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
+  if (provider) {
+    args.push("--provider", provider);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  } else if (env.PI_CODING_AGENT_MODEL) {
-    args.push("--model", env.PI_CODING_AGENT_MODEL);
-  }
+  args.push("--model", model);
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }
@@ -230,15 +287,12 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
 function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args: string[] = [];
+  const { provider, model } = piModelSpec(options.model, env);
 
-  if (env.PI_CODING_AGENT_PROVIDER) {
-    args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
+  if (provider) {
+    args.push("--provider", provider);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  } else if (env.PI_CODING_AGENT_MODEL) {
-    args.push("--model", env.PI_CODING_AGENT_MODEL);
-  }
+  args.push("--model", model);
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }

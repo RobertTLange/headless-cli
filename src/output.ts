@@ -119,6 +119,11 @@ function candidateFromRecord(record: JsonRecord, agent: AgentName): string {
     if (text) return text;
   }
 
+  if (agent === "opencode" && rowType === "text") {
+    const text = joinText(record.part || record.text);
+    if (text) return text;
+  }
+
   const message = asRecord(record.message);
   if (Object.keys(message).length > 0) {
     const messageRole = roleFromRecord(message) || roleFromRecord(record);
@@ -194,6 +199,35 @@ function flattenRecords(value: unknown): JsonRecord[] {
   }
   const record = asRecord(value);
   return Object.keys(record).length > 0 ? [record] : [];
+}
+
+function formatErrorRecord(record: JsonRecord): string {
+  const error = asRecord(record.error);
+  const source = Object.keys(error).length > 0 ? error : record;
+  const name = asString(source.name).trim() || asString(record.type).trim();
+  const data = asRecord(source.data);
+  const message =
+    asString(source.message).trim() ||
+    asString(data.message).trim() ||
+    asString(record.message).trim() ||
+    asString(record.text).trim();
+
+  if (name && message) return `${name}: ${message}`;
+  return message || name;
+}
+
+export function extractAgentError(agent: AgentName, stdout: string): string {
+  const records = parseJsonValues(stdout).flatMap(flattenRecords);
+  for (const record of records) {
+    const rowType = asString(record.type).trim().toLowerCase();
+    if (rowType !== "error" && Object.keys(asRecord(record.error)).length === 0) {
+      continue;
+    }
+
+    const error = formatErrorRecord(record);
+    if (error) return `${agent} error: ${error}`;
+  }
+  return "";
 }
 
 function extractGeminiDeltaMessage(values: unknown[]): string {

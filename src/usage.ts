@@ -379,24 +379,38 @@ function findPricingModel(
   model: string | null,
 ): { provider: string; model: PricingModel } | undefined {
   if (!model) return undefined;
-  const normalizedModel = model.toLowerCase();
+  const candidateModels = pricingModelCandidates(model);
   if (provider) {
     const providerModels = pricingData[provider]?.models;
-    const direct = providerModels?.[model];
-    if (direct) return { provider, model: direct };
+    for (const candidate of candidateModels) {
+      const direct = providerModels?.[candidate];
+      if (direct) return { provider, model: direct };
+    }
   }
   for (const [providerId, providerData] of Object.entries(pricingData)) {
     for (const [modelId, modelData] of Object.entries(providerData.models ?? {})) {
-      if (
-        modelId.toLowerCase() === normalizedModel ||
-        modelData.id?.toLowerCase() === normalizedModel ||
-        modelData.name?.toLowerCase() === normalizedModel
-      ) {
-        return { provider: providerId, model: modelData };
+      for (const candidate of candidateModels) {
+        const normalizedCandidate = candidate.toLowerCase();
+        if (
+          modelId.toLowerCase() === normalizedCandidate ||
+          modelData.id?.toLowerCase() === normalizedCandidate ||
+          modelData.name?.toLowerCase() === normalizedCandidate
+        ) {
+          return { provider: providerId, model: modelData };
+        }
       }
     }
   }
   return undefined;
+}
+
+function pricingModelCandidates(model: string): string[] {
+  const candidates = [model];
+  const cursorVariant = model.match(/^(.+?)-(extra-high|xhigh|medium|high|low)(-fast)?$/i);
+  if (cursorVariant?.[1]) {
+    candidates.push(cursorVariant[1]);
+  }
+  return candidates;
 }
 
 function priceTokens(tokens: number, rate: number | undefined): number | undefined {

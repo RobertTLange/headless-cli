@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
+import { extractAgentError, extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
 
 test("extracts final Codex assistant message from JSONL trace", () => {
   const trace = [
@@ -119,6 +119,37 @@ test("extracts final OpenCode assistant message from JSON event trace", () => {
   });
 
   assert.equal(extractFinalMessage("opencode", trace), "final opencode answer");
+});
+
+test("extracts final OpenCode text part event", () => {
+  const trace = JSON.stringify({
+    type: "text",
+    part: {
+      type: "text",
+      text: "final opencode text part",
+    },
+  });
+
+  assert.equal(extractFinalMessage("opencode", trace), "final opencode text part");
+});
+
+test("extracts OpenCode provider error events", () => {
+  const trace = JSON.stringify({
+    type: "error",
+    error: {
+      name: "ProviderAuthError",
+      data: {
+        providerID: "gemini",
+        message:
+          "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+      },
+    },
+  });
+
+  assert.equal(
+    extractAgentError("opencode", trace),
+    "opencode error: ProviderAuthError: Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+  );
 });
 
 test("extracts final Pi assistant message from JSONL trace", () => {
@@ -281,6 +312,45 @@ test("extracts Cursor usage and returns null cost when model pricing is missing"
   assert.equal(summary.model, "Composer 2 Fast");
   assert.equal(summary.cost, null);
   assert.equal(summary.pricingStatus, "missing");
+});
+
+test("prices Cursor effort model variants with base model rates", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    usage: {
+      inputTokens: 1000,
+      outputTokens: 20,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+    },
+  });
+
+  const summary = priceUsageSummary(
+    extractUsageSummary("cursor", trace, { model: "gpt-5.5-extra-high" }),
+    {
+      openai: {
+        models: {
+          "gpt-5.5": {
+            cost: {
+              input: 2,
+              cache_read: 0.2,
+              output: 20,
+            },
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(summary.model, "gpt-5.5-extra-high");
+  assert.deepEqual(summary.cost, {
+    input: 0.002,
+    cacheRead: 0.00008,
+    cacheWrite: 0,
+    output: 0.0004,
+    total: 0.00248,
+  });
+  assert.equal(summary.pricingStatus, "priced");
 });
 
 test("extracts Gemini multi-model usage and sums priced costs", () => {

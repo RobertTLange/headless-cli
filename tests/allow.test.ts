@@ -50,17 +50,27 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", allow: "read-only" }, {}), {
     command: "agent",
-    args: ["-p", "--output-format", "stream-json", "--mode", "plan", "hello"],
+    args: ["-p", "--output-format", "stream-json", "--model", "gpt-5.5-medium", "--mode", "plan", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
     command: "gemini",
-    args: ["-p", "hello", "--output-format", "stream-json", "--approval-mode", "plan"],
+    args: [
+      "--model",
+      "gemini-3.1-pro-preview",
+      "--skip-trust",
+      "-p",
+      "hello",
+      "--output-format",
+      "stream-json",
+      "--approval-mode",
+      "plan",
+    ],
   });
 
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", allow: "read-only" }, {}), {
     command: "opencode",
-    args: ["run", "--format", "json", "hello"],
+    args: ["run", "--format", "json", "--model", "openai/gpt-5.4", "hello"],
     env: {
       OPENCODE_CONFIG_CONTENT:
         '{"permission":{"edit":"deny","bash":"deny","webfetch":"deny","websearch":"deny","codesearch":"deny","task":"deny"}}',
@@ -69,7 +79,18 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("pi", { prompt: "hello", allow: "read-only" }, {}), {
     command: "pi",
-    args: ["--no-session", "--mode", "json", "--tools", "read,grep,find,ls", "hello"],
+    args: [
+      "--no-session",
+      "--mode",
+      "json",
+      "--provider",
+      "openai-codex",
+      "--model",
+      "gpt-5.5",
+      "--tools",
+      "read,grep,find,ls",
+      "hello",
+    ],
   });
 });
 
@@ -98,9 +119,14 @@ test("builds explicit yolo commands for supported agents", () => {
     "--force",
     "--output-format",
     "stream-json",
+    "--model",
+    "gpt-5.5-medium",
     "hello",
   ]);
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "yolo" }, {}).args, [
+    "--model",
+    "gemini-3.1-pro-preview",
+    "--skip-trust",
     "-p",
     "hello",
     "--output-format",
@@ -112,6 +138,8 @@ test("builds explicit yolo commands for supported agents", () => {
     "run",
     "--format",
     "json",
+    "--model",
+    "openai/gpt-5.4",
     "--dangerously-skip-permissions",
     "hello",
   ]);
@@ -119,6 +147,10 @@ test("builds explicit yolo commands for supported agents", () => {
     "--no-session",
     "--mode",
     "json",
+    "--provider",
+    "openai-codex",
+    "--model",
+    "gpt-5.5",
     "--tools",
     "read,bash,edit,write",
     "hello",
@@ -151,11 +183,11 @@ test("builds read-only interactive commands for tmux mode", () => {
   });
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
     command: "gemini",
-    args: ["--skip-trust", "--approval-mode", "plan", "hello"],
+    args: ["--model", "gemini-3.1-pro-preview", "--skip-trust", "--approval-mode", "plan", "hello"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("opencode", { prompt: "hello", allow: "read-only" }, {}), {
     command: "opencode",
-    args: [],
+    args: ["--model", "openai/gpt-5.4"],
     env: {
       OPENCODE_CONFIG_CONTENT:
         '{"permission":{"edit":"deny","bash":"deny","webfetch":"deny","websearch":"deny","codesearch":"deny","task":"deny"}}',
@@ -201,7 +233,10 @@ test("CLI print-command includes allow mode flags", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "gemini -p hello --output-format stream-json --approval-mode plan\n");
+  assert.equal(
+    stdout.join(""),
+    "gemini --model gemini-3.1-pro-preview --skip-trust -p hello --output-format stream-json --approval-mode plan\n",
+  );
 });
 
 test("CLI print-command includes reasoning effort flags", async () => {
@@ -214,7 +249,7 @@ test("CLI print-command includes reasoning effort flags", async () => {
   assert.match(stdout.join(""), /-c 'model_reasoning_effort="high"'/);
 });
 
-test("CLI warns when reasoning effort is unsupported", async () => {
+test("CLI maps Cursor reasoning effort to model variants", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const code = await runCli(["cursor", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
@@ -223,8 +258,8 @@ test("CLI warns when reasoning effort is unsupported", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "agent -p --force --output-format stream-json hello\n");
-  assert.match(stderr.join(""), /reasoning effort is not supported by cursor and was ignored/);
+  assert.equal(stdout.join(""), "agent -p --force --output-format stream-json --model gpt-5.5-high hello\n");
+  assert.equal(stderr.join(""), "");
 });
 
 test("CLI warns when Gemini reasoning effort is unsupported", async () => {
@@ -236,7 +271,10 @@ test("CLI warns when Gemini reasoning effort is unsupported", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "gemini -p hello --output-format stream-json --approval-mode yolo\n");
+  assert.equal(
+    stdout.join(""),
+    "gemini --model gemini-3.1-pro-preview --skip-trust -p hello --output-format stream-json --approval-mode yolo\n",
+  );
   assert.match(stderr.join(""), /reasoning effort is not supported by gemini and was ignored/);
 });
 
@@ -259,7 +297,7 @@ test("CLI tmux warns when reasoning effort is unsupported", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /opencode --dangerously-skip-permissions/);
+  assert.match(stdout.join(""), /opencode --model openai\/gpt-5\.4 --dangerously-skip-permissions/);
   assert.match(stderr.join(""), /reasoning effort is not supported by opencode in tmux mode and was ignored/);
 });
 
