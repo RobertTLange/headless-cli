@@ -154,7 +154,7 @@ function usage(): string {
     "  rename <session> <name> Rename an existing headless tmux session.",
     "  docker doctor       Check Docker setup and image availability.",
     "  docker build        Build the local Docker image tag headless-local:dev.",
-    "  --check              Check installed agent binaries and versions.",
+    "  --check              Check installed agent binaries, versions, and local API/OAuth credentials.",
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",

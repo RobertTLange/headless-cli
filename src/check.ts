@@ -15,6 +15,7 @@ interface AgentCheck {
   agent: AgentName;
   command: string;
   available: boolean;
+  auth: AuthLabel;
   version: string;
 }
 
@@ -25,6 +26,8 @@ interface DockerCheck {
   image: string;
   imageAvailable: boolean;
 }
+
+type AuthLabel = "-" | "api" | "oauth" | "api+oauth";
 
 export function commandForAgent(agent: AgentName, env: Env): string {
   if (agent === "cursor") {
@@ -65,6 +68,66 @@ export function findExecutable(command: string, env: Env): string | undefined {
 
 export function commandExists(command: string, env: Env): boolean {
   return findExecutable(command, env) !== undefined;
+}
+
+const commonProviderApiEnvNames = [
+  "ANTHROPIC_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+const apiEnvNamesByAgent: Record<AgentName, string[]> = {
+  claude: ["ANTHROPIC_API_KEY"],
+  codex: ["CODEX_API_KEY", "OPENAI_API_KEY"],
+  cursor: ["CURSOR_API_KEY"],
+  gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"],
+  opencode: commonProviderApiEnvNames,
+  pi: ["PI_CODING_AGENT_API_KEY", ...commonProviderApiEnvNames],
+};
+
+const oauthEnvNamesByAgent: Record<AgentName, string[]> = {
+  claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
+  codex: [],
+  cursor: [],
+  gemini: [],
+  opencode: [],
+  pi: [],
+};
+
+const oauthPathsByAgent: Record<AgentName, string[]> = {
+  claude: [".claude/.credentials.json", ".claude/auth.json"],
+  codex: [".codex/auth.json"],
+  cursor: [".cursor/cli-config.json"],
+  gemini: [".gemini/google_accounts.json"],
+  opencode: [".config/opencode"],
+  pi: [".pi/agent/auth.json"],
+};
+
+function detectAuth(agent: AgentName, env: Env): AuthLabel {
+  const hasApi = apiEnvNamesByAgent[agent].some((name) => Boolean(env[name]));
+  const hasOauth =
+    oauthEnvNamesByAgent[agent].some((name) => Boolean(env[name])) ||
+    oauthPathsByAgent[agent].some((relPath) => homePathExists(env, relPath));
+
+  if (hasApi && hasOauth) return "api+oauth";
+  if (hasApi) return "api";
+  if (hasOauth) return "oauth";
+  return "-";
+}
+
+function homePathExists(env: Env, relPath: string): boolean {
+  if (!env.HOME) {
+    return false;
+  }
+  try {
+    statSync(join(env.HOME, relPath));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const versionTimeoutMs = 5000;
@@ -155,6 +218,7 @@ export async function checkAgents(env: Env): Promise<AgentCheck[]> {
         agent,
         command,
         available: executable !== undefined,
+        auth: detectAuth(agent, env),
         version: executable ? await captureVersion(executable, env) : "-",
       };
     }),
@@ -181,10 +245,11 @@ export async function checkDocker(env: Env, image: string): Promise<DockerCheck>
 
 export function renderAgentChecks(checks: AgentCheck[]): string {
   const rows = [
-    ["Agent", "Status", "Version", "Binary"],
+    ["Agent", "Status", "Auth", "Version", "Binary"],
     ...checks.map((check) => [
       check.agent,
       check.available ? "✓" : "✗",
+      check.auth,
       check.version,
       check.command,
     ]),
