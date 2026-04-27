@@ -96,7 +96,23 @@ When no agent is specified, Headless selects the first installed agent in this o
 
 ## User Defaults
 
-Headless reads optional model and reasoning defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults. CLI flags override config values; existing provider environment model overrides for Codex and Pi also keep their precedence over config values. See `config.toml.example` for the full template.
+Headless reads optional model and reasoning defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults.
+
+```bash
+mkdir -p ~/.headless
+cp config.toml.example ~/.headless/config.toml
+```
+
+Supported sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`. Supported keys are `model` and `reasoning_effort`.
+
+Precedence is:
+
+1. CLI flags, such as `--model` and `--reasoning-effort`.
+2. Existing provider environment model overrides for Codex and Pi, such as `CODEX_MODEL` and `PI_CODING_AGENT_MODEL`.
+3. `~/.headless/config.toml`.
+4. Built-in defaults.
+
+Example:
 
 ```toml
 [agents.opencode]
@@ -111,6 +127,8 @@ reasoning_effort = "xhigh"
 model = "openai-codex/gpt-5.5"
 reasoning_effort = "xhigh"
 ```
+
+The full template is tracked as `config.toml.example`.
 
 ## 6 Execution Modes
 
