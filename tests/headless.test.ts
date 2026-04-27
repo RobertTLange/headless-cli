@@ -294,6 +294,95 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
   });
 });
 
+test("builds native session commands for supported agents", () => {
+  assert.deepEqual(
+    buildAgentCommand("claude", {
+      prompt: "hello",
+      sessionAlias: "work",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sessionMode: "new",
+    }, {}).args,
+    [
+      "--model",
+      "claude-opus-4-6",
+      "-p",
+      "--session-id",
+      "11111111-1111-4111-8111-111111111111",
+      "--name",
+      "work",
+      "hello",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--dangerously-skip-permissions",
+    ],
+  );
+
+  assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", sessionId: "thread-1", sessionMode: "resume" }, {}).args, [
+    "--dangerously-bypass-approvals-and-sandbox",
+    "exec",
+    "resume",
+    "--model",
+    "gpt-5.5",
+    "--json",
+    "--skip-git-repo-check",
+    "thread-1",
+    "-",
+  ]);
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", sessionId: "chat-1", sessionMode: "resume" }, {}).args, [
+    "-p",
+    "--force",
+    "--output-format",
+    "stream-json",
+    "--resume",
+    "chat-1",
+    "--model",
+    "gpt-5.5-medium",
+    "hello",
+  ]);
+
+  assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", sessionId: "gem-1", sessionMode: "resume" }, {}).args, [
+    "--model",
+    "gemini-3.1-pro-preview",
+    "--skip-trust",
+    "--resume",
+    "gem-1",
+    "-p",
+    "hello",
+    "--output-format",
+    "stream-json",
+    "--approval-mode",
+    "yolo",
+  ]);
+
+  assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", sessionAlias: "work", sessionMode: "new" }, {}).args, [
+    "run",
+    "--format",
+    "json",
+    "--model",
+    "openai/gpt-5.4",
+    "--dangerously-skip-permissions",
+    "--title",
+    "work",
+    "hello",
+  ]);
+
+  assert.deepEqual(buildAgentCommand("pi", { prompt: "hello", sessionId: "pi-1", sessionMode: "resume" }, {}).args, [
+    "--mode",
+    "json",
+    "--provider",
+    "openai-codex",
+    "--model",
+    "gpt-5.5",
+    "--session",
+    "pi-1",
+    "--tools",
+    "read,bash,edit,write",
+    "hello",
+  ]);
+});
+
 test("builds interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", model: "gpt-next" }, {}), {
     command: "codex",
@@ -616,6 +705,159 @@ test("CLI accepts stdin fallback", async () => {
     stdout.join(""),
     "pi --no-session --mode json --provider openai-codex --model gpt-5.5 --tools 'read,bash,edit,write' 'stdin prompt'\n",
   );
+});
+
+test("CLI --session creates and resumes a Codex alias", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "codex-args.jsonl");
+    mkdirSync(home);
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "codex"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
+          "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));",
+          "console.log(JSON.stringify({ type: 'agent_message', text: args.includes('resume') ? 'resumed' : 'started' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "codex"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    assert.equal(await runCli(["codex", "--session", "work", "--prompt", "hello"], { env, stdout: (text) => stdout.push(text) }), 0);
+    assert.equal(stdout.join(""), "started\n");
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.codex.work.nativeId, "thread-1");
+
+    stdout.length = 0;
+    assert.equal(await runCli(["codex", "--session", "work", "--prompt", "again"], { env, stdout: (text) => stdout.push(text) }), 0);
+    assert.equal(stdout.join(""), "resumed\n");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(calls[1].includes("resume"), true);
+    assert.equal(calls[1].includes("thread-1"), true);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --session pre-creates and stores Cursor chats", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "agent-args.jsonl");
+    mkdirSync(home);
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "agent"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args[0] === 'create-chat') { console.log('chat-1'); process.exit(0); }",
+          "console.log(JSON.stringify({ role: 'assistant', content: 'cursor done' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "agent"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    const code = await runCli(["cursor", "--session", "work", "--prompt", "hello"], {
+      env,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "cursor done\n");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls[0], ["create-chat"]);
+    assert.equal(calls[1].includes("--resume"), true);
+    assert.equal(calls[1].includes("chat-1"), true);
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.cursor.work.nativeId, "chat-1");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --session stores the newest Gemini session when list output is oldest first", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "gemini-args.jsonl");
+    mkdirSync(home);
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "gemini"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args.includes('--list-sessions')) {",
+          "  console.log('Available sessions for this project (2):');",
+          "  console.log('  1. older session (4 hours ago) [11111111-1111-4111-8111-111111111111]');",
+          "  console.log('  2. newest session (1 hour ago) [22222222-2222-4222-8222-222222222222]');",
+          "  process.exit(0);",
+          "}",
+          "console.log(JSON.stringify({ response: 'gemini done' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "gemini"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    const code = await runCli(["gemini", "--session", "work", "--prompt", "hello"], {
+      env,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "gemini done\n");
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.gemini.work.nativeId, "22222222-2222-4222-8222-222222222222");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI rejects invalid --session combinations", async () => {
+  const stderr: string[] = [];
+  assert.equal(await runCli(["codex", "--session", "bad/name", "--prompt", "hello"], { stderr: (text) => stderr.push(text) }), 2);
+  assert.match(stderr.join(""), /invalid session name/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["codex", "--session", "work", "--name", "other", "--tmux", "--prompt", "hello"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
+  );
+  assert.match(stderr.join(""), /--session cannot be used with --name/);
+
+  stderr.length = 0;
+  assert.equal(
+    await runCli(["codex", "--session", "work", "--docker", "--prompt", "hello"], { stderr: (text) => stderr.push(text) }),
+    2,
+  );
+  assert.match(stderr.join(""), /--session cannot be used with --docker/);
 });
 
 test("CLI --docker print-command wraps the selected agent command", async () => {
@@ -1441,6 +1683,64 @@ test("CLI --tmux launches an interactive tmux session and sends the prompt", asy
     ]);
     assert.match(sessionName, /^headless-codex-\d+$/);
     assert.match(stdout.join(""), new RegExp(`tmux attach-session -t ${sessionName}`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --session starts or sends to a named tmux session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "tmux.jsonl");
+    const stateFile = join(dir, "active");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "tmux"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args[0] === 'has-session') process.exit(fs.existsSync(process.env.HEADLESS_TMUX_ACTIVE) ? 0 : 1);",
+          "if (args[0] === 'new-session') fs.writeFileSync(process.env.HEADLESS_TMUX_ACTIVE, '1');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+    });
+
+    const env = {
+      ...process.env,
+      HEADLESS_TMUX_ACTIVE: stateFile,
+      HEADLESS_TMUX_CAPTURE: captureFile,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    const stdout: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.match(stdout.join(""), /tmux session: headless-codex-work/);
+
+    stdout.length = 0;
+    assert.equal(
+      await runCli(["codex", "--prompt", "again", "--work-dir", dir, "--tmux", "--session", "work"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "sent: headless-codex-work\n");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls[0], ["has-session", "-t", "headless-codex-work"]);
+    assert.deepEqual(calls[1].slice(0, 4), ["new-session", "-d", "-s", "headless-codex-work"]);
+    assert.deepEqual(calls.at(-3), ["set-buffer", "-b", "headless-codex-work-send", "again"]);
+    assert.deepEqual(calls.at(-1), ["send-keys", "-t", "headless-codex-work", "Enter"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

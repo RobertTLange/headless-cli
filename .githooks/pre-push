@@ -1,0 +1,41 @@
+#!/bin/sh
+set -u
+
+if [ "${HEADLESS_SKIP_INTEGRATION_HOOK:-}" = "1" ]; then
+  echo "headless pre-push: skipped by HEADLESS_SKIP_INTEGRATION_HOOK=1"
+  exit 0
+fi
+
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$hook_dir/.." && pwd)
+headless_bin="$repo_root/dist/cli.js"
+
+cd "$repo_root"
+
+echo "headless pre-push: building local CLI"
+if ! npm run build; then
+  cat >&2 <<'EOF'
+headless pre-push: local build failed.
+
+Bypass once with:
+  HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
+EOF
+  exit 1
+fi
+
+echo "headless pre-push: running local integration suite"
+if ! HEADLESS_BIN="$headless_bin" npm run test:integration:local; then
+  cat >&2 <<'EOF'
+headless pre-push: local integration suite failed.
+
+Expected local prerequisites:
+  - all six Headless backends installed and authenticated
+  - Docker installed, running, and able to pull/run the default image
+  - Modal configured with MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml
+  - tmux installed
+
+Bypass once with:
+  HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
+EOF
+  exit 1
+fi

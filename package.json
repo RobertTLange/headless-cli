@@ -21,9 +21,11 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test $(find tests -name '*.test.ts' ! -name 'integration-local.test.ts' -print)",
+    "test:integration:local": "node --import tsx --test tests/integration-local.test.ts",
     "test:agents": "tsx --test tests/agents-smoke.ts",
     "check": "npm run build && npm test",
+    "hooks:install": "git config core.hooksPath .githooks",
     "pack:check": "npm pack --dry-run",
     "prepack": "npm run build"
   },

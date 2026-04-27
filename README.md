@@ -55,6 +55,8 @@ headless codex --prompt "Fix the failing tests" --debug
 headless codex --prompt "Summarize this repo" --model gpt-5 --usage
 # Launch in tmux for persistent interactive sessions.
 headless codex --prompt "Fix the failing tests" --tmux
+# Start or resume a named native session.
+headless codex --prompt "Continue the fix" --session bughunt
 # Run the agent inside the default Docker image.
 headless codex --prompt "Fix the failing tests" --docker
 # Run the agent in a Modal CPU sandbox and sync edits back.
@@ -93,6 +95,8 @@ Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasonin
 
 By default, Headless prints the agent's final assistant message. Pass `--json` to stream the raw native JSON trace, or `--debug` to stream the trace and append the extracted final message. Pass `--usage` to append normalized token usage and cost JSON for one-shot runs. Headless uses native agent costs when available and fetches live fallback pricing from `https://models.dev/api.json`; if a model cannot be priced, token counts are still returned with `cost: null`. When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`.
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
+
+Pass `--session <name>` to start or resume a named session. Headless stores per-agent aliases in `~/.headless/sessions.json`, separate from `config.toml`, and maps each alias to the selected backend's native session id or session file. A missing alias starts a new session and records it after the run succeeds; an existing alias resumes that native session. In tmux mode, `--session <name>` maps to `headless-<agent>-<name>`: an active tmux session receives the prompt, otherwise Headless starts a new named tmux session. `--session` cannot be combined with `--name`, `--docker`, or `--modal`.
 
 ## User Defaults
 
@@ -203,12 +207,13 @@ Use `headless docker build --docker-image <image>` to choose a different local t
 
 ### 5) tmux mode (`--tmux`)
 
-tmux mode creates a detached session named `headless-<agent>-<pid>`, starts the selected agent in interactive mode with the prompt as its initial message, prints an attach command, and exits. Pass `--name <name>` to create a stable managed session name like `headless-codex-work`.
+tmux mode creates a detached session named `headless-<agent>-<pid>`, starts the selected agent in interactive mode with the prompt as its initial message, prints an attach command, and exits. Pass `--name <name>` to create a stable managed session name like `headless-codex-work`. Pass `--session <name>` instead when you want start-or-send behavior: if `headless-<agent>-<name>` is active, Headless sends the prompt there; otherwise it starts that named session.
 
 ```bash
 headless claude --prompt-file task.md --work-dir /path/to/project --tmux
 tmux attach-session -t headless-claude-12345
 headless codex --prompt "Fix the tests" --tmux --name work
+headless codex --prompt "Run the focused tests now" --tmux --session work
 ```
 
 Use `--print-command --tmux` to preview the tmux launch command without starting a session.
@@ -284,6 +289,7 @@ Options:
 - `--usage`: append normalized token usage and cost JSON after the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
 - `--name`: use a stable managed session name with `--tmux`.
+- `--session`: start or resume a named Headless session. Uses `~/.headless/sessions.json`; in tmux mode starts or sends to `headless-<agent>-<name>`.
 - `send <session-name>`: send a message to an existing Headless tmux session.
 - `rename <session-name> <new-name>`: rename an existing Headless tmux session.
 - `docker doctor`: check Docker setup and image availability.

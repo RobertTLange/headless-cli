@@ -14,6 +14,9 @@ export interface BuildOptions {
   model?: string;
   allow?: AllowMode;
   reasoningEffort?: ReasoningEffort;
+  sessionAlias?: string;
+  sessionId?: string;
+  sessionMode?: "new" | "resume";
 }
 
 export interface BuiltCommand {

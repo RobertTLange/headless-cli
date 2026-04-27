@@ -259,5 +259,26 @@ export function extractFinalMessage(agent: AgentName, stdout: string): string {
   return candidates.at(-1)?.trim() ?? "";
 }
 
+export function extractNativeSessionId(agent: AgentName, stdout: string): string {
+  const records = parseJsonValues(stdout).flatMap(flattenRecords);
+  for (const record of records) {
+    if (agent === "codex") {
+      const threadId = asString(record.thread_id).trim();
+      if (asString(record.type).trim().toLowerCase() === "thread.started" && threadId) {
+        return threadId;
+      }
+    }
+
+    if (agent === "opencode") {
+      const sessionId = asString(record.sessionID).trim() || asString(record.sessionId).trim();
+      if (sessionId) return sessionId;
+    }
+
+    const sessionId = asString(record.session_id).trim() || asString(record.sessionId).trim();
+    if (sessionId) return sessionId;
+  }
+  return "";
+}
+
 export { extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./usage.js";
 export type { UsageCostBreakdown, UsageSummary } from "./usage.js";

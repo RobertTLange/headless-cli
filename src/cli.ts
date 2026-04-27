@@ -6,11 +6,13 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,7 +45,15 @@ import {
   DEFAULT_MODAL_TIMEOUT_SECONDS,
   executeModalAgent,
 } from "./modal.js";
-import { extractAgentError, extractFinalMessage, extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./output.js";
+import {
+  extractAgentError,
+  extractFinalMessage,
+  extractNativeSessionId,
+  extractUsageSummary,
+  fetchModelsDevPricing,
+  priceUsageSummary,
+} from "./output.js";
+import { readStoredSession, sessionStorePath, writeStoredSession } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
@@ -62,6 +72,7 @@ interface ParsedArgs {
   allow?: AllowMode;
   workDir?: string;
   tmuxName?: string;
+  sessionAlias?: string;
   docker: boolean;
   dockerImage?: string;
   dockerArgs: string[];
@@ -138,6 +149,7 @@ function usage(): string {
     "  --usage              Print final message plus normalized token and cost JSON.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --name <name>        Use a managed tmux session name with --tmux.",
+    "  --session <name>     Start or resume a named Headless session.",
     "  send <session-name>  Send a message to an existing headless tmux session.",
     "  rename <session> <name> Rename an existing headless tmux session.",
     "  docker doctor       Check Docker setup and image availability.",
@@ -272,6 +284,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--name":
         parsed.tmuxName = takeValue(args, arg);
+        break;
+      case "--session":
+        parsed.sessionAlias = takeValue(args, arg);
         break;
       case "--json":
         parsed.json = true;
@@ -631,6 +646,189 @@ interface ExecuteCommandOptions {
   stdout: (text: string) => void;
 }
 
+interface SessionPlan {
+  alias: string;
+  mode: "new" | "resume";
+  nativeId?: string;
+}
+
+function validateSessionAlias(alias: string | undefined): string | undefined {
+  if (alias === undefined) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9_.-]+$/.test(alias)) {
+    throw new CliError("invalid session name; use letters, numbers, dots, dashes, or underscores");
+  }
+  return alias;
+}
+
+function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env): SessionPlan | undefined {
+  const validAlias = validateSessionAlias(alias);
+  if (!validAlias) {
+    return undefined;
+  }
+  if (!sessionStorePath(env)) {
+    throw new CliError("HOME is required for --session");
+  }
+  const stored = readStoredSession(env, agent, validAlias);
+  if (stored) {
+    return { alias: validAlias, mode: "resume", nativeId: stored.nativeId };
+  }
+  return {
+    alias: validAlias,
+    mode: "new",
+    nativeId: agent === "claude" ? randomUUID() : undefined,
+  };
+}
+
+async function prepareSessionPlan(
+  agent: AgentName,
+  plan: SessionPlan | undefined,
+  cwd: string | undefined,
+  env: Env,
+): Promise<SessionPlan | undefined> {
+  if (!plan || plan.mode !== "new" || agent !== "cursor" || plan.nativeId) {
+    return plan;
+  }
+  const command = { command: env.CURSOR_CLI_BIN || "agent", args: ["create-chat"] };
+  const result = await captureSimpleCommand(command, cwd, env);
+  if (result.code !== 0) {
+    throw new CliError(result.stderr.trim() || "could not create Cursor session");
+  }
+  const nativeId = result.stdout.trim();
+  if (!nativeId) {
+    throw new CliError("Cursor did not return a session id");
+  }
+  return { ...plan, nativeId };
+}
+
+function applySessionPlan(commandOptions: {
+  prompt: string;
+  promptFile?: string;
+  model?: string;
+  allow?: AllowMode;
+  reasoningEffort?: ReasoningEffort;
+}, plan: SessionPlan | undefined): typeof commandOptions & {
+  sessionAlias?: string;
+  sessionId?: string;
+  sessionMode?: "new" | "resume";
+} {
+  if (!plan) {
+    return commandOptions;
+  }
+  return {
+    ...commandOptions,
+    sessionAlias: plan.alias,
+    sessionId: plan.nativeId,
+    sessionMode: plan.mode,
+  };
+}
+
+async function persistSessionPlan(
+  agent: AgentName,
+  plan: SessionPlan | undefined,
+  stdout: string,
+  cwd: string | undefined,
+  env: Env,
+): Promise<void> {
+  if (!plan) {
+    return;
+  }
+  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env));
+  if (!nativeId) {
+    throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
+  }
+  writeStoredSession(env, {
+    agent,
+    alias: plan.alias,
+    nativeId,
+    workDir: cwd ?? process.cwd(),
+  });
+}
+
+async function discoverNativeSessionId(
+  agent: AgentName,
+  stdout: string,
+  cwd: string | undefined,
+  env: Env,
+): Promise<string> {
+  const fromTrace = extractNativeSessionId(agent, stdout);
+  if (fromTrace) {
+    return fromTrace;
+  }
+  if (agent === "gemini") {
+    return await newestGeminiSessionId(cwd, env);
+  }
+  if (agent === "opencode") {
+    return await newestOpenCodeSessionId(cwd, env);
+  }
+  if (agent === "pi") {
+    return newestPiSessionFile(cwd, env);
+  }
+  return "";
+}
+
+async function newestGeminiSessionId(cwd: string | undefined, env: Env): Promise<string> {
+  const result = await captureSimpleCommand(
+    { command: "gemini", args: ["--list-sessions", "--skip-trust"] },
+    cwd,
+    env,
+  );
+  if (result.code !== 0) {
+    return "";
+  }
+  const matches = [...result.stdout.matchAll(/\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]/gi)];
+  return matches.at(-1)?.[1] ?? "";
+}
+
+async function newestOpenCodeSessionId(cwd: string | undefined, env: Env): Promise<string> {
+  const result = await captureSimpleCommand(
+    { command: "opencode", args: ["session", "list", "--format", "json", "--max-count", "20"] },
+    cwd,
+    env,
+  );
+  if (result.code !== 0) {
+    return "";
+  }
+  try {
+    const sessions = JSON.parse(result.stdout) as Array<{ id?: unknown; directory?: unknown }>;
+    const workspace = cwd ? realpathSync(cwd) : process.cwd();
+    const match = sessions.find((session) => session.directory === workspace) ?? sessions[0];
+    return typeof match?.id === "string" ? match.id : "";
+  } catch {
+    return "";
+  }
+}
+
+function newestPiSessionFile(cwd: string | undefined, env: Env): string {
+  const home = env.HOME;
+  if (!home) {
+    return "";
+  }
+  const sessionDir = join(home, ".pi", "agent", "sessions", piProjectSessionDir(cwd ?? process.cwd()));
+  if (!existsSync(sessionDir)) {
+    return "";
+  }
+  let newestPath = "";
+  let newestTime = -1;
+  for (const entry of readdirSync(sessionDir)) {
+    if (!entry.endsWith(".jsonl")) {
+      continue;
+    }
+    const path = join(sessionDir, entry);
+    const stats = statSync(path);
+    if (stats.mtimeMs > newestTime) {
+      newestTime = stats.mtimeMs;
+      newestPath = path;
+    }
+  }
+  return newestPath;
+}
+
+function piProjectSessionDir(workspace: string): string {
+  return `--${realpathSync(workspace).replace(/^\/+/, "").replace(/[\\/]+/g, "-")}--`;
+}
+
 function suppressKnownStderr(agent: AgentName, text: string): string {
   if (agent === "codex") {
     return text
@@ -976,6 +1174,11 @@ async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env):
   return renderHeadlessTmuxSessions(sessions);
 }
 
+async function headlessTmuxSessionExists(sessionName: string, env: Env): Promise<boolean> {
+  const result = await captureSimpleCommand({ command: "tmux", args: ["has-session", "-t", sessionName] }, undefined, env);
+  return result.code === 0;
+}
+
 function trustClaudeWorkspace(cwd: string | undefined, env: Env): void {
   const homeDir = env.HOME;
   if (!homeDir) {
@@ -1118,6 +1321,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (
         parsed.tmux ||
+        parsed.sessionAlias !== undefined ||
         parsed.json ||
         parsed.debug ||
         parsed.usage ||
@@ -1169,6 +1373,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.tmuxName !== undefined) {
         throw new CliError("--name cannot be used with rename");
       }
+      if (parsed.sessionAlias !== undefined) {
+        throw new CliError("--session cannot be used with rename");
+      }
 
       const session = validateHeadlessTmuxSession(parsed.renameSession);
       if (!parsed.renameName) {
@@ -1209,6 +1416,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.tmuxName !== undefined) {
         throw new CliError("--name cannot be used with send");
       }
+      if (parsed.sessionAlias !== undefined) {
+        throw new CliError("--session cannot be used with send");
+      }
 
       const sessionName = validateHeadlessTmuxSessionName(parsed.sendSession);
       const prompt = await resolvePrompt(parsed, deps, { forceText: true, requireAgent: false });
@@ -1228,6 +1438,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
     if (parsed.check) {
+      if (parsed.sessionAlias !== undefined) {
+        throw new CliError("--session cannot be used with --check");
+      }
       stdout(renderAgentChecks(await checkAgents(env)));
       stdout(renderDockerCheck(await checkDocker(env, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE)));
       return 0;
@@ -1239,6 +1452,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--modal cannot be used with --list");
     }
     if (parsed.list) {
+      if (parsed.sessionAlias !== undefined) {
+        throw new CliError("--session cannot be used with --list");
+      }
       stdout(await listHeadlessTmuxSessions(parsed.agent, env));
       return 0;
     }
@@ -1281,6 +1497,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.tmuxName !== undefined && !parsed.tmux) {
       throw new CliError("--name can only be used with --tmux");
     }
+    if (parsed.sessionAlias !== undefined && parsed.tmuxName !== undefined) {
+      throw new CliError("--session cannot be used with --name");
+    }
+    if (parsed.sessionAlias !== undefined && parsed.docker) {
+      throw new CliError("--session cannot be used with --docker");
+    }
+    if (parsed.sessionAlias !== undefined && parsed.modal) {
+      throw new CliError("--session cannot be used with --modal");
+    }
+    validateSessionAlias(parsed.sessionAlias);
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));
       return 0;
@@ -1301,6 +1527,23 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux });
 
     if (parsed.tmux) {
+      const sessionName = parsed.sessionAlias
+        ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
+        : undefined;
+      if (sessionName && (await headlessTmuxSessionExists(sessionName, env))) {
+        const tmuxCommands = buildTmuxSendCommands(sessionName, prompt.prompt);
+        if (parsed.printCommand) {
+          for (const command of tmuxCommands.commands) {
+            stdout(`${quoteCommand(command)}\n`);
+          }
+          return 0;
+        }
+        const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
+        if (code === 0) {
+          stdout(`sent: ${tmuxCommands.sessionName}\n`);
+        }
+        return code;
+      }
       const tmuxCommand = buildInteractiveAgentCommand(
         parsed.agent,
         {
@@ -1315,7 +1558,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (reasoningWarning) {
         stderr(reasoningWarning);
       }
-      const tmuxCommands = buildTmuxCommands(parsed.agent, tmuxCommand, prompt.prompt, cwd, env, parsed.tmuxName);
+      const tmuxCommands = buildTmuxCommands(
+        parsed.agent,
+        tmuxCommand,
+        prompt.prompt,
+        cwd,
+        env,
+        parsed.sessionAlias ?? parsed.tmuxName,
+      );
 
       if (parsed.printCommand) {
         stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
@@ -1340,15 +1590,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
 
+    let sessionPlan = buildSessionPlan(parsed.agent, parsed.sessionAlias, env);
+    if (!parsed.printCommand) {
+      sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env);
+    }
     let command = buildAgentCommand(
       parsed.agent,
-      {
+      applySessionPlan({
         prompt: prompt.prompt,
         promptFile: prompt.promptFile,
         model: configuredDefaults.model,
         allow: parsed.allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
-      },
+      }, sessionPlan),
       env,
     );
     const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
@@ -1390,7 +1644,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     const stdoutHandling: StdoutHandling = parsed.json
-      ? "stream"
+      ? parsed.sessionAlias
+        ? "capture-and-stream"
+        : "stream"
       : parsed.debug
         ? "capture-and-stream"
         : "capture";
@@ -1422,6 +1678,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           stdout,
           stdoutHandling,
         });
+    if (result.code === 0 && sessionPlan) {
+      await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
+    }
     if (parsed.json) {
       return result.code;
     }

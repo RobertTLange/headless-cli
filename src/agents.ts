@@ -125,6 +125,14 @@ function commandWithOptionalEnv(command: string, args: string[], env: Env | unde
 function buildClaude(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model ?? defaultClaudeModel);
   args.push("-p");
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--resume", options.sessionId);
+  } else if (options.sessionMode === "new" && options.sessionId) {
+    args.push("--session-id", options.sessionId);
+    if (options.sessionAlias) {
+      args.push("--name", options.sessionAlias);
+    }
+  }
 
   if (options.promptFile) {
     args.push("--output-format", "stream-json", "--verbose");
@@ -146,11 +154,15 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
       ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
       : ["--dangerously-bypass-approvals-and-sandbox"]),
     "exec",
+    ...(options.sessionMode === "resume" && options.sessionId ? ["resume"] : []),
     ...withModel([], model),
     ...(options.reasoningEffort ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
     "--json",
     "--skip-git-repo-check",
   ];
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push(options.sessionId);
+  }
 
   if (options.promptFile) {
     args.push("-");
@@ -173,7 +185,11 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
   if (options.reasoningEffort) {
     args.push("-c", `model_reasoning_effort="${options.reasoningEffort}"`);
   }
-  args.push(options.prompt);
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("resume", options.sessionId, options.prompt);
+  } else {
+    args.push(options.prompt);
+  }
   return { command: "codex", args };
 }
 
@@ -184,6 +200,9 @@ function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
 
   if (env.CURSOR_API_KEY) {
     args.unshift("--api-key", env.CURSOR_API_KEY);
+  }
+  if (options.sessionId && (options.sessionMode === "resume" || options.sessionMode === "new")) {
+    args.push("--resume", options.sessionId);
   }
   args.push("--model", model);
   if (options.allow === "read-only") {
@@ -202,6 +221,9 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   if (env.CURSOR_API_KEY) {
     args.push("--api-key", env.CURSOR_API_KEY);
   }
+  if (options.sessionId && (options.sessionMode === "resume" || options.sessionMode === "new")) {
+    args.push("--resume", options.sessionId);
+  }
   args.push("--model", model);
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--force");
@@ -217,6 +239,9 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
 function buildGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model ?? DEFAULT_GEMINI_MODEL);
   args.push("--skip-trust");
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--resume", options.sessionId);
+  }
 
   if (options.promptFile) {
     args.push("--prompt", "", "--output-format", "stream-json", ...withGeminiAllow([], options.allow));
@@ -230,6 +255,9 @@ function buildGemini(options: BuildOptions): BuiltCommand {
 function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model ?? DEFAULT_GEMINI_MODEL);
   args.push("--skip-trust");
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--resume", options.sessionId);
+  }
   args.push(...withGeminiAllow([], options.allow));
   args.push(options.prompt);
   return { command: "gemini", args };
@@ -246,6 +274,11 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--dangerously-skip-permissions");
   }
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--session", options.sessionId);
+  } else if (options.sessionMode === "new" && options.sessionAlias) {
+    args.push("--title", options.sessionAlias);
+  }
   args.push(options.prompt);
 
   return commandWithOptionalEnv("opencode", args, opencodeEnv(options.allow));
@@ -261,7 +294,7 @@ function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
 
 function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
-  const args = ["--no-session", "--mode", "json"];
+  const args = options.sessionMode ? ["--mode", "json"] : ["--no-session", "--mode", "json"];
   const { provider, model } = piModelSpec(options.model, env);
 
   if (provider) {
@@ -273,6 +306,9 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   }
   if (options.reasoningEffort) {
     args.push("--thinking", options.reasoningEffort);
+  }
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--session", options.sessionId);
   }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
@@ -298,6 +334,9 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   }
   if (options.reasoningEffort) {
     args.push("--thinking", options.reasoningEffort);
+  }
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--session", options.sessionId);
   }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
