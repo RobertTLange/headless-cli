@@ -55,7 +55,7 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
     command: "gemini",
-    args: ["-p", "hello", "--output-format", "stream-json", "--approval-mode", "plan"],
+    args: ["--skip-trust", "-p", "hello", "--output-format", "stream-json", "--approval-mode", "plan"],
   });
 
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", allow: "read-only" }, {}), {
@@ -101,6 +101,7 @@ test("builds explicit yolo commands for supported agents", () => {
     "hello",
   ]);
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "yolo" }, {}).args, [
+    "--skip-trust",
     "-p",
     "hello",
     "--output-format",
@@ -201,7 +202,7 @@ test("CLI print-command includes allow mode flags", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "gemini -p hello --output-format stream-json --approval-mode plan\n");
+  assert.equal(stdout.join(""), "gemini --skip-trust -p hello --output-format stream-json --approval-mode plan\n");
 });
 
 test("CLI print-command includes reasoning effort flags", async () => {
@@ -236,7 +237,7 @@ test("CLI warns when Gemini reasoning effort is unsupported", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "gemini -p hello --output-format stream-json --approval-mode yolo\n");
+  assert.equal(stdout.join(""), "gemini --skip-trust -p hello --output-format stream-json --approval-mode yolo\n");
   assert.match(stderr.join(""), /reasoning effort is not supported by gemini and was ignored/);
 });
 

@@ -113,7 +113,7 @@ test("leaves unsupported reasoning effort agent commands unchanged", () => {
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "gemini",
-    args: ["-p", "hello", "--output-format", "stream-json", "--approval-mode", "yolo"],
+    args: ["--skip-trust", "-p", "hello", "--output-format", "stream-json", "--approval-mode", "yolo"],
   });
 });
 
@@ -148,7 +148,17 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "", promptFile: "prompt.md", model: "gemini-pro" }, {}), {
     command: "gemini",
-    args: ["--model", "gemini-pro", "--prompt", "", "--output-format", "stream-json", "--approval-mode", "yolo"],
+    args: [
+      "--model",
+      "gemini-pro",
+      "--skip-trust",
+      "--prompt",
+      "",
+      "--output-format",
+      "stream-json",
+      "--approval-mode",
+      "yolo",
+    ],
     stdinFile: "prompt.md",
   });
 });
@@ -175,7 +185,17 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
     command: "gemini",
-    args: ["--model", "gemini-model", "-p", "hello", "--output-format", "stream-json", "--approval-mode", "yolo"],
+    args: [
+      "--model",
+      "gemini-model",
+      "--skip-trust",
+      "-p",
+      "hello",
+      "--output-format",
+      "stream-json",
+      "--approval-mode",
+      "yolo",
+    ],
   });
 
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", model: "oc-model" }, {}), {

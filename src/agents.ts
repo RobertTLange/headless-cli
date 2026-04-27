@@ -156,6 +156,7 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
 
 function buildGemini(options: BuildOptions): BuiltCommand {
   const args = withModel([], options.model);
+  args.push("--skip-trust");
 
   if (options.promptFile) {
     args.push("--prompt", "", "--output-format", "stream-json", ...withGeminiAllow([], options.allow));
