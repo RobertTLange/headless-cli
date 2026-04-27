@@ -2095,6 +2095,38 @@ test("CLI reports agent JSON error events before extraction failures", async () 
   }
 });
 
+test("CLI reports agent JSON error events from nonzero exits", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "opencode");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'error', error: { name: 'ProviderAuthError', data: { providerID: 'gemini', message: 'missing api key' } } }));",
+          "process.exit(2);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stderr: string[] = [];
+    const code = await runCli(["opencode", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+    });
+
+    assert.equal(code, 2);
+    assert.equal(stderr.join(""), "headless: opencode error: ProviderAuthError: missing api key\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI reports invalid input", async () => {
   const stderr: string[] = [];
   assert.equal(await runCli(["unknown", "--prompt", "hello"], { stderr: (text) => stderr.push(text) }), 2);

@@ -1441,12 +1441,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       return result.code;
     }
+    const agentError = extractAgentError(parsed.agent, result.stdout);
+    if (agentError) {
+      stderr(`headless: ${agentError}\n`);
+      return result.code === 0 ? 1 : result.code;
+    }
     if (result.code === 0) {
-      const agentError = extractAgentError(parsed.agent, result.stdout);
-      if (agentError) {
-        stderr(`headless: ${agentError}\n`);
-        return 1;
-      }
       stderr("headless: could not extract final message; rerun with --json for raw trace\n");
       return 1;
     }
