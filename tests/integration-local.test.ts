@@ -334,6 +334,25 @@ test("Codex completes through Docker", { timeout: dockerTimeoutMs }, async () =>
   }
 });
 
+test("Codex Docker non-smoke modes return nonce output", { timeout: dockerTimeoutMs * 3 }, async () => {
+  for (const mode of ["--json", "--debug", "--usage"]) {
+    const dir = tempWorkdir(`codex-docker-${mode.slice(2)}`);
+    try {
+      const nonce = `${suiteNonce}-codex-docker-${mode.slice(2)}`;
+      const result = await headless(
+        ["codex", "--docker", "--work-dir", dir, "--allow", "read-only", mode, "--prompt", prompt(nonce)],
+        { timeoutMs: dockerTimeoutMs },
+      );
+      assertNonce(result, nonce, `Codex Docker ${mode}`);
+      if (mode === "--usage") {
+        assert.match(result.stdout, /"usage"\s*:/, "Codex Docker --usage did not print usage JSON");
+      }
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
 test("Codex completes through Modal in a temporary git workdir", { timeout: modalTimeoutMs }, async () => {
   const dir = await tempGitWorkdir("codex-modal");
   try {
@@ -356,5 +375,36 @@ test("Codex completes through Modal in a temporary git workdir", { timeout: moda
     assertNonce(result, nonce, "Codex Modal smoke");
   } finally {
     rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Codex Modal non-smoke modes return nonce output", { timeout: modalTimeoutMs * 3 }, async () => {
+  for (const mode of ["--json", "--debug", "--usage"]) {
+    const dir = await tempGitWorkdir(`codex-modal-${mode.slice(2)}`);
+    try {
+      const nonce = `${suiteNonce}-codex-modal-${mode.slice(2)}`;
+      const result = await headless(
+        [
+          "codex",
+          "--modal",
+          "--modal-timeout",
+          String(Math.ceil(modalTimeoutMs / 1000)),
+          "--work-dir",
+          dir,
+          "--allow",
+          "read-only",
+          mode,
+          "--prompt",
+          prompt(nonce),
+        ],
+        { timeoutMs: modalTimeoutMs },
+      );
+      assertNonce(result, nonce, `Codex Modal ${mode}`);
+      if (mode === "--usage") {
+        assert.match(result.stdout, /"usage"\s*:/, "Codex Modal --usage did not print usage JSON");
+      }
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
   }
 });
