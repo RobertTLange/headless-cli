@@ -314,6 +314,45 @@ test("extracts Cursor usage and returns null cost when model pricing is missing"
   assert.equal(summary.pricingStatus, "missing");
 });
 
+test("prices Cursor effort model variants with base model rates", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    usage: {
+      inputTokens: 1000,
+      outputTokens: 20,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+    },
+  });
+
+  const summary = priceUsageSummary(
+    extractUsageSummary("cursor", trace, { model: "gpt-5.5-extra-high" }),
+    {
+      openai: {
+        models: {
+          "gpt-5.5": {
+            cost: {
+              input: 2,
+              cache_read: 0.2,
+              output: 20,
+            },
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(summary.model, "gpt-5.5-extra-high");
+  assert.deepEqual(summary.cost, {
+    input: 0.002,
+    cacheRead: 0.00008,
+    cacheWrite: 0,
+    output: 0.0004,
+    total: 0.00248,
+  });
+  assert.equal(summary.pricingStatus, "priced");
+});
+
 test("extracts Gemini multi-model usage and sums priced costs", () => {
   const trace = JSON.stringify({
     type: "result",

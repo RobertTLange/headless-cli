@@ -12,7 +12,7 @@ import type {
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const defaultClaudeModel = "claude-opus-4-6";
 const defaultCodexModel = "gpt-5.5";
-export const DEFAULT_CURSOR_MODEL = "gpt-5.5-medium";
+export const DEFAULT_CURSOR_MODEL = "gpt-5.5";
 export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5.4";
 export const DEFAULT_PI_MODEL = "openai-codex/gpt-5.5";
@@ -49,14 +49,23 @@ function withCursorAllow(args: string[], allow: AllowMode | undefined): string[]
   return allow === "yolo" || allow === undefined ? [...args, "--force"] : args;
 }
 
-function defaultCursorModel(effort: ReasoningEffort | undefined): string {
-  if (effort === "high") return "gpt-5.5-high";
-  if (effort === "xhigh") return "gpt-5.5-extra-high";
-  return DEFAULT_CURSOR_MODEL;
+function isCursorReasoningVariant(model: string): boolean {
+  return /-(low|medium|high|xhigh|extra-high)(-fast)?$/i.test(model);
+}
+
+function supportsCursorReasoningVariants(model: string): boolean {
+  return /^gpt-\d/i.test(model);
 }
 
 export function cursorModel(options: Pick<BuildOptions, "model" | "reasoningEffort">): string {
-  return options.model ?? defaultCursorModel(options.reasoningEffort);
+  const model = options.model ?? DEFAULT_CURSOR_MODEL;
+  if (isCursorReasoningVariant(model)) return model;
+  if (!supportsCursorReasoningVariants(model)) return model;
+  const effort = options.reasoningEffort ?? "medium";
+  if (effort === "xhigh") {
+    return model === "gpt-5.5" ? `${model}-extra-high` : `${model}-xhigh`;
+  }
+  return `${model}-${effort}`;
 }
 
 export function piModelSpec(modelSpec: string | undefined, env: Env): { provider?: string; model: string } {

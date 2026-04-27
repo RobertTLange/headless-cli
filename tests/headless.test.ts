@@ -112,6 +112,11 @@ test("builds reasoning effort flags for supported agents", () => {
 });
 
 test("maps Cursor reasoning effort to model variants and leaves Gemini unchanged", () => {
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-medium", "hello"],
+  });
+
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "agent",
     args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-high", "hello"],
@@ -120,6 +125,29 @@ test("maps Cursor reasoning effort to model variants and leaves Gemini unchanged
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
     command: "agent",
     args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-extra-high", "hello"],
+  });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.5", reasoningEffort: "xhigh" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-extra-high", "hello"],
+  });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.4", reasoningEffort: "xhigh" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.4-xhigh", "hello"],
+  });
+
+  assert.deepEqual(
+    buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.5-extra-high", reasoningEffort: "medium" }, {}),
+    {
+      command: "agent",
+      args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-extra-high", "hello"],
+    },
+  );
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "cursor-model", reasoningEffort: "high" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "cursor-model", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", reasoningEffort: "high" }, {}), {
@@ -1101,17 +1129,42 @@ test("CLI --usage reports Cursor reasoning model variant", async () => {
       );
       await chmod(binary, 0o755);
     });
-    globalThis.fetch = async () => new Response(JSON.stringify({}));
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5.5": {
+                cost: {
+                  input: 2,
+                  output: 20,
+                },
+              },
+            },
+          },
+        }),
+      );
 
     const stdout: string[] = [];
-    const code = await runCli(["cursor", "--prompt", "hello", "--reasoning-effort", "xhigh", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
-      stdout: (text) => stdout.push(text),
-    });
+    const code = await runCli(
+      ["cursor", "--prompt", "hello", "--model", "gpt-5.5", "--reasoning-effort", "xhigh", "--usage"],
+      {
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      },
+    );
 
     assert.equal(code, 0);
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
     assert.equal(usage.model, "gpt-5.5-extra-high");
+    assert.equal(usage.pricingStatus, "priced");
+    assert.deepEqual(usage.cost, {
+      input: 0.0002,
+      cacheRead: 0,
+      cacheWrite: 0,
+      output: 0.0002,
+      total: 0.0004,
+    });
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
