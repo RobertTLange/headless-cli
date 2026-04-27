@@ -320,11 +320,13 @@ Docker and Modal modes also pass common agent/provider credential variables when
 npm install
 npm run build
 npm test
+npm run test:integration:local
 npm run test:agents
 npm run check
+npm run hooks:install
 ```
 
-`npm run check` builds the package and runs the TypeScript test suite. `npm run test:agents` is an optional real-agent smoke test; set `HEADLESS_AGENT_SMOKE=1` to run Codex, Claude, Pi, and Gemini with an example prompt. The package exports one binary, `headless`, from `dist/cli.js`.
+`npm run check` builds the package and runs the TypeScript test suite. `npm run test:integration:local` runs authenticated local integration coverage; set `HEADLESS_INTEGRATION_AGENTS=codex` to limit it to Codex. After `npm run hooks:install`, the pre-push hook builds the local CLI and runs Codex integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents. `npm run test:agents` is an optional real-agent smoke test; set `HEADLESS_AGENT_SMOKE=1` to run Codex, Claude, Pi, and Gemini with an example prompt. The package exports one binary, `headless`, from `dist/cli.js`.
 
 ## Layout
 

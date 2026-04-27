@@ -14,6 +14,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 const agents = ["claude", "codex", "cursor", "gemini", "opencode", "pi"] as const;
+const selectedAgents = parseSelectedAgents(process.env.HEADLESS_INTEGRATION_AGENTS);
 const commandTimeoutMs = Number.parseInt(process.env.HEADLESS_INTEGRATION_TIMEOUT_MS ?? "300000", 10);
 const dockerTimeoutMs = Number.parseInt(process.env.HEADLESS_INTEGRATION_DOCKER_TIMEOUT_MS ?? "900000", 10);
 const modalTimeoutMs = Number.parseInt(process.env.HEADLESS_INTEGRATION_MODAL_TIMEOUT_MS ?? "1200000", 10);
@@ -31,6 +32,27 @@ interface CommandResult {
 interface RunOptions {
   cwd?: string;
   timeoutMs?: number;
+}
+
+function parseSelectedAgents(value: string | undefined): readonly (typeof agents)[number][] {
+  if (!value || value === "all") {
+    return agents;
+  }
+
+  const selected = value
+    .split(",")
+    .map((agent) => agent.trim())
+    .filter(Boolean);
+
+  for (const agent of selected) {
+    assert.ok(
+      agents.includes(agent as (typeof agents)[number]),
+      `HEADLESS_INTEGRATION_AGENTS contains unsupported agent: ${agent}`,
+    );
+  }
+  assert.ok(selected.length > 0, "HEADLESS_INTEGRATION_AGENTS must select at least one agent");
+
+  return selected as (typeof agents)[number][];
 }
 
 async function run(command: string, args: string[], options: RunOptions = {}): Promise<CommandResult> {
@@ -191,14 +213,14 @@ test.after(async () => {
   }
 });
 
-test("preflight verifies global Headless, backends, Docker, Modal, and tmux", { timeout: 120000 }, async () => {
+test("preflight verifies global Headless, selected backends, Docker, Modal, and tmux", { timeout: 120000 }, async () => {
   const help = await headless(["--help"], { timeoutMs: 30000 });
   assertSuccess(help, "headless --help");
   assert.match(help.stdout, /--session/, "global headless must support --session; reinstall or npm link this repo");
 
   const check = await headless(["--check"], { timeoutMs: 120000 });
   assertSuccess(check, "headless --check");
-  for (const agent of agents) {
+  for (const agent of selectedAgents) {
     assert.match(
       check.stdout,
       new RegExp(`^${agent}\\s+✓\\s+`, "m"),
@@ -220,8 +242,8 @@ test("preflight verifies global Headless, backends, Docker, Modal, and tmux", { 
   );
 });
 
-test("all backends complete a basic read-only run", { timeout: commandTimeoutMs * agents.length }, async () => {
-  for (const agent of agents) {
+test("selected backends complete a basic read-only run", { timeout: commandTimeoutMs * selectedAgents.length }, async () => {
+  for (const agent of selectedAgents) {
     const dir = tempWorkdir(`${agent}-basic`);
     try {
       prepareAgentWorkdir(agent, dir);
@@ -236,8 +258,8 @@ test("all backends complete a basic read-only run", { timeout: commandTimeoutMs 
   }
 });
 
-test("all backends support --json, --debug, and --usage", { timeout: commandTimeoutMs * agents.length * 3 }, async () => {
-  for (const agent of agents) {
+test("selected backends support --json, --debug, and --usage", { timeout: commandTimeoutMs * selectedAgents.length * 3 }, async () => {
+  for (const agent of selectedAgents) {
     for (const mode of ["--json", "--debug", "--usage"]) {
       const dir = tempWorkdir(`${agent}-${mode.slice(2)}`);
       try {
@@ -258,10 +280,10 @@ test("all backends support --json, --debug, and --usage", { timeout: commandTime
   }
 });
 
-test("all backends start and resume native --session aliases", { timeout: commandTimeoutMs * agents.length * 2 }, async () => {
+test("selected backends start and resume native --session aliases", { timeout: commandTimeoutMs * selectedAgents.length * 2 }, async () => {
   const restoreSessions = snapshotSessionStore();
   try {
-    for (const agent of agents) {
+    for (const agent of selectedAgents) {
       const dir = tempWorkdir(`${agent}-session`);
       try {
         prepareAgentWorkdir(agent, dir);
@@ -292,8 +314,8 @@ test("all backends start and resume native --session aliases", { timeout: comman
   }
 });
 
-test("all backends start and send to --tmux --session aliases", { timeout: commandTimeoutMs * agents.length * 2 }, async () => {
-  for (const agent of agents) {
+test("selected backends start and send to --tmux --session aliases", { timeout: commandTimeoutMs * selectedAgents.length * 2 }, async () => {
+  for (const agent of selectedAgents) {
     const dir = tempWorkdir(`${agent}-tmux`);
     const alias = `${suiteNonce}-${agent}-tmux`.replace(/[^A-Za-z0-9_.-]/g, "-");
     const sessionName = `headless-${agent}-${alias}`;

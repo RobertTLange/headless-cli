@@ -9,6 +9,11 @@ fi
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$hook_dir/.." && pwd)
 headless_bin="$repo_root/dist/cli.js"
+integration_agents="codex"
+
+if [ "${HEADLESS_HOOK_ALL_AGENTS:-}" = "1" ]; then
+  integration_agents="all"
+fi
 
 cd "$repo_root"
 
@@ -23,19 +28,23 @@ EOF
   exit 1
 fi
 
-echo "headless pre-push: running local integration suite"
-if ! HEADLESS_BIN="$headless_bin" npm run test:integration:local; then
+echo "headless pre-push: running local integration suite (${integration_agents})"
+if ! HEADLESS_BIN="$headless_bin" HEADLESS_INTEGRATION_AGENTS="$integration_agents" npm run test:integration:local; then
   cat >&2 <<'EOF'
 headless pre-push: local integration suite failed.
 
 Expected local prerequisites:
-  - all six Headless backends installed and authenticated
+  - Codex installed and authenticated by default
+  - all six Headless backends installed and authenticated when HEADLESS_HOOK_ALL_AGENTS=1
   - Docker installed, running, and able to pull/run the default image
   - Modal configured with MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml
   - tmux installed
 
 Bypass once with:
   HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
+
+Run all agents once with:
+  HEADLESS_HOOK_ALL_AGENTS=1 git push
 EOF
   exit 1
 fi

@@ -1,8 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`. Thanks @RobertTLange for PR #7.
+- Added a local integration suite plus a tracked pre-push hook that builds the local CLI before running integration coverage.
+- Added expanded Docker and Modal integration coverage for Codex `--json`, `--debug`, and `--usage` modes.
+- Changed the pre-push hook to run Codex integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents.
+- Fixed the pre-push hook to run against the freshly built local CLI.
+- Fixed Gemini session alias persistence to select the newest native session.
+
 ## 0.2.1 - 2026-04-27
 
-- Added named native session aliases and a tracked local integration pre-push hook. Thanks @RobertTLange for PR #7.
 - Added `~/.headless/config.toml` support for per-agent default `model` and `reasoning_effort` values, plus a packaged `config.toml.example` template and README setup docs. Thanks @RobertTLange for PR #6.
 - Added provider-specific default models for Cursor, Gemini, OpenCode, and Pi, including Gemini `gemini-3.1-pro-preview` and Pi `openai-codex/gpt-5.5`.
 - Changed Pi model overrides to accept `provider/model` specs such as `openai-codex/gpt-5.4`, splitting them into native Pi provider and model flags.
