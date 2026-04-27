@@ -1,0 +1,54 @@
+#!/bin/sh
+set -u
+
+if [ "${HEADLESS_SKIP_INTEGRATION_HOOK:-}" = "1" ]; then
+  echo "headless pre-push: skipped by HEADLESS_SKIP_INTEGRATION_HOOK=1"
+  exit 0
+fi
+
+if ! command -v headless >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+headless pre-push: global `headless` not found.
+
+Install or link the CLI first, for example:
+  npm link
+  # or: npm install -g @roberttlange/headless
+
+Then enable this tracked hook locally:
+  npm run hooks:install
+
+Bypass once with:
+  HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
+EOF
+  exit 1
+fi
+
+if ! headless --help 2>/dev/null | grep -q -- "--session"; then
+  cat >&2 <<'EOF'
+headless pre-push: global `headless` does not support --session.
+
+Refresh the global CLI from this repo before pushing:
+  npm link
+
+Bypass once with:
+  HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
+EOF
+  exit 1
+fi
+
+echo "headless pre-push: running local integration suite"
+if ! npm run test:integration:local; then
+  cat >&2 <<'EOF'
+headless pre-push: local integration suite failed.
+
+Expected local prerequisites:
+  - all six Headless backends installed and authenticated
+  - Docker installed, running, and able to pull/run the default image
+  - Modal configured with MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml
+  - tmux installed
+
+Bypass once with:
+  HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
+EOF
+  exit 1
+fi
