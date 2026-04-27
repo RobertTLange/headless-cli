@@ -793,6 +793,51 @@ test("CLI --session pre-creates and stores Cursor chats", async () => {
   }
 });
 
+test("CLI --session stores the newest Gemini session when list output is oldest first", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "gemini-args.jsonl");
+    mkdirSync(home);
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "gemini"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args.includes('--list-sessions')) {",
+          "  console.log('Available sessions for this project (2):');",
+          "  console.log('  1. older session (4 hours ago) [11111111-1111-4111-8111-111111111111]');",
+          "  console.log('  2. newest session (1 hour ago) [22222222-2222-4222-8222-222222222222]');",
+          "  process.exit(0);",
+          "}",
+          "console.log(JSON.stringify({ response: 'gemini done' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "gemini"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    const code = await runCli(["gemini", "--session", "work", "--prompt", "hello"], {
+      env,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "gemini done\n");
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.gemini.work.nativeId, "22222222-2222-4222-8222-222222222222");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI rejects invalid --session combinations", async () => {
   const stderr: string[] = [];
   assert.equal(await runCli(["codex", "--session", "bad/name", "--prompt", "hello"], { stderr: (text) => stderr.push(text) }), 2);

@@ -777,8 +777,8 @@ async function newestGeminiSessionId(cwd: string | undefined, env: Env): Promise
   if (result.code !== 0) {
     return "";
   }
-  const match = result.stdout.match(/\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]/i);
-  return match?.[1] ?? "";
+  const matches = [...result.stdout.matchAll(/\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]/gi)];
+  return matches.at(-1)?.[1] ?? "";
 }
 
 async function newestOpenCodeSessionId(cwd: string | undefined, env: Env): Promise<string> {
