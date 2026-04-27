@@ -2,6 +2,7 @@
 
 ## 0.2.1 - 2026-04-27
 
+- Added named native session aliases and a tracked local integration pre-push hook. Thanks @RobertTLange for PR #7.
 - Added `~/.headless/config.toml` support for per-agent default `model` and `reasoning_effort` values, plus a packaged `config.toml.example` template and README setup docs. Thanks @RobertTLange for PR #6.
 - Added provider-specific default models for Cursor, Gemini, OpenCode, and Pi, including Gemini `gemini-3.1-pro-preview` and Pi `openai-codex/gpt-5.5`.
 - Changed Pi model overrides to accept `provider/model` specs such as `openai-codex/gpt-5.4`, splitting them into native Pi provider and model flags.
