@@ -1,15 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 - 2026-04-27
 
-- Added `~/.headless/config.toml` support for per-agent default `model` and `reasoning_effort` values, plus a packaged `config.toml.example` template.
-- Added one-shot `--usage` accounting with normalized token counts and native or models.dev-backed cost summaries.
+- Added `~/.headless/config.toml` support for per-agent default `model` and `reasoning_effort` values, plus a packaged `config.toml.example` template and README setup docs. Thanks @RobertTLange for PR #6.
 - Added provider-specific default models for Cursor, Gemini, OpenCode, and Pi, including Gemini `gemini-3.1-pro-preview` and Pi `openai-codex/gpt-5.5`.
 - Changed Pi model overrides to accept `provider/model` specs such as `openai-codex/gpt-5.4`, splitting them into native Pi provider and model flags.
-- Changed Cursor model handling so base GPT model families and `--reasoning-effort` are combined into Cursor model variants, while usage pricing falls back to the base model.
+- Changed Cursor model handling so base GPT model families and `--reasoning-effort` combine into Cursor model variants, while usage pricing falls back to the base model.
 - Fixed Gemini headless runs to skip workspace trust prompts automatically.
 - Fixed OpenCode final-message extraction for text-part output events.
-- Fixed usage token accounting and pricing edge cases, including Cursor effort variants and provider defaults.
+- Fixed successful and failed runs to surface structured agent JSON errors before generic final-message extraction failures.
+- Fixed `--usage` token accounting and pricing edge cases, including Cursor effort variants and provider defaults.
 - Hardened CLI timing tests around slower local agent startup.
 
 ## 0.2.0 - 2026-04-26
