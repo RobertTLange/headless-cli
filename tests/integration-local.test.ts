@@ -77,7 +77,7 @@ async function run(command: string, args: string[], options: RunOptions = {}): P
 }
 
 async function headless(args: string[], options: RunOptions = {}): Promise<CommandResult> {
-  return await run("headless", args, options);
+  return await run(process.env.HEADLESS_BIN ?? "headless", args, options);
 }
 
 function assertSuccess(result: CommandResult, label: string): void {

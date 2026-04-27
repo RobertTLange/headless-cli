@@ -6,29 +6,16 @@ if [ "${HEADLESS_SKIP_INTEGRATION_HOOK:-}" = "1" ]; then
   exit 0
 fi
 
-if ! command -v headless >/dev/null 2>&1; then
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$hook_dir/.." && pwd)
+headless_bin="$repo_root/dist/cli.js"
+
+cd "$repo_root"
+
+echo "headless pre-push: building local CLI"
+if ! npm run build; then
   cat >&2 <<'EOF'
-headless pre-push: global `headless` not found.
-
-Install or link the CLI first, for example:
-  npm link
-  # or: npm install -g @roberttlange/headless
-
-Then enable this tracked hook locally:
-  npm run hooks:install
-
-Bypass once with:
-  HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
-EOF
-  exit 1
-fi
-
-if ! headless --help 2>/dev/null | grep -q -- "--session"; then
-  cat >&2 <<'EOF'
-headless pre-push: global `headless` does not support --session.
-
-Refresh the global CLI from this repo before pushing:
-  npm link
+headless pre-push: local build failed.
 
 Bypass once with:
   HEADLESS_SKIP_INTEGRATION_HOOK=1 git push
@@ -37,7 +24,7 @@ EOF
 fi
 
 echo "headless pre-push: running local integration suite"
-if ! npm run test:integration:local; then
+if ! HEADLESS_BIN="$headless_bin" npm run test:integration:local; then
   cat >&2 <<'EOF'
 headless pre-push: local integration suite failed.
 
