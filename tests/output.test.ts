@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
+import { extractAgentError, extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
 
 test("extracts final Codex assistant message from JSONL trace", () => {
   const trace = [
@@ -119,6 +119,37 @@ test("extracts final OpenCode assistant message from JSON event trace", () => {
   });
 
   assert.equal(extractFinalMessage("opencode", trace), "final opencode answer");
+});
+
+test("extracts final OpenCode text part event", () => {
+  const trace = JSON.stringify({
+    type: "text",
+    part: {
+      type: "text",
+      text: "final opencode text part",
+    },
+  });
+
+  assert.equal(extractFinalMessage("opencode", trace), "final opencode text part");
+});
+
+test("extracts OpenCode provider error events", () => {
+  const trace = JSON.stringify({
+    type: "error",
+    error: {
+      name: "ProviderAuthError",
+      data: {
+        providerID: "gemini",
+        message:
+          "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+      },
+    },
+  });
+
+  assert.equal(
+    extractAgentError("opencode", trace),
+    "opencode error: ProviderAuthError: Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+  );
 });
 
 test("extracts final Pi assistant message from JSONL trace", () => {
