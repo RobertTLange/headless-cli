@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 import {
   buildAgentCommand,
   buildInteractiveAgentCommand,
+  DEFAULT_CURSOR_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_OPENCODE_MODEL,
+  DEFAULT_PI_MODEL,
   getAgentConfig,
   getAgentHarness,
   isAgentName,
@@ -38,7 +42,7 @@ import {
   DEFAULT_MODAL_TIMEOUT_SECONDS,
   executeModalAgent,
 } from "./modal.js";
-import { extractFinalMessage, extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./output.js";
+import { extractAgentError, extractFinalMessage, extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./output.js";
 import { quoteCommand } from "./shell.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
@@ -551,10 +555,16 @@ function usageContext(agent: AgentName, parsed: ParsedArgs, env: Env): { provide
     return { provider: "anthropic", model: parsed.model ?? "claude-opus-4-6" };
   }
   if (agent === "gemini") {
-    return { provider: "google", model: parsed.model };
+    return { provider: "google", model: parsed.model ?? DEFAULT_GEMINI_MODEL };
   }
   if (agent === "pi") {
-    return { provider: env.PI_CODING_AGENT_PROVIDER, model: parsed.model ?? env.PI_CODING_AGENT_MODEL };
+    return { provider: env.PI_CODING_AGENT_PROVIDER, model: parsed.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL };
+  }
+  if (agent === "opencode") {
+    return { provider: "openai", model: parsed.model ?? DEFAULT_OPENCODE_MODEL };
+  }
+  if (agent === "cursor") {
+    return { model: parsed.model ?? DEFAULT_CURSOR_MODEL };
   }
   return { model: parsed.model };
 }
@@ -1420,6 +1430,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return result.code;
     }
     if (result.code === 0) {
+      const agentError = extractAgentError(parsed.agent, result.stdout);
+      if (agentError) {
+        stderr(`headless: ${agentError}\n`);
+        return 1;
+      }
       stderr("headless: could not extract final message; rerun with --json for raw trace\n");
       return 1;
     }

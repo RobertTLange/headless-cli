@@ -12,6 +12,10 @@ import type {
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const defaultClaudeModel = "claude-opus-4-6";
 const defaultCodexModel = "gpt-5.5";
+export const DEFAULT_CURSOR_MODEL = "gpt-5.5";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
+export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5.4";
+export const DEFAULT_PI_MODEL = "gpt-5.5";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",
@@ -118,13 +122,12 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args = ["-p", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
+  const model = options.model ?? DEFAULT_CURSOR_MODEL;
 
   if (env.CURSOR_API_KEY) {
     args.unshift("--api-key", env.CURSOR_API_KEY);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  }
+  args.push("--model", model);
   if (options.allow === "read-only") {
     args.push("--mode", "plan");
   }
@@ -136,13 +139,12 @@ function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
 function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args: string[] = [];
+  const model = options.model ?? DEFAULT_CURSOR_MODEL;
 
   if (env.CURSOR_API_KEY) {
     args.push("--api-key", env.CURSOR_API_KEY);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  }
+  args.push("--model", model);
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--force");
   }
@@ -155,7 +157,7 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 function buildGemini(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? DEFAULT_GEMINI_MODEL);
   args.push("--skip-trust");
 
   if (options.promptFile) {
@@ -168,7 +170,7 @@ function buildGemini(options: BuildOptions): BuiltCommand {
 }
 
 function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? DEFAULT_GEMINI_MODEL);
   args.push("--skip-trust");
   args.push(...withGeminiAllow([], options.allow));
   args.push(options.prompt);
@@ -177,10 +179,9 @@ function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
 
 function buildOpencode(options: BuildOptions): BuiltCommand {
   const args = ["run", "--format", "json"];
+  const model = options.model ?? DEFAULT_OPENCODE_MODEL;
 
-  if (options.model) {
-    args.push("--model", options.model);
-  }
+  args.push("--model", model);
   if (options.reasoningEffort) {
     args.push("--variant", options.reasoningEffort);
   }
@@ -193,7 +194,7 @@ function buildOpencode(options: BuildOptions): BuiltCommand {
 }
 
 function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
-  const args = withModel([], options.model);
+  const args = withModel([], options.model ?? DEFAULT_OPENCODE_MODEL);
   if (options.allow === "yolo" || options.allow === undefined) {
     args.push("--dangerously-skip-permissions");
   }
@@ -203,15 +204,12 @@ function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
 function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args = ["--no-session", "--mode", "json"];
+  const model = options.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
 
   if (env.PI_CODING_AGENT_PROVIDER) {
     args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  } else if (env.PI_CODING_AGENT_MODEL) {
-    args.push("--model", env.PI_CODING_AGENT_MODEL);
-  }
+  args.push("--model", model);
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }
@@ -231,15 +229,12 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
 function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args: string[] = [];
+  const model = options.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
 
   if (env.PI_CODING_AGENT_PROVIDER) {
     args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
   }
-  if (options.model) {
-    args.push("--model", options.model);
-  } else if (env.PI_CODING_AGENT_MODEL) {
-    args.push("--model", env.PI_CODING_AGENT_MODEL);
-  }
+  args.push("--model", model);
   if (env.PI_CODING_AGENT_MODELS) {
     args.push("--models", env.PI_CODING_AGENT_MODELS);
   }

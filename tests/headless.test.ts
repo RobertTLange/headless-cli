@@ -87,6 +87,8 @@ test("builds reasoning effort flags for supported agents", () => {
     "run",
     "--format",
     "json",
+    "--model",
+    "openai/gpt-5.4",
     "--variant",
     "medium",
     "--dangerously-skip-permissions",
@@ -97,6 +99,8 @@ test("builds reasoning effort flags for supported agents", () => {
     "--no-session",
     "--mode",
     "json",
+    "--model",
+    "gpt-5.5",
     "--thinking",
     "low",
     "--tools",
@@ -108,12 +112,22 @@ test("builds reasoning effort flags for supported agents", () => {
 test("leaves unsupported reasoning effort agent commands unchanged", () => {
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "agent",
-    args: ["-p", "--force", "--output-format", "stream-json", "hello"],
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "gemini",
-    args: ["--skip-trust", "-p", "hello", "--output-format", "stream-json", "--approval-mode", "yolo"],
+    args: [
+      "--model",
+      "gemini-3.1-pro-preview",
+      "--skip-trust",
+      "-p",
+      "hello",
+      "--output-format",
+      "stream-json",
+      "--approval-mode",
+      "yolo",
+    ],
   });
 });
 
@@ -278,7 +292,7 @@ test("builds reasoning effort flags for supported interactive commands", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("pi", { prompt: "hello", reasoningEffort: "low" }, {}), {
     command: "pi",
-    args: ["--thinking", "low", "--tools", "read,bash,edit,write", "hello"],
+    args: ["--model", "gpt-5.5", "--thinking", "low", "--tools", "read,bash,edit,write", "hello"],
   });
 });
 
@@ -291,7 +305,7 @@ test("forwards cursor and pi environment-backed options", () => {
     ),
     {
       command: "cursor-agent",
-      args: ["--api-key", "key-123", "-p", "--force", "--output-format", "stream-json", "hello"],
+      args: ["--api-key", "key-123", "-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5", "hello"],
     },
   );
 
@@ -376,7 +390,10 @@ test("CLI print-command reads argument-mode prompt files", async () => {
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "opencode run --format json --dangerously-skip-permissions 'from file'\n");
+    assert.equal(
+      stdout.join(""),
+      "opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions 'from file'\n",
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -391,7 +408,10 @@ test("CLI accepts stdin fallback", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "pi --no-session --mode json --tools 'read,bash,edit,write' 'stdin prompt'\n");
+  assert.equal(
+    stdout.join(""),
+    "pi --no-session --mode json --model gpt-5.5 --tools 'read,bash,edit,write' 'stdin prompt'\n",
+  );
 });
 
 test("CLI --docker print-command wraps the selected agent command", async () => {
@@ -697,7 +717,7 @@ test("CLI auto-selection follows fallback order and env-backed binaries", async 
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "pi-agent --no-session --mode json --tools 'read,bash,edit,write' hello\n");
+    assert.equal(stdout.join(""), "pi-agent --no-session --mode json --model gpt-5.5 --tools 'read,bash,edit,write' hello\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1004,6 +1024,41 @@ test("CLI --usage prices Codex hard default model", async () => {
   }
 });
 
+test("CLI --usage reports OpenCode hard default model", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "opencode");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ role: 'assistant', parts: [{ type: 'text', text: 'final answer' }] }));",
+          "console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 100, output: 10, reasoning: 5, cache: { read: 0, write: 0 } }, cost: 0.5 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["opencode", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
+    assert.equal(usage.provider, "openai");
+    assert.equal(usage.model, "gpt-5.4");
+    assert.equal(usage.pricingStatus, "native");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI rejects --usage in raw json and tmux modes", async () => {
   const stderr: string[] = [];
   assert.equal(
@@ -1288,7 +1343,7 @@ test("CLI --tmux marks Cursor workspaces trusted before launch", async () => {
     assert.equal(code, 0);
     assert.equal(trust.workspacePath, workspace);
     assert.match(trust.trustedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.match(calls[0][6], /agent --force hello/);
+    assert.match(calls[0][6], /agent --model gpt-5\.5 --force hello/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1704,6 +1759,37 @@ test("CLI reports extraction failure for successful empty traces", async () => {
   }
 });
 
+test("CLI reports agent JSON error events before extraction failures", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "opencode");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'error', error: { name: 'ProviderAuthError', data: { providerID: 'gemini', message: 'missing api key' } } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stderr: string[] = [];
+    const code = await runCli(["opencode", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+    });
+
+    assert.equal(code, 1);
+    assert.equal(stderr.join(""), "headless: opencode error: ProviderAuthError: missing api key\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI reports invalid input", async () => {
   const stderr: string[] = [];
   assert.equal(await runCli(["unknown", "--prompt", "hello"], { stderr: (text) => stderr.push(text) }), 2);
@@ -1762,7 +1848,10 @@ test("CLI executes fake binaries and propagates exit codes", async () => {
     });
 
     assert.equal(code, 7);
-    assert.equal(readFileSync(captureFile, "utf8"), "run|--format|json|--dangerously-skip-permissions|hello");
+    assert.equal(
+      readFileSync(captureFile, "utf8"),
+      "run|--format|json|--model|openai/gpt-5.4|--dangerously-skip-permissions|hello",
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
