@@ -12,10 +12,11 @@ import type {
 const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const defaultClaudeModel = "claude-opus-4-6";
 const defaultCodexModel = "gpt-5.5";
-export const DEFAULT_CURSOR_MODEL = "gpt-5.5";
+export const DEFAULT_CURSOR_MODEL = "gpt-5.5-medium";
 export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5.4";
-export const DEFAULT_PI_MODEL = "gpt-5.5";
+export const DEFAULT_PI_PROVIDER = "openai-codex";
+export const DEFAULT_PI_MODEL = "gpt-5.3-codex";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
     edit: "deny",
@@ -47,6 +48,16 @@ function withCursorAllow(args: string[], allow: AllowMode | undefined): string[]
     return args;
   }
   return allow === "yolo" || allow === undefined ? [...args, "--force"] : args;
+}
+
+function defaultCursorModel(effort: ReasoningEffort | undefined): string {
+  if (effort === "high") return "gpt-5.5-high";
+  if (effort === "xhigh") return "gpt-5.5-extra-high";
+  return DEFAULT_CURSOR_MODEL;
+}
+
+export function cursorModel(options: Pick<BuildOptions, "model" | "reasoningEffort">): string {
+  return options.model ?? defaultCursorModel(options.reasoningEffort);
 }
 
 function withGeminiAllow(args: string[], allow: AllowMode | undefined): string[] {
@@ -122,7 +133,7 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args = ["-p", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
-  const model = options.model ?? DEFAULT_CURSOR_MODEL;
+  const model = cursorModel(options);
 
   if (env.CURSOR_API_KEY) {
     args.unshift("--api-key", env.CURSOR_API_KEY);
@@ -139,7 +150,7 @@ function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
 function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
   const args: string[] = [];
-  const model = options.model ?? DEFAULT_CURSOR_MODEL;
+  const model = cursorModel(options);
 
   if (env.CURSOR_API_KEY) {
     args.push("--api-key", env.CURSOR_API_KEY);
@@ -205,9 +216,11 @@ function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args = ["--no-session", "--mode", "json"];
   const model = options.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
+  const provider =
+    env.PI_CODING_AGENT_PROVIDER ?? (options.model || env.PI_CODING_AGENT_MODEL ? undefined : DEFAULT_PI_PROVIDER);
 
-  if (env.PI_CODING_AGENT_PROVIDER) {
-    args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
+  if (provider) {
+    args.push("--provider", provider);
   }
   args.push("--model", model);
   if (env.PI_CODING_AGENT_MODELS) {
@@ -230,9 +243,11 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args: string[] = [];
   const model = options.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
+  const provider =
+    env.PI_CODING_AGENT_PROVIDER ?? (options.model || env.PI_CODING_AGENT_MODEL ? undefined : DEFAULT_PI_PROVIDER);
 
-  if (env.PI_CODING_AGENT_PROVIDER) {
-    args.push("--provider", env.PI_CODING_AGENT_PROVIDER);
+  if (provider) {
+    args.push("--provider", provider);
   }
   args.push("--model", model);
   if (env.PI_CODING_AGENT_MODELS) {

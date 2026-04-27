@@ -17,10 +17,11 @@ import { fileURLToPath } from "node:url";
 import {
   buildAgentCommand,
   buildInteractiveAgentCommand,
-  DEFAULT_CURSOR_MODEL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OPENCODE_MODEL,
   DEFAULT_PI_MODEL,
+  DEFAULT_PI_PROVIDER,
+  cursorModel,
   getAgentConfig,
   getAgentHarness,
   isAgentName,
@@ -400,7 +401,7 @@ function unsupportedReasoningEffortWarning(
   if (mode === "tmux" && agent === "opencode") {
     return "headless: reasoning effort is not supported by opencode in tmux mode and was ignored\n";
   }
-  if (agent === "cursor" || agent === "gemini") {
+  if (agent === "gemini") {
     return `headless: reasoning effort is not supported by ${agent} and was ignored\n`;
   }
   return undefined;
@@ -558,13 +559,15 @@ function usageContext(agent: AgentName, parsed: ParsedArgs, env: Env): { provide
     return { provider: "google", model: parsed.model ?? DEFAULT_GEMINI_MODEL };
   }
   if (agent === "pi") {
-    return { provider: env.PI_CODING_AGENT_PROVIDER, model: parsed.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL };
+    const provider =
+      env.PI_CODING_AGENT_PROVIDER ?? (parsed.model || env.PI_CODING_AGENT_MODEL ? undefined : DEFAULT_PI_PROVIDER);
+    return { provider, model: parsed.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL };
   }
   if (agent === "opencode") {
     return { provider: "openai", model: parsed.model ?? DEFAULT_OPENCODE_MODEL };
   }
   if (agent === "cursor") {
-    return { model: parsed.model ?? DEFAULT_CURSOR_MODEL };
+    return { model: cursorModel({ model: parsed.model, reasoningEffort: parsed.reasoningEffort }) };
   }
   return { model: parsed.model };
 }

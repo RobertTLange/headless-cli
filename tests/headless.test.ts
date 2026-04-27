@@ -99,8 +99,10 @@ test("builds reasoning effort flags for supported agents", () => {
     "--no-session",
     "--mode",
     "json",
+    "--provider",
+    "openai-codex",
     "--model",
-    "gpt-5.5",
+    "gpt-5.3-codex",
     "--thinking",
     "low",
     "--tools",
@@ -109,10 +111,15 @@ test("builds reasoning effort flags for supported agents", () => {
   ]);
 });
 
-test("leaves unsupported reasoning effort agent commands unchanged", () => {
+test("maps Cursor reasoning effort to model variants and leaves Gemini unchanged", () => {
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", reasoningEffort: "high" }, {}), {
     command: "agent",
-    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5", "hello"],
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-high", "hello"],
+  });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
+    command: "agent",
+    args: ["-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-extra-high", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", reasoningEffort: "high" }, {}), {
@@ -292,7 +299,17 @@ test("builds reasoning effort flags for supported interactive commands", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("pi", { prompt: "hello", reasoningEffort: "low" }, {}), {
     command: "pi",
-    args: ["--model", "gpt-5.5", "--thinking", "low", "--tools", "read,bash,edit,write", "hello"],
+    args: [
+      "--provider",
+      "openai-codex",
+      "--model",
+      "gpt-5.3-codex",
+      "--thinking",
+      "low",
+      "--tools",
+      "read,bash,edit,write",
+      "hello",
+    ],
   });
 });
 
@@ -305,7 +322,17 @@ test("forwards cursor and pi environment-backed options", () => {
     ),
     {
       command: "cursor-agent",
-      args: ["--api-key", "key-123", "-p", "--force", "--output-format", "stream-json", "--model", "gpt-5.5", "hello"],
+      args: [
+        "--api-key",
+        "key-123",
+        "-p",
+        "--force",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "gpt-5.5-medium",
+        "hello",
+      ],
     },
   );
 
@@ -410,7 +437,7 @@ test("CLI accepts stdin fallback", async () => {
   assert.equal(code, 0);
   assert.equal(
     stdout.join(""),
-    "pi --no-session --mode json --model gpt-5.5 --tools 'read,bash,edit,write' 'stdin prompt'\n",
+    "pi --no-session --mode json --provider openai-codex --model gpt-5.3-codex --tools 'read,bash,edit,write' 'stdin prompt'\n",
   );
 });
 
@@ -717,7 +744,10 @@ test("CLI auto-selection follows fallback order and env-backed binaries", async 
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "pi-agent --no-session --mode json --model gpt-5.5 --tools 'read,bash,edit,write' hello\n");
+    assert.equal(
+      stdout.join(""),
+      "pi-agent --no-session --mode json --provider openai-codex --model gpt-5.3-codex --tools 'read,bash,edit,write' hello\n",
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1018,6 +1048,42 @@ test("CLI --usage prices Codex hard default model", async () => {
       output: 0.002,
       total: 0.004,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --usage reports Cursor reasoning model variant", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "agent");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "console.log(JSON.stringify({ type: 'result', usage: { inputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 10 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["cursor", "--prompt", "hello", "--reasoning-effort", "xhigh", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
+    assert.equal(usage.model, "gpt-5.5-extra-high");
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
@@ -1343,7 +1409,7 @@ test("CLI --tmux marks Cursor workspaces trusted before launch", async () => {
     assert.equal(code, 0);
     assert.equal(trust.workspacePath, workspace);
     assert.match(trust.trustedAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.match(calls[0][6], /agent --model gpt-5\.5 --force hello/);
+    assert.match(calls[0][6], /agent --model gpt-5\.5-medium --force hello/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

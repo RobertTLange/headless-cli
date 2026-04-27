@@ -50,7 +50,7 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", allow: "read-only" }, {}), {
     command: "agent",
-    args: ["-p", "--output-format", "stream-json", "--model", "gpt-5.5", "--mode", "plan", "hello"],
+    args: ["-p", "--output-format", "stream-json", "--model", "gpt-5.5-medium", "--mode", "plan", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
@@ -79,7 +79,18 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("pi", { prompt: "hello", allow: "read-only" }, {}), {
     command: "pi",
-    args: ["--no-session", "--mode", "json", "--model", "gpt-5.5", "--tools", "read,grep,find,ls", "hello"],
+    args: [
+      "--no-session",
+      "--mode",
+      "json",
+      "--provider",
+      "openai-codex",
+      "--model",
+      "gpt-5.3-codex",
+      "--tools",
+      "read,grep,find,ls",
+      "hello",
+    ],
   });
 });
 
@@ -109,7 +120,7 @@ test("builds explicit yolo commands for supported agents", () => {
     "--output-format",
     "stream-json",
     "--model",
-    "gpt-5.5",
+    "gpt-5.5-medium",
     "hello",
   ]);
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "yolo" }, {}).args, [
@@ -136,8 +147,10 @@ test("builds explicit yolo commands for supported agents", () => {
     "--no-session",
     "--mode",
     "json",
+    "--provider",
+    "openai-codex",
     "--model",
-    "gpt-5.5",
+    "gpt-5.3-codex",
     "--tools",
     "read,bash,edit,write",
     "hello",
@@ -236,7 +249,7 @@ test("CLI print-command includes reasoning effort flags", async () => {
   assert.match(stdout.join(""), /-c 'model_reasoning_effort="high"'/);
 });
 
-test("CLI warns when reasoning effort is unsupported", async () => {
+test("CLI maps Cursor reasoning effort to model variants", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const code = await runCli(["cursor", "--reasoning-effort", "high", "--prompt", "hello", "--print-command"], {
@@ -245,8 +258,8 @@ test("CLI warns when reasoning effort is unsupported", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "agent -p --force --output-format stream-json --model gpt-5.5 hello\n");
-  assert.match(stderr.join(""), /reasoning effort is not supported by cursor and was ignored/);
+  assert.equal(stdout.join(""), "agent -p --force --output-format stream-json --model gpt-5.5-high hello\n");
+  assert.equal(stderr.join(""), "");
 });
 
 test("CLI warns when Gemini reasoning effort is unsupported", async () => {
