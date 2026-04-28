@@ -6,6 +6,7 @@ import { extractFinalMessage } from "./output.js";
 import { renderRunList, renderRunView } from "./run-view.js";
 import {
   acquireNodeLock,
+  appendNodeLog,
   listRuns,
   nodeLockPath,
   readRun,
@@ -150,6 +151,8 @@ function startAsyncRunMessage(
   const stdoutLog = node.logs?.stdout ?? join(runDirectory(handlers.env, runId), "nodes", nodeId, "latest.stdout.log");
   const stderrLog = node.logs?.stderr ?? join(runDirectory(handlers.env, runId), "nodes", nodeId, "latest.stderr.log");
   updateNodeStatus(handlers.env, runId, nodeId, "busy");
+  appendNodeLog(handlers.env, runId, nodeId, "stdout", `\n===== async message ${new Date().toISOString()} =====\n`);
+  appendNodeLog(handlers.env, runId, nodeId, "stderr", `\n===== async message ${new Date().toISOString()} =====\n`);
   const cli = handlers.env.HEADLESS_CLI_BIN ?? "headless";
   const childArgs = [
     node.agent,
@@ -173,7 +176,7 @@ function startAsyncRunMessage(
   const success = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "idle"] });
   const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
   const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(handlers.env, runId, nodeId)] });
-  const script = `${child} > ${quotePath(stdoutLog)} 2> ${quotePath(stderrLog)}; code=$?; if [ "$code" -eq 0 ]; then ${success}; else ${failure}; fi; ${unlock}; exit "$code"`;
+  const script = `${child} >/dev/null 2>/dev/null; code=$?; if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotePath(stderrLog)}; else printf '%s\\n' "async child exited with code $code" >> ${quotePath(stderrLog)}; ${failure} >/dev/null 2>> ${quotePath(stderrLog)}; fi; ${unlock}; exit "$code"`;
   const command = { command: "sh", args: ["-lc", script] };
 
   if (input.printCommand) {
@@ -182,14 +185,13 @@ function startAsyncRunMessage(
     return 0;
   }
 
-  const outFd = openSync(stdoutLog, "w");
-  const errFd = openSync(stderrLog, "w");
+  const errFd = openSync(stderrLog, "a");
   try {
     const childProcess = spawn(command.command, command.args, {
       cwd: node.workDir,
       env: handlers.env as NodeJS.ProcessEnv,
       detached: true,
-      stdio: ["ignore", outFd, errFd],
+      stdio: ["ignore", "ignore", errFd],
     });
     childProcess.unref();
   } catch (error) {
@@ -197,7 +199,6 @@ function startAsyncRunMessage(
     updateNodeStatus(handlers.env, runId, nodeId, "failed", error instanceof Error ? error.message : String(error));
     throw error;
   } finally {
-    closeSync(outFd);
     closeSync(errFd);
   }
   handlers.stdout(`started: ${runId}/${nodeId}\n`);

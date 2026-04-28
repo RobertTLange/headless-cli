@@ -125,6 +125,25 @@ export function nodeLockPath(env: Env, runId: string, nodeId: string): string {
   return join(nodeDirectory(env, runId, nodeId), "session.lock");
 }
 
+export function nodeLogPath(env: Env, runId: string, nodeId: string, stream: "stdout" | "stderr"): string {
+  return readRun(env, runId)?.nodes[nodeId]?.logs?.[stream] ?? logPaths(env, runId, nodeId)[stream];
+}
+
+export function appendNodeLog(
+  env: Env,
+  runId: string,
+  nodeId: string,
+  stream: "stdout" | "stderr",
+  text: string,
+): void {
+  if (!text) {
+    return;
+  }
+  const path = nodeLogPath(env, runId, nodeId, stream);
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, text);
+}
+
 export function readRun(env: Env, runId: string): RunRecord | undefined {
   const path = join(runDirectory(env, runId), "run.json");
   if (!existsSync(path)) {
@@ -165,13 +184,17 @@ export function registerNode(env: Env, input: RegisterNodeInput): RunNode {
   const run = readRun(env, input.runId) ?? emptyRun(input.runId);
   const now = new Date().toISOString();
   const existing = run.nodes[input.nodeId];
+  const status =
+    existing?.status === "busy" && input.status === "starting"
+      ? "busy"
+      : (input.status ?? existing?.status ?? "planned");
   const node: RunNode = {
     runId: input.runId,
     nodeId: input.nodeId,
     role: input.role,
     agent: input.agent,
     coordination: input.coordination,
-    status: input.status ?? existing?.status ?? "planned",
+    status,
     lastMessage: existing?.lastMessage,
     dependsOn: unique(input.dependsOn ?? existing?.dependsOn ?? []),
     planned: input.planned ?? existing?.planned ?? false,

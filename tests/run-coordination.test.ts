@@ -60,6 +60,25 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     assert.equal(run?.nodes["worker-1"].dependsOn[0], "explorer");
     assert.equal(run?.nodes["worker-1"].logs?.stdout.endsWith("latest.stdout.log"), true);
     assert.equal(existsSync(join(env.HOME, ".headless", "runs", "auth", "run.json")), true);
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "session",
+      status: "busy",
+      planned: true,
+    });
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "session",
+      status: "starting",
+      planned: true,
+    });
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].status, "busy");
 
     const release = acquireNodeLock(env, "auth", "worker-1");
     assert.throws(() => acquireNodeLock(env, "auth", "worker-1"), /node is locked/);
@@ -151,6 +170,9 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(run?.nodes["worker-1"].status, "planned");
     assert.equal(run?.nodes["worker-2"].status, "planned");
     assert.equal(run?.nodes.reviewer.role, "reviewer");
+    const orchestratorLog = readFileSync(run?.nodes.orchestrator.logs?.stdout ?? "", "utf8");
+    assert.match(orchestratorLog, /node invocation/);
+    assert.match(orchestratorLog, /orchestrator final/);
     const prompt = readFileSync(stdinCapture, "utf8");
     assert.match(prompt, /Role: orchestrator/);
     assert.match(prompt, /launch each planned child/);
@@ -287,6 +309,10 @@ test("run message resumes stored session nodes", async () => {
       0,
     );
     assert.equal(stdout.join(""), "resumed final\n");
+    const run = readRun(env, "auth");
+    const workerLog = readFileSync(run?.nodes["worker-1"].logs?.stdout ?? "", "utf8");
+    assert.match(workerLog, /started final/);
+    assert.match(workerLog, /resumed final/);
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(calls[1].includes("resume"), true);
     assert.equal(calls[1].includes("thread-1"), true);
@@ -352,6 +378,7 @@ test("run message --async records busy status, logs output, and marks completion
         "const args = process.argv.slice(2);",
         "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
         "if (args[0] === 'run' && args[1] === 'mark') {",
+        "  console.log('marked fake');",
         "  const runId = args[2]; const nodeId = args[3]; const status = args[5];",
         "  const file = path.join(process.env.HOME, '.headless', 'runs', runId, 'run.json');",
         "  const run = JSON.parse(fs.readFileSync(file, 'utf8'));",
@@ -359,7 +386,14 @@ test("run message --async records busy status, logs output, and marks completion
         "  fs.writeFileSync(file, JSON.stringify(run, null, 2) + '\\n');",
         "  process.exit(0);",
         "}",
-        "console.log('async child output');",
+        "const runIndex = args.indexOf('--run'); const nodeIndex = args.indexOf('--node');",
+        "if (runIndex !== -1 && nodeIndex !== -1) {",
+        "  const runId = args[runIndex + 1]; const nodeId = args[nodeIndex + 1];",
+        "  const dir = path.join(process.env.HOME, '.headless', 'runs', runId, 'nodes', nodeId);",
+        "  fs.mkdirSync(dir, { recursive: true });",
+        "  fs.appendFileSync(path.join(dir, 'latest.stdout.log'), 'async child output\\n');",
+        "}",
+        "console.log('async child output should not be wrapper-redirected');",
         "",
       ].join("\n"),
     );
@@ -373,6 +407,8 @@ test("run message --async records busy status, logs output, and marks completion
       status: "idle",
       planned: true,
     });
+    const initialStdoutLog = readRun(env, "auth")?.nodes["worker-1"].logs?.stdout ?? "";
+    writeFileSync(initialStdoutLog, "previous output\\n");
 
     assert.equal(
       await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--async"], {
@@ -385,6 +421,10 @@ test("run message --async records busy status, logs output, and marks completion
     await waitFor(() => readRun(env, "auth")?.nodes["worker-1"].status === "idle");
     const stdoutLog = readRun(env, "auth")?.nodes["worker-1"].logs?.stdout ?? "";
     await waitFor(() => existsSync(stdoutLog) && readFileSync(stdoutLog, "utf8").includes("async child output"));
+    const stdoutText = readFileSync(stdoutLog, "utf8");
+    assert.match(stdoutText, /previous output/);
+    assert.doesNotMatch(stdoutText, /marked fake/);
+    assert.doesNotMatch(stdoutText, /wrapper-redirected/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

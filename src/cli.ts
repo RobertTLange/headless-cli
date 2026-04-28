@@ -55,6 +55,7 @@ import {
 } from "./output.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import {
+  appendNodeLog,
   readRun,
   registerNode,
   runDirectory,
@@ -766,6 +767,7 @@ type StdoutHandling = "capture" | "stream" | "capture-and-stream";
 interface ExecuteCommandOptions {
   stdoutHandling: StdoutHandling;
   stdout: (text: string) => void;
+  stderr?: (text: string) => void;
 }
 
 interface SessionPlan {
@@ -1028,13 +1030,16 @@ async function executeCommand(
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
+        options.stderr?.(chunk);
         const filtered = suppressKnownStderr(agent, chunk);
         if (filtered) {
           stderr(filtered);
         }
       });
       child.on("error", (error) => {
-        stderr(`${error.message}\n`);
+        const message = `${error.message}\n`;
+        options.stderr?.(message);
+        stderr(message);
         resolve({ code: 127, stdout: capturedStdout });
       });
       child.on("close", (code, signal) => {
@@ -1341,6 +1346,52 @@ function trustCursorWorkspace(cwd: string | undefined, env: Env): void {
   );
 }
 
+function appendRunInvocationLog(env: Env, runId: string, nodeId: string, label: string): void {
+  const header = `\n===== ${label} ${new Date().toISOString()} =====\n`;
+  appendNodeLog(env, runId, nodeId, "stdout", header);
+  appendNodeLog(env, runId, nodeId, "stderr", header);
+}
+
+function appendCapturedRunStdout(
+  env: Env,
+  runId: string | undefined,
+  nodeId: string | undefined,
+  stdoutHandling: StdoutHandling,
+  capturedStdout: string,
+): void {
+  if (!runId || !nodeId || stdoutHandling !== "capture") {
+    return;
+  }
+  appendNodeLog(env, runId, nodeId, "stdout", capturedStdout);
+}
+
+function runStdoutLogger(
+  env: Env,
+  runId: string | undefined,
+  nodeId: string | undefined,
+  stdoutHandling: StdoutHandling,
+  stdout: (text: string) => void,
+): (text: string) => void {
+  if (!runId || !nodeId || stdoutHandling === "capture") {
+    return stdout;
+  }
+  return (text: string) => {
+    appendNodeLog(env, runId, nodeId, "stdout", text);
+    stdout(text);
+  };
+}
+
+function runStderrLogger(
+  env: Env,
+  runId: string | undefined,
+  nodeId: string | undefined,
+): ((text: string) => void) | undefined {
+  if (!runId || !nodeId) {
+    return undefined;
+  }
+  return (text: string) => appendNodeLog(env, runId, nodeId, "stderr", text);
+}
+
 async function executeSimpleCommand(
   command: BuiltCommand,
   cwd: string | undefined,
@@ -1503,7 +1554,13 @@ async function executeStoredNode(
     node.runId,
     node.nodeId,
   );
-  const result = await executeCommand(node.agent, command, node.workDir, env, stderr, { stdout, stdoutHandling });
+  appendRunInvocationLog(env, node.runId, node.nodeId, "run message");
+  const result = await executeCommand(node.agent, command, node.workDir, env, stderr, {
+    stdout: runStdoutLogger(env, node.runId, node.nodeId, stdoutHandling, stdout),
+    stdoutHandling,
+    stderr: runStderrLogger(env, node.runId, node.nodeId),
+  });
+  appendCapturedRunStdout(env, node.runId, node.nodeId, stdoutHandling, result.stdout);
   if (result.code === 0 && sessionPlan) {
     await persistSessionPlan(node.agent, sessionPlan, result.stdout, node.workDir, env);
   }
@@ -2012,6 +2069,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       : parsed.debug
         ? "capture-and-stream"
         : "capture";
+    if (parsed.runId && parsed.role && nodeId) {
+      appendRunInvocationLog(env, parsed.runId, nodeId, "node invocation");
+    }
+    const commandStdout = runStdoutLogger(env, parsed.runId, nodeId, stdoutHandling, stdout);
+    const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
     const result = parsed.modal
       ? await executeModalAgent({
           agent: parsed.agent,
@@ -2026,20 +2088,23 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           modalEnv: parsed.modalEnv,
           modalSecrets: parsed.modalSecrets,
           stderr: (text) => {
+            commandStderr?.(text);
             const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
             if (filtered) {
               stderr(filtered);
             }
           },
-          stdout,
+          stdout: commandStdout,
           stdoutHandling,
           timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
           workDir: cwd ?? process.cwd(),
         })
       : await executeCommand(parsed.agent, command, cwd, env, stderr, {
-          stdout,
+          stdout: commandStdout,
           stdoutHandling,
+          stderr: commandStderr,
         });
+    appendCapturedRunStdout(env, parsed.runId, nodeId, stdoutHandling, result.stdout);
     if (parsed.runId && parsed.role && nodeId) {
       const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
       updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined);
