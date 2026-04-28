@@ -129,9 +129,6 @@ function buildClaude(options: BuildOptions): BuiltCommand {
     args.push("--resume", options.sessionId);
   } else if (options.sessionMode === "new" && options.sessionId) {
     args.push("--session-id", options.sessionId);
-    if (options.sessionAlias) {
-      args.push("--name", options.sessionAlias);
-    }
   }
 
   if (options.promptFile) {

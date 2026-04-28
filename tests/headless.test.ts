@@ -308,8 +308,6 @@ test("builds native session commands for supported agents", () => {
       "-p",
       "--session-id",
       "11111111-1111-4111-8111-111111111111",
-      "--name",
-      "work",
       "hello",
       "--output-format",
       "stream-json",
