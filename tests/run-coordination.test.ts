@@ -97,7 +97,7 @@ test("role defaults apply only when --allow is absent", async () => {
     }),
     0,
   );
-  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never exec/);
+  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search exec/);
 
   stdout.length = 0;
   assert.equal(
