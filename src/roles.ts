@@ -53,13 +53,14 @@ export function composeRolePrompt(
   prompt: string,
   invocation: RoleInvocation,
   run: RunRecord | undefined,
+  options: { baseInstructionPrompt?: string } = {},
 ): string {
   if (!invocation.role && !invocation.runId) {
     return prompt;
   }
 
   const parts = [
-    roleInstructions(invocation.role, invocation.runId),
+    options.baseInstructionPrompt ?? roleInstructions(invocation.role, invocation.runId),
     invocation.runId ? runContext(invocation, run) : "",
     "User prompt:",
     prompt,

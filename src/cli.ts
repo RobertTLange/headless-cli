@@ -29,7 +29,7 @@ import {
   listAgents,
 } from "./agents.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
-import { loadHeadlessConfig, resolveAgentDefaults, type AgentDefaults } from "./config.js";
+import { loadHeadlessConfig, resolveInvocationDefaults, type HeadlessConfig, type InvocationDefaults } from "./config.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -686,7 +686,7 @@ function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
   return command.env ? { ...baseEnv, ...command.env } : baseEnv;
 }
 
-function usageContext(agent: AgentName, defaults: AgentDefaults, env: Env): { provider?: string; model?: string } {
+function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env): { provider?: string; model?: string } {
   if (agent === "codex") {
     return { provider: "openai", model: defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
   }
@@ -767,6 +767,7 @@ type StdoutHandling = "capture" | "stream" | "capture-and-stream";
 interface ExecuteCommandOptions {
   stdoutHandling: StdoutHandling;
   stdout: (text: string) => void;
+  stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
 }
 
@@ -1024,6 +1025,7 @@ async function executeCommand(
         if (options.stdoutHandling !== "stream") {
           capturedStdout += chunk;
         }
+        options.stdoutLog?.(chunk);
         if (options.stdoutHandling !== "capture") {
           options.stdout(chunk);
         }
@@ -1352,33 +1354,15 @@ function appendRunInvocationLog(env: Env, runId: string, nodeId: string, label: 
   appendNodeLog(env, runId, nodeId, "stderr", header);
 }
 
-function appendCapturedRunStdout(
-  env: Env,
-  runId: string | undefined,
-  nodeId: string | undefined,
-  stdoutHandling: StdoutHandling,
-  capturedStdout: string,
-): void {
-  if (!runId || !nodeId || stdoutHandling !== "capture") {
-    return;
-  }
-  appendNodeLog(env, runId, nodeId, "stdout", capturedStdout);
-}
-
 function runStdoutLogger(
   env: Env,
   runId: string | undefined,
   nodeId: string | undefined,
-  stdoutHandling: StdoutHandling,
-  stdout: (text: string) => void,
-): (text: string) => void {
-  if (!runId || !nodeId || stdoutHandling === "capture") {
-    return stdout;
+): ((text: string) => void) | undefined {
+  if (!runId || !nodeId) {
+    return undefined;
   }
-  return (text: string) => {
-    appendNodeLog(env, runId, nodeId, "stdout", text);
-    stdout(text);
-  };
+  return (text: string) => appendNodeLog(env, runId, nodeId, "stdout", text);
 }
 
 function runStderrLogger(
@@ -1517,6 +1501,15 @@ async function executeStoredNode(
   stdoutHandling: StdoutHandling,
 ): Promise<ExecuteResult> {
   const run = readRun(env, node.runId);
+  const config = loadHeadlessConfig(env);
+  const defaults = resolveInvocationDefaults(
+    node.agent,
+    node.role,
+    { model: node.model, reasoningEffort: node.reasoningEffort, allow: node.allow },
+    env,
+    config,
+  );
+  const allow = defaults.allow ?? roleDefaultAllow(node.role);
   const prompt = composeRolePrompt(
     rawPrompt,
     {
@@ -1527,13 +1520,14 @@ async function executeStoredNode(
       nodeId: node.nodeId,
       dependsOn: [],
       team: [],
-      allow: node.allow,
-      model: node.model,
-      reasoningEffort: node.reasoningEffort,
+      allow,
+      model: defaults.model,
+      reasoningEffort: defaults.reasoningEffort,
       workDir: node.workDir,
       sessionAlias: node.sessionAlias,
     },
     run,
+    { baseInstructionPrompt: defaults.baseInstructionPrompt },
   );
   const sessionPlan =
     node.coordination === "session" ? await prepareSessionPlan(node.agent, buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env), node.workDir, env) : undefined;
@@ -1543,9 +1537,9 @@ async function executeStoredNode(
       applySessionPlan(
         {
           prompt,
-          model: node.model,
-          allow: node.allow,
-          reasoningEffort: node.reasoningEffort,
+          model: defaults.model,
+          allow,
+          reasoningEffort: defaults.reasoningEffort,
         },
         sessionPlan,
       ),
@@ -1556,11 +1550,11 @@ async function executeStoredNode(
   );
   appendRunInvocationLog(env, node.runId, node.nodeId, "run message");
   const result = await executeCommand(node.agent, command, node.workDir, env, stderr, {
-    stdout: runStdoutLogger(env, node.runId, node.nodeId, stdoutHandling, stdout),
+    stdout,
     stdoutHandling,
+    stdoutLog: runStdoutLogger(env, node.runId, node.nodeId),
     stderr: runStderrLogger(env, node.runId, node.nodeId),
   });
-  appendCapturedRunStdout(env, node.runId, node.nodeId, stdoutHandling, result.stdout);
   if (result.code === 0 && sessionPlan) {
     await persistSessionPlan(node.agent, sessionPlan, result.stdout, node.workDir, env);
   }
@@ -1833,26 +1827,30 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    let configuredDefaults: AgentDefaults;
+    let config: HeadlessConfig;
+    let configuredDefaults: InvocationDefaults;
     try {
-      configuredDefaults = resolveAgentDefaults(
+      config = loadHeadlessConfig(env);
+      configuredDefaults = resolveInvocationDefaults(
         parsed.agent,
-        { model: parsed.model, reasoningEffort: parsed.reasoningEffort },
+        parsed.role,
+        { model: parsed.model, reasoningEffort: parsed.reasoningEffort, allow: parsed.allow },
         env,
-        loadHeadlessConfig(env),
+        config,
       );
     } catch (error) {
       throw new CliError(error instanceof Error ? error.message : String(error));
     }
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
-    const allow = parsed.allow ?? roleDefaultAllow(parsed.role);
+    const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
       throw new CliError("--role orchestrator with --run cannot use --allow read-only; it must be able to launch child nodes and update run state");
     }
     const team = parsed.teamSpecs.length > 0 ? expandTeamSpecs(parsed.agent, parsed.teamSpecs) : [];
     if (!parsed.printCommand && parsed.runId && parsed.role && nodeId) {
       for (const teamNode of team) {
+        const teamDefaults = resolveInvocationDefaults(teamNode.agent, teamNode.role, {}, env, config);
         registerNode(env, {
           runId: parsed.runId,
           nodeId: teamNode.nodeId,
@@ -1861,7 +1859,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           coordination,
           status: "planned",
           planned: true,
-          allow: roleDefaultAllow(teamNode.role),
+          allow: teamDefaults.allow ?? roleDefaultAllow(teamNode.role),
+          model: teamDefaults.model,
+          reasoningEffort: teamDefaults.reasoningEffort,
           workDir: cwd ?? process.cwd(),
           sessionAlias: teamNode.nodeId,
         });
@@ -1899,6 +1899,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         sessionAlias: coordination === "session" ? (parsed.sessionAlias ?? nodeId) : parsed.sessionAlias,
       },
       parsed.runId ? readRun(env, parsed.runId) : undefined,
+      { baseInstructionPrompt: configuredDefaults.baseInstructionPrompt },
     );
 
     if (parsed.tmux) {
@@ -2072,7 +2073,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.runId && parsed.role && nodeId) {
       appendRunInvocationLog(env, parsed.runId, nodeId, "node invocation");
     }
-    const commandStdout = runStdoutLogger(env, parsed.runId, nodeId, stdoutHandling, stdout);
+    const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
     const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
     const result = parsed.modal
       ? await executeModalAgent({
@@ -2094,17 +2095,23 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               stderr(filtered);
             }
           },
-          stdout: commandStdout,
+          stdout: (text) => {
+            commandStdoutLog?.(text);
+            stdout(text);
+          },
           stdoutHandling,
           timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
           workDir: cwd ?? process.cwd(),
         })
       : await executeCommand(parsed.agent, command, cwd, env, stderr, {
-          stdout: commandStdout,
+          stdout,
           stdoutHandling,
+          stdoutLog: commandStdoutLog,
           stderr: commandStderr,
         });
-    appendCapturedRunStdout(env, parsed.runId, nodeId, stdoutHandling, result.stdout);
+    if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
+      appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
+    }
     if (parsed.runId && parsed.role && nodeId) {
       const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
       updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined);

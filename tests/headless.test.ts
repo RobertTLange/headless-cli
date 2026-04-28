@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
 import { runCli } from "../src/cli.ts";
+import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
@@ -650,6 +651,163 @@ test("CLI falls back to built-in defaults when ~/.headless/config.toml is missin
       stdout.join(""),
       "opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions hello\n",
     );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("config parser accepts role sections and validates role fields", () => {
+  assert.deepEqual(
+    parseHeadlessConfig(
+      [
+        "[roles.explorer]",
+        'allow = "read-only"',
+        'reasoning_effort = "high"',
+        'base_instruction_prompt = """',
+        "Configured explorer prompt.",
+        '"""',
+        "",
+      ].join("\n"),
+    ).roles.explorer,
+    {
+      allow: "read-only",
+      reasoningEffort: "high",
+      baseInstructionPrompt: "Configured explorer prompt.",
+    },
+  );
+
+  assert.throws(() => parseHeadlessConfig("[roles.scout]\nallow = \"read-only\"\n"), /unsupported headless config role/);
+  assert.throws(() => parseHeadlessConfig("[roles.explorer]\nunknown = \"value\"\n"), /unsupported headless role config key/);
+  assert.throws(() => parseHeadlessConfig("[roles.explorer]\nallow = \"maybe\"\n"), /unsupported headless config allow/);
+  assert.throws(
+    () => parseHeadlessConfig("[roles.explorer]\nreasoning_effort = \"max\"\n"),
+    /unsupported headless config reasoning_effort/,
+  );
+});
+
+test("CLI applies configured role defaults and replaces the built-in role prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      [
+        "[roles.explorer]",
+        'allow = "yolo"',
+        'reasoning_effort = "high"',
+        'base_instruction_prompt = """',
+        "Configured explorer prompt.",
+        '"""',
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--role", "explorer", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const output = stdout.join("");
+    assert.match(output, /codex --dangerously-bypass-approvals-and-sandbox exec --model gpt-5\.5/);
+    assert.match(output, /-c 'model_reasoning_effort="high"'/);
+    assert.match(output, /Configured explorer prompt/);
+    assert.match(output, /User prompt:/);
+    assert.doesNotMatch(output, /Stay read-only/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI flags override configured role allow and reasoning effort", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[roles.explorer]", 'model = "gpt-role"', 'allow = "read-only"', 'reasoning_effort = "high"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      [
+        "codex",
+        "--role",
+        "explorer",
+        "--model",
+        "gpt-cli",
+        "--allow",
+        "yolo",
+        "--reasoning-effort",
+        "low",
+        "--prompt",
+        "hello",
+        "--print-command",
+      ],
+      { env: { ...process.env, HOME: home }, stdout: (text) => stdout.push(text) },
+    );
+
+    assert.equal(code, 0);
+    const output = stdout.join("");
+    assert.match(output, /codex --dangerously-bypass-approvals-and-sandbox exec --model gpt-cli/);
+    assert.match(output, /-c 'model_reasoning_effort="low"'/);
+    assert.doesNotMatch(output, /--sandbox read-only/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("environment model overrides stay above role config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[agents.codex]", 'model = "gpt-agent"', "", "[roles.worker]", 'model = "gpt-role"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--role", "worker", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home, CODEX_MODEL: "gpt-env" },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /codex --dangerously-bypass-approvals-and-sandbox exec --model gpt-env/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("role config model is optional and falls back to agent config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      [
+        "[agents.opencode]",
+        'model = "openai/gpt-agent"',
+        "",
+        "[roles.worker]",
+        'reasoning_effort = "high"',
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["opencode", "--role", "worker", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /opencode run --format json --model openai\/gpt-agent --variant high/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -25,3 +25,48 @@ model = "openai/gpt-5.4"
 [agents.pi]
 model = "openai-codex/gpt-5.5"
 # reasoning_effort = "xhigh"
+
+[roles.orchestrator]
+# model = "gpt-5.5" # Optional. Inherits the selected agent model when omitted.
+reasoning_effort = "high"
+allow = "yolo"
+base_instruction_prompt = """
+Role: orchestrator.
+Coordinate the declared team as the run contract. Assign clear, bounded work and keep the run moving.
+Launch planned child nodes with headless run message <run> <node> --prompt "..." --async when parallel work fits.
+Use headless run view <run> for status and headless run wait <run> before final handoff if children may still be active.
+Do not launch surprise agents unless the user explicitly asks.
+"""
+
+[roles.explorer]
+# model = "gpt-5.5" # Optional. Inherits the selected agent model when omitted.
+reasoning_effort = "medium"
+allow = "read-only"
+base_instruction_prompt = """
+Role: explorer.
+Stay read-only. Investigate the assigned question, cite concrete files, commands, and evidence, and report concise findings.
+Treat incoming run messages as the next task turn. Keep status short enough for run view lastMessage.
+When finished or blocked, report findings, uncertainty, and blockers.
+"""
+
+[roles.worker]
+# model = "gpt-5.5" # Optional. Inherits the selected agent model when omitted.
+reasoning_effort = "high"
+allow = "yolo"
+base_instruction_prompt = """
+Role: worker.
+Implement the assigned task with scoped edits. Respect nearby code patterns and existing user or agent changes.
+Run the relevant verification before handoff. Include changed files, tests, and blockers in the final status.
+Treat incoming run messages as the next task turn. Keep status short enough for run view lastMessage.
+"""
+
+[roles.reviewer]
+# model = "gpt-5.5" # Optional. Inherits the selected agent model when omitted.
+reasoning_effort = "high"
+allow = "read-only"
+base_instruction_prompt = """
+Role: reviewer.
+Stay read-only. Review for bugs, regressions, security risks, and missing tests.
+Lead with findings ordered by severity and include file and line references. Keep summaries secondary.
+Treat incoming run messages as the next review turn. Report blockers and residual risk clearly.
+"""
