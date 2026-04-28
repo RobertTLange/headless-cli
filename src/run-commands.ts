@@ -177,7 +177,7 @@ function startAsyncRunMessage(
   const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
   const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(handlers.env, runId, nodeId)] });
   const script = `${child} >/dev/null 2>/dev/null; code=$?; if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotePath(stderrLog)}; else printf '%s\\n' "async child exited with code $code" >> ${quotePath(stderrLog)}; ${failure} >/dev/null 2>> ${quotePath(stderrLog)}; fi; ${unlock}; exit "$code"`;
-  const command = { command: "sh", args: ["-lc", script] };
+  const command = { command: "sh", args: ["-c", script] };
 
   if (input.printCommand) {
     releaseLock();

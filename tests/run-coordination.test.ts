@@ -430,6 +430,37 @@ test("run message --async records busy status, logs output, and marks completion
   }
 });
 
+test("run message --async print-command uses a non-login shell to preserve PATH", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home") };
+    const stdout: string[] = [];
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "explorer-1",
+      role: "explorer",
+      agent: "claude",
+      coordination: "session",
+      status: "idle",
+      planned: true,
+      sessionAlias: "explorer-1",
+    });
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "explorer-1", "--prompt", "continue", "--async", "--print-command"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    const output = stdout.join("");
+    assert.match(output, /^sh -c /);
+    assert.doesNotMatch(output, /^sh -lc /);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("Docker run coordination mounts the host run directory", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
