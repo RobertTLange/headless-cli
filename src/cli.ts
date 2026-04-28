@@ -1790,6 +1790,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = parsed.allow ?? roleDefaultAllow(parsed.role);
+    if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
+      throw new CliError("--role orchestrator with --run cannot use --allow read-only; it must be able to launch child nodes and update run state");
+    }
     const team = parsed.teamSpecs.length > 0 ? expandTeamSpecs(parsed.agent, parsed.teamSpecs) : [];
     if (!parsed.printCommand && parsed.runId && parsed.role && nodeId) {
       for (const teamNode of team) {

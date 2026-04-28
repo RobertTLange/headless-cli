@@ -153,6 +153,7 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(run?.nodes.reviewer.role, "reviewer");
     const prompt = readFileSync(stdinCapture, "utf8");
     assert.match(prompt, /Role: orchestrator/);
+    assert.match(prompt, /launch each planned child/);
     assert.match(prompt, /Coordination commands:/);
     assert.match(prompt, /Run headless --help for full command syntax/);
     assert.match(prompt, /status becomes busy, logs are written/);
@@ -161,6 +162,17 @@ test("orchestrator run registers declared team and injects run context", async (
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
+});
+
+test("orchestrator run rejects read-only mode because it must update run state", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(
+    ["codex", "--role", "orchestrator", "--run", "auth", "--allow", "read-only", "--prompt", "hello"],
+    { stderr: (text) => stderr.push(text) },
+  );
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /orchestrator with --run cannot use --allow read-only/);
 });
 
 test("run list, view, mark, and wait operate on local run state", async () => {
@@ -209,6 +221,25 @@ test("run list, view, mark, and wait operate on local run state", async () => {
     stdout.length = 0;
     assert.equal(await runCli(["run", "wait", "auth"], { env, stdout: (text) => stdout.push(text) }), 0);
     assert.equal(stdout.join(""), "run idle: auth\n");
+
+    registerNode(env, {
+      runId: "self-wait",
+      nodeId: "orchestrator",
+      role: "orchestrator",
+      agent: "codex",
+      coordination: "session",
+      status: "starting",
+      planned: true,
+    });
+    stdout.length = 0;
+    assert.equal(
+      await runCli(["run", "wait", "self-wait"], {
+        env: { ...env, HEADLESS_RUN_NODE: "orchestrator" },
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "run idle: self-wait\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

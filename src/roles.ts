@@ -83,7 +83,8 @@ function roleInstructions(role: Role | undefined, runId: string | undefined): st
     : "Run headless --help for full command syntax.";
   const finishCommand = runId
     ? [
-        `When finished or blocked, send status with: headless run message ${runId} orchestrator --prompt "<status>"`,
+        `When finished or blocked, send status with: headless run message ${runId} orchestrator --prompt "<status>" if your permissions allow it.`,
+        "If that command is blocked, put the same status in your final response; Headless captures final output into run state.",
         "Include findings, changed files, tests, and blockers as relevant.",
       ].join("\n")
     : "When finished or blocked, report concise status in your final response.";
@@ -94,6 +95,7 @@ function roleInstructions(role: Role | undefined, runId: string | undefined): st
         "Role: orchestrator.",
         "Coordinate the declared team at the beginning of the run and treat it as the coordination contract.",
         "After initial team creation, do not launch surprise agents unless the user explicitly asks.",
+        "At the start, launch each planned child with headless run message <run> <node> --prompt \"...\" --async unless the user asks for a sequential workflow.",
         "Use run message to assign work; use --async for parallel child work; ask children to report back explicitly.",
         commandHelp,
         runId

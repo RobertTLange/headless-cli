@@ -122,12 +122,15 @@ async function handleRunMessage(
 
 async function waitForRunIdle(env: Env, runId: string): Promise<void> {
   const intervalMs = parseDelayMs(env.HEADLESS_RUN_WAIT_INTERVAL_MS, 1000);
+  const currentNode = env.HEADLESS_RUN_NODE;
   while (true) {
     const run = readRun(env, runId);
     if (!run) {
       throw new Error(`unknown run: ${runId}`);
     }
-    const busy = Object.values(run.nodes).some((node) => node.status === "busy" || node.status === "starting");
+    const busy = Object.values(run.nodes).some(
+      (node) => node.nodeId !== currentNode && (node.status === "busy" || node.status === "starting"),
+    );
     if (!busy) {
       return;
     }
