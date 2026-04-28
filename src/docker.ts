@@ -26,6 +26,8 @@ export interface DockerAgentCommandOptions {
   env: Env;
   hostUser?: string;
   image: string;
+  runDirHost?: string;
+  runId?: string;
   workDir: string;
 }
 
@@ -49,6 +51,10 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   const workDir = realpathSync(options.workDir);
   const dockerEnvEntries = collectDockerEnvEntries(options.env, options.command.env, options.dockerEnv);
   args.push("--workdir", workDir, "--volume", `${workDir}:${workDir}`);
+  if (options.runDirHost && options.runId) {
+    const containerRunDir = `/headless-runs/${options.runId}`;
+    args.push("--volume", `${options.runDirHost}:${containerRunDir}`, "--env", `HEADLESS_RUN_DIR=${containerRunDir}`);
+  }
   args.push(...agentConfigMountArgs(options.agent, options.env));
   args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
   args.push(...dockerEnvArgs(dockerEnvEntries));

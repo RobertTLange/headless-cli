@@ -53,8 +53,29 @@ import {
   fetchModelsDevPricing,
   priceUsageSummary,
 } from "./output.js";
+import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
+import {
+  readRun,
+  registerNode,
+  runDirectory,
+  updateNodeStatus,
+  validateRunId,
+  type RunNode,
+} from "./runs.js";
 import { readStoredSession, sessionStorePath, writeStoredSession } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
+import {
+  composeRolePrompt,
+  isCoordinationMode,
+  isRole,
+  isRunStatus,
+  nodeIdForRole,
+  roleDefaultAllow,
+  type CoordinationMode,
+  type Role,
+  type RunStatus,
+} from "./roles.js";
+import { expandTeamSpecs } from "./teams.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
@@ -63,8 +84,19 @@ interface ParsedArgs {
   rename: boolean;
   renameSession?: string;
   renameName?: string;
+  runCommand?: "list" | "view" | "mark" | "message" | "wait";
+  runCommandRunId?: string;
+  runCommandNodeId?: string;
+  runCommandStatus?: RunStatus;
+  runCommandAsync: boolean;
   dockerCommand?: "build" | "doctor";
   agent?: AgentName;
+  role?: Role;
+  coordination?: CoordinationMode;
+  runId?: string;
+  nodeId?: string;
+  dependsOn: string[];
+  teamSpecs: string[];
   prompt?: string;
   promptFile?: string;
   model?: string;
@@ -120,6 +152,7 @@ function usage(): string {
     "       headless docker build [options]",
     "       headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]",
     "       headless rename <session-name> <new-name> [options]",
+    "       headless run <list|view|mark|message|wait> [args] [options]",
     "",
     `Agents: ${listAgents().join(", ")}`,
     "",
@@ -127,6 +160,12 @@ function usage(): string {
     "  --model <name>        Agent model override.",
     "  --reasoning-effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
+    "  --role <role>         Role: orchestrator, explorer, worker, or reviewer.",
+    "  --coordination <mode> Coordination: session, tmux, or oneshot.",
+    "  --run <run>           Register this invocation in a local run.",
+    "  --node <node>         Node name inside --run. Defaults to the role name.",
+    "  --depends-on <node>   Record a dependency edge. Repeatable.",
+    "  --team <spec>         Declare orchestrator team nodes, e.g. worker=2 or codex/worker=3.",
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
@@ -152,6 +191,11 @@ function usage(): string {
     "  --session <name>     Start or resume a named Headless session.",
     "  send <session-name>  Send a message to an existing headless tmux session.",
     "  rename <session> <name> Rename an existing headless tmux session.",
+    "  run list            List local coordinated runs.",
+    "  run view <run>      Show run graph, recent messages, and exact node commands.",
+    "  run mark <run> <node> --status <status> Update node status.",
+    "  run message <run> <node> --prompt <text> [--async] Route a message to a node.",
+    "  run wait <run>      Wait until no nodes are busy.",
     "  docker doctor       Check Docker setup and image availability.",
     "  docker build        Build the local Docker image tag headless-local:dev.",
     "  --check              Check installed agent binaries, versions, and local API/OAuth credentials.",
@@ -169,6 +213,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     send: false,
     rename: false,
+    runCommandAsync: false,
+    dependsOn: [],
+    teamSpecs: [],
     docker: false,
     dockerArgs: [],
     dockerEnv: [],
@@ -206,6 +253,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.send = true;
   } else if (first === "rename") {
     parsed.rename = true;
+  } else if (first === "run") {
+    parsed.runCommand = parseRunCommand(args.shift());
   } else if (first === "docker") {
     parsed.dockerCommand = parseDockerCommand(args.shift());
   } else if (isAgentName(first)) {
@@ -235,6 +284,24 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--allow":
         parsed.allow = parseAllowMode(takeValue(args, arg));
+        break;
+      case "--role":
+        parsed.role = parseRole(takeValue(args, arg));
+        break;
+      case "--coordination":
+        parsed.coordination = parseCoordinationMode(takeValue(args, arg));
+        break;
+      case "--run":
+        parsed.runId = validateSafeName(takeValue(args, arg), "run");
+        break;
+      case "--node":
+        parsed.nodeId = validateSafeName(takeValue(args, arg), "node");
+        break;
+      case "--depends-on":
+        parsed.dependsOn.push(validateSafeName(takeValue(args, arg), "dependency"));
+        break;
+      case "--team":
+        parsed.teamSpecs.push(takeValue(args, arg));
         break;
       case "--work-dir":
       case "-C":
@@ -309,6 +376,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--print-command":
         parsed.printCommand = true;
         break;
+      case "--status":
+        parsed.runCommandStatus = parseRunStatus(takeValue(args, arg));
+        break;
+      case "--async":
+        parsed.runCommandAsync = true;
+        break;
       case "--show-config":
         parsed.showConfig = true;
         break;
@@ -337,11 +410,31 @@ function parseArgs(argv: string[]): ParsedArgs {
             break;
           }
         }
+        if (parsed.runCommand && arg && !arg.startsWith("-")) {
+          if (parsed.runCommandRunId === undefined) {
+            parsed.runCommandRunId = validateSafeName(arg, "run");
+            break;
+          }
+          if (
+            (parsed.runCommand === "mark" || parsed.runCommand === "message") &&
+            parsed.runCommandNodeId === undefined
+          ) {
+            parsed.runCommandNodeId = validateSafeName(arg, "node");
+            break;
+          }
+        }
         throw new CliError(`unknown argument: ${arg ?? ""}`);
     }
   }
 
   return parsed;
+}
+
+function parseRunCommand(value: string | undefined): "list" | "view" | "mark" | "message" | "wait" {
+  if (value === "list" || value === "view" || value === "mark" || value === "message" || value === "wait") {
+    return value;
+  }
+  throw new CliError("missing run command; use run list, view, mark, message, or wait");
 }
 
 function takeValue(args: string[], flag: string | undefined): string {
@@ -357,6 +450,35 @@ function parseAllowMode(value: string): AllowMode {
     return value;
   }
   throw new CliError(`unsupported allow mode: ${value}`);
+}
+
+function parseRole(value: string): Role {
+  if (isRole(value)) {
+    return value;
+  }
+  throw new CliError(`unsupported role: ${value}`);
+}
+
+function parseCoordinationMode(value: string): CoordinationMode {
+  if (isCoordinationMode(value)) {
+    return value;
+  }
+  throw new CliError(`unsupported coordination mode: ${value}`);
+}
+
+function parseRunStatus(value: string): RunStatus {
+  if (isRunStatus(value)) {
+    return value;
+  }
+  throw new CliError(`unsupported run status: ${value}`);
+}
+
+function validateSafeName(value: string | undefined, label: string): string {
+  try {
+    return validateRunId(value, label);
+  } catch (error) {
+    throw new CliError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function parseReasoningEffort(value: string): ReasoningEffort {
@@ -1297,6 +1419,97 @@ async function executeTmuxRenameCommand(
   return await executeSimpleCommand(command.command, undefined, env, stderr);
 }
 
+function effectiveCoordination(parsed: ParsedArgs): CoordinationMode {
+  if (parsed.coordination) {
+    return parsed.coordination;
+  }
+  if (parsed.tmux) {
+    return "tmux";
+  }
+  if ((parsed.docker || parsed.modal) && parsed.role) {
+    return "oneshot";
+  }
+  return "session";
+}
+
+function withRunEnvironment(command: BuiltCommand, runId: string | undefined, nodeId: string | undefined): BuiltCommand {
+  if (!runId && !nodeId) {
+    return command;
+  }
+  return {
+    ...command,
+    env: {
+      ...command.env,
+      ...(runId ? { HEADLESS_RUN_ID: runId } : {}),
+      ...(nodeId ? { HEADLESS_RUN_NODE: nodeId } : {}),
+    },
+  };
+}
+
+async function executeStoredNode(
+  node: {
+    agent: AgentName;
+    allow?: AllowMode;
+    coordination: CoordinationMode;
+    model?: string;
+    reasoningEffort?: ReasoningEffort;
+    runId: string;
+    nodeId: string;
+    role: Role;
+    sessionAlias?: string;
+    workDir?: string;
+  },
+  rawPrompt: string,
+  env: Env,
+  stderr: (text: string) => void,
+  stdout: (text: string) => void,
+  stdoutHandling: StdoutHandling,
+): Promise<ExecuteResult> {
+  const run = readRun(env, node.runId);
+  const prompt = composeRolePrompt(
+    rawPrompt,
+    {
+      agent: node.agent,
+      role: node.role,
+      coordination: node.coordination,
+      runId: node.runId,
+      nodeId: node.nodeId,
+      dependsOn: [],
+      team: [],
+      allow: node.allow,
+      model: node.model,
+      reasoningEffort: node.reasoningEffort,
+      workDir: node.workDir,
+      sessionAlias: node.sessionAlias,
+    },
+    run,
+  );
+  const sessionPlan =
+    node.coordination === "session" ? await prepareSessionPlan(node.agent, buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env), node.workDir, env) : undefined;
+  const command = withRunEnvironment(
+    buildAgentCommand(
+      node.agent,
+      applySessionPlan(
+        {
+          prompt,
+          model: node.model,
+          allow: node.allow,
+          reasoningEffort: node.reasoningEffort,
+        },
+        sessionPlan,
+      ),
+      env,
+    ),
+    node.runId,
+    node.nodeId,
+  );
+  const result = await executeCommand(node.agent, command, node.workDir, env, stderr, { stdout, stdoutHandling });
+  if (result.code === 0 && sessionPlan) {
+    await persistSessionPlan(node.agent, sessionPlan, result.stdout, node.workDir, env);
+  }
+  return result;
+}
+
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
@@ -1308,6 +1521,40 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.help) {
       stdout(usage());
       return 0;
+    }
+    if (parsed.runCommand) {
+      try {
+        return await handleRunCommandImpl(
+          {
+            command: parsed.runCommand,
+            runId: parsed.runCommandRunId,
+            nodeId: parsed.runCommandNodeId,
+            status: parsed.runCommandStatus,
+            async: parsed.runCommandAsync,
+            printCommand: parsed.printCommand,
+          },
+          {
+            env,
+            stdout,
+            stderr,
+            resolvePrompt: () => resolvePrompt(parsed, deps, { forceText: true, requireAgent: false }),
+            executeNode: (node: RunNode, prompt: string) =>
+              executeStoredNode(node, prompt, env, stderr, stdout, "capture"),
+            sendTmux: async (sessionName: string, prompt: string, printCommand: boolean) => {
+              const tmuxCommands = buildTmuxSendCommands(sessionName, prompt);
+              if (printCommand) {
+                for (const command of tmuxCommands.commands) {
+                  stdout(`${quoteCommand(command)}\n`);
+                }
+                return 0;
+              }
+              return await executeTmuxSendCommands(tmuxCommands, env, stderr);
+            },
+          },
+        );
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
     }
     if (parsed.dockerCommand) {
       if (parsed.prompt !== undefined || parsed.promptFile !== undefined) {
@@ -1473,6 +1720,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (!parsed.agent) {
       parsed.agent = parsed.docker || parsed.modal ? autoAgentPreference[0] : selectDefaultAgent(env);
     }
+    if (parsed.coordination === "tmux") {
+      parsed.tmux = true;
+    }
     if (parsed.tmux && parsed.docker) {
       throw new CliError("--docker cannot be used with --tmux");
     }
@@ -1507,6 +1757,20 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--session cannot be used with --modal");
     }
     validateSessionAlias(parsed.sessionAlias);
+    const coordination = effectiveCoordination(parsed);
+    const nodeId = nodeIdForRole(parsed.role, parsed.nodeId);
+    if (parsed.runId !== undefined && parsed.role === undefined) {
+      throw new CliError("--run requires --role");
+    }
+    if (parsed.nodeId !== undefined && parsed.runId === undefined) {
+      throw new CliError("--node requires --run");
+    }
+    if (parsed.dependsOn.length > 0 && parsed.runId === undefined) {
+      throw new CliError("--depends-on requires --run");
+    }
+    if (parsed.teamSpecs.length > 0 && parsed.role !== "orchestrator") {
+      throw new CliError("--team requires --role orchestrator");
+    }
     if (parsed.showConfig) {
       stdout(renderConfig(parsed.agent));
       return 0;
@@ -1524,14 +1788,65 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError(error instanceof Error ? error.message : String(error));
     }
     const cwd = validateWorkDir(parsed.workDir);
-    const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux });
+    const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
+    const allow = parsed.allow ?? roleDefaultAllow(parsed.role);
+    const team = parsed.teamSpecs.length > 0 ? expandTeamSpecs(parsed.agent, parsed.teamSpecs) : [];
+    if (!parsed.printCommand && parsed.runId && parsed.role && nodeId) {
+      for (const teamNode of team) {
+        registerNode(env, {
+          runId: parsed.runId,
+          nodeId: teamNode.nodeId,
+          role: teamNode.role,
+          agent: teamNode.agent,
+          coordination,
+          status: "planned",
+          planned: true,
+          allow: roleDefaultAllow(teamNode.role),
+          workDir: cwd ?? process.cwd(),
+          sessionAlias: teamNode.nodeId,
+        });
+      }
+      registerNode(env, {
+        runId: parsed.runId,
+        nodeId,
+        role: parsed.role,
+        agent: parsed.agent,
+        coordination,
+        status: "starting",
+        dependsOn: parsed.dependsOn,
+        planned: true,
+        allow,
+        model: configuredDefaults.model,
+        reasoningEffort: configuredDefaults.reasoningEffort,
+        workDir: cwd ?? process.cwd(),
+        sessionAlias: coordination === "session" ? (parsed.sessionAlias ?? nodeId) : parsed.sessionAlias,
+      });
+    }
+    const composedPrompt = composeRolePrompt(
+      prompt.prompt,
+      {
+        agent: parsed.agent,
+        role: parsed.role,
+        coordination,
+        runId: parsed.runId,
+        nodeId,
+        dependsOn: parsed.dependsOn,
+        team,
+        allow,
+        model: configuredDefaults.model,
+        reasoningEffort: configuredDefaults.reasoningEffort,
+        workDir: cwd ?? process.cwd(),
+        sessionAlias: coordination === "session" ? (parsed.sessionAlias ?? nodeId) : parsed.sessionAlias,
+      },
+      parsed.runId ? readRun(env, parsed.runId) : undefined,
+    );
 
     if (parsed.tmux) {
       const sessionName = parsed.sessionAlias
         ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
         : undefined;
       if (sessionName && (await headlessTmuxSessionExists(sessionName, env))) {
-        const tmuxCommands = buildTmuxSendCommands(sessionName, prompt.prompt);
+        const tmuxCommands = buildTmuxSendCommands(sessionName, composedPrompt);
         if (parsed.printCommand) {
           for (const command of tmuxCommands.commands) {
             stdout(`${quoteCommand(command)}\n`);
@@ -1541,15 +1856,33 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
         if (code === 0) {
           stdout(`sent: ${tmuxCommands.sessionName}\n`);
+          if (parsed.runId && parsed.role && nodeId) {
+            registerNode(env, {
+              runId: parsed.runId,
+              nodeId,
+              role: parsed.role,
+              agent: parsed.agent,
+              coordination,
+              status: "busy",
+              dependsOn: parsed.dependsOn,
+              planned: true,
+              allow,
+              model: configuredDefaults.model,
+              reasoningEffort: configuredDefaults.reasoningEffort,
+              workDir: cwd ?? process.cwd(),
+              sessionAlias: parsed.sessionAlias ?? nodeId,
+              tmuxSessionName: sessionName,
+            });
+          }
         }
         return code;
       }
       const tmuxCommand = buildInteractiveAgentCommand(
         parsed.agent,
         {
-          prompt: prompt.prompt,
+          prompt: composedPrompt,
           model: configuredDefaults.model,
-          allow: parsed.allow,
+          allow,
           reasoningEffort: configuredDefaults.reasoningEffort,
         },
         env,
@@ -1561,11 +1894,29 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const tmuxCommands = buildTmuxCommands(
         parsed.agent,
         tmuxCommand,
-        prompt.prompt,
+        composedPrompt,
         cwd,
         env,
         parsed.sessionAlias ?? parsed.tmuxName,
       );
+      if (!parsed.printCommand && parsed.runId && parsed.role && nodeId) {
+        registerNode(env, {
+          runId: parsed.runId,
+          nodeId,
+          role: parsed.role,
+          agent: parsed.agent,
+          coordination,
+          status: "busy",
+          dependsOn: parsed.dependsOn,
+          planned: true,
+          allow,
+          model: configuredDefaults.model,
+          reasoningEffort: configuredDefaults.reasoningEffort,
+          workDir: cwd ?? process.cwd(),
+          sessionAlias: parsed.sessionAlias ?? parsed.tmuxName ?? nodeId,
+          tmuxSessionName: tmuxCommands.sessionName,
+        });
+      }
 
       if (parsed.printCommand) {
         stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
@@ -1591,20 +1942,26 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     let sessionPlan = buildSessionPlan(parsed.agent, parsed.sessionAlias, env);
+    if (parsed.runId && parsed.role && coordination === "session" && !parsed.sessionAlias) {
+      sessionPlan = buildSessionPlan(parsed.agent, nodeId, env);
+    }
+    if (parsed.runId && parsed.role && coordination === "oneshot") {
+      sessionPlan = undefined;
+    }
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env);
     }
-    let command = buildAgentCommand(
+    let command = withRunEnvironment(buildAgentCommand(
       parsed.agent,
       applySessionPlan({
-        prompt: prompt.prompt,
-        promptFile: prompt.promptFile,
+        prompt: composedPrompt,
+        promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
         model: configuredDefaults.model,
-        allow: parsed.allow,
+        allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
       }, sessionPlan),
       env,
-    );
+    ), parsed.runId, nodeId);
     const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
     if (reasoningWarning) {
       stderr(reasoningWarning);
@@ -1618,6 +1975,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         env,
         hostUser: detectDockerHostUser(),
         image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
+        runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
+        runId: parsed.runId,
         workDir: cwd ?? process.cwd(),
       });
     }
@@ -1678,6 +2037,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           stdout,
           stdoutHandling,
         });
+    if (parsed.runId && parsed.role && nodeId) {
+      const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
+      updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined);
+    }
     if (result.code === 0 && sessionPlan) {
       await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
     }
