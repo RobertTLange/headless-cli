@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
-import { acquireNodeLock, readRun, registerNode } from "../src/runs.ts";
+import { acquireNodeLock, readRun, registerNode, updateNodeStatus } from "../src/runs.ts";
 import { expandTeamSpecs, parseTeamSpec } from "../src/teams.ts";
 
 async function writeExecutable(path: string, source: string): Promise<void> {
@@ -132,6 +132,7 @@ test("orchestrator run registers declared team and injects run context", async (
         "const fs = require('node:fs');",
         "fs.writeFileSync(process.env.HEADLESS_STDIN_CAPTURE, fs.readFileSync(0, 'utf8'));",
         "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));",
+        "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 100, reasoning_output_tokens: 25 } }));",
         "console.log(JSON.stringify({ type: 'agent_message', text: 'orchestrator final' }));",
         "",
       ].join("\n"),
@@ -167,6 +168,12 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(stdout.join(""), "orchestrator final\n");
     const run = readRun(env, "auth");
     assert.equal(run?.nodes.orchestrator.status, "idle");
+    assert.deepEqual(
+      run?.events.filter((event) => event.nodeId === "orchestrator" && event.type === "status_changed").map((event) => event.status),
+      ["busy"],
+    );
+    assert.equal(run?.nodes.orchestrator.metrics?.totalTokens, 1100);
+    assert.equal(run?.nodes.orchestrator.metrics?.outputTokens, 100);
     assert.equal(run?.nodes["worker-1"].status, "planned");
     assert.equal(run?.nodes["worker-2"].status, "planned");
     assert.equal(run?.nodes.reviewer.role, "reviewer");
@@ -220,15 +227,37 @@ test("run list, view, mark, and wait operate on local run state", async () => {
       dependsOn: ["orchestrator"],
       planned: true,
     });
+    updateNodeStatus(env, "auth", "orchestrator", "idle", "ready", {
+      turns: 3,
+      durationMs: 123456,
+      apiDurationMs: 100000,
+      totalCostUsd: 0.42,
+      inputTokens: 600,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+      outputTokens: 100,
+      reasoningOutputTokens: 25,
+      totalTokens: 1100,
+    });
 
     const stdout: string[] = [];
     assert.equal(await runCli(["run", "list"], { env, stdout: (text) => stdout.push(text) }), 0);
-    assert.match(stdout.join(""), /auth\s+session\s+2 nodes/);
+    assert.match(stdout.join(""), /auth\s+session\s+2 nodes\s+0 active/);
+    assert.match(stdout.join(""), /UPDATED/);
+    assert.match(stdout.join(""), /AGE/);
 
     stdout.length = 0;
     assert.equal(await runCli(["run", "view", "auth"], { env, stdout: (text) => stdout.push(text) }), 0);
-    assert.match(stdout.join(""), /Graph/);
-    assert.match(stdout.join(""), /worker-1 \[planned\] depends: orchestrator/);
+    const view = stdout.join("");
+    assert.match(view, /created: .* updated: .* age:/);
+    assert.match(view, /status: 1 idle, 1 planned/);
+    assert.match(view, /Graph/);
+    assert.match(view, /orchestrator \[idle .* ago\] last: ready/);
+    assert.match(view, /worker-1 \[planned .* ago\] depends: orchestrator/);
+    assert.match(view, /Node details/);
+    assert.match(view, /NODE\s+ROLE\s+AGENT\s+STATUS\s+UPDATED\s+AGE\s+TURNS\s+DURATION\s+COST\s+TOKENS\s+LAST/);
+    assert.match(view, /orchestrator\s+orchestrator\s+codex\s+idle\s+.*\s+3\s+2m03s\s+\$0\.42\s+1\.1k\s+ready/);
+    assert.match(view, /worker-1\s+worker\s+codex\s+planned\s+.*\s+-\s+-\s+-\s+-/);
 
     stdout.length = 0;
     assert.equal(

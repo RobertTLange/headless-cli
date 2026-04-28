@@ -54,6 +54,7 @@ import {
   priceUsageSummary,
 } from "./output.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
+import { extractRunNodeMetrics } from "./run-metrics.js";
 import {
   appendNodeLog,
   readRun,
@@ -2072,6 +2073,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         : "capture";
     if (parsed.runId && parsed.role && nodeId) {
       appendRunInvocationLog(env, parsed.runId, nodeId, "node invocation");
+      updateNodeStatus(env, parsed.runId, nodeId, "busy");
     }
     const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
     const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
@@ -2114,7 +2116,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.runId && parsed.role && nodeId) {
       const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-      updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined);
+      updateNodeStatus(
+        env,
+        parsed.runId,
+        nodeId,
+        result.code === 0 ? "idle" : "failed",
+        finalMessage || undefined,
+        extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)),
+      );
     }
     if (result.code === 0 && sessionPlan) {
       await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);

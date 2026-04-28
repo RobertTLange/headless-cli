@@ -36,8 +36,22 @@ export interface RunNode {
     stdout: string;
     stderr: string;
   };
+  metrics?: RunNodeMetrics;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RunNodeMetrics {
+  turns?: number;
+  durationMs?: number;
+  apiDurationMs?: number;
+  totalCostUsd?: number;
+  inputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
 }
 
 export interface RunEvent {
@@ -206,6 +220,7 @@ export function registerNode(env: Env, input: RegisterNodeInput): RunNode {
     sessionAlias: input.sessionAlias ?? existing?.sessionAlias,
     tmuxSessionName: input.tmuxSessionName ?? existing?.tmuxSessionName,
     logs: existing?.logs ?? logPaths(env, input.runId, input.nodeId),
+    metrics: existing?.metrics,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -231,6 +246,7 @@ export function updateNodeStatus(
   nodeId: string,
   status: RunStatus,
   message?: string,
+  metrics?: RunNodeMetrics,
 ): RunNode {
   const run = requireRun(env, runId);
   const node = requireNode(run, nodeId);
@@ -239,6 +255,9 @@ export function updateNodeStatus(
   node.updatedAt = now;
   if (message) {
     node.lastMessage = message;
+  }
+  if (metrics && Object.keys(metrics).length > 0) {
+    node.metrics = { ...node.metrics, ...metrics };
   }
   addEvent(run, {
     type: status === "failed" ? "node_failed" : status === "done" || status === "idle" ? "node_completed" : "status_changed",

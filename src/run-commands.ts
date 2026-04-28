@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { extractFinalMessage } from "./output.js";
+import { extractRunNodeMetrics } from "./run-metrics.js";
 import { renderRunList, renderRunView } from "./run-view.js";
 import {
   acquireNodeLock,
@@ -111,7 +112,14 @@ async function handleRunMessage(
     updateNodeStatus(handlers.env, runId, nodeId, "busy");
     const result = await handlers.executeNode(node, prompt.prompt);
     const finalMessage = extractFinalMessage(node.agent, result.stdout);
-    updateNodeStatus(handlers.env, runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined);
+    updateNodeStatus(
+      handlers.env,
+      runId,
+      nodeId,
+      result.code === 0 ? "idle" : "failed",
+      finalMessage || undefined,
+      extractRunNodeMetrics(node.agent, result.stdout, { model: node.model }),
+    );
     if (finalMessage) {
       handlers.stdout(`${finalMessage}\n`);
     }
