@@ -146,7 +146,7 @@ Add a `run` command group:
 ```bash
 headless run list
 headless run view <run>
-headless run mark <run> <node> --status idle|busy|done|failed|unknown
+headless run mark <run> <node> --status planned|starting|busy|idle|done|failed|unknown
 headless run message <run> <node> --prompt "..." [--async]
 headless run wait <run>
 ```
@@ -158,7 +158,42 @@ Lists known runs from the local run store.
 ### `run view`
 
 Prints the current roster, node statuses, last messages, dependencies, and exact
-commands for messaging each node.
+commands for messaging each node. The default human output should include a
+compact graph view first. Do not require a separate `graph` subcommand for v1.
+
+Example:
+
+```text
+auth  session  4 nodes
+
+Graph
+orchestrator [busy]
+|- explorer [done] last: Found auth middleware paths
+|- worker-1 [busy] depends: explorer
+`- reviewer [planned] depends: worker-1
+
+Recent messages
+orchestrator -> worker-1  Implement token refresh
+explorer -> orchestrator  Found auth middleware paths
+
+Commands
+message worker-1: headless run message auth worker-1 --prompt "..."
+logs worker-1:    tail -f ~/.headless/runs/auth/nodes/worker-1/latest.stdout.log
+```
+
+Graph rendering rules:
+
+- Render the orchestrator-rooted tree first because most runs are
+  orchestrator-centered.
+- Support arbitrary DAG state in storage. For edges that do not fit the primary
+  tree, show inline `depends: a,b` and add an `Extra edges` section when needed.
+- Treat `--depends-on` as structural dependency edges.
+- Treat `message_sent` events as runtime communication edges. Show recent
+  message flow separately from dependencies.
+- Show latest node state first. Include a short recent-event or recent-message
+  trail so the user can see how the graph reached that state.
+- Keep exact messaging, attach, and log commands in a separate command section
+  instead of inline in graph labels.
 
 ### `run mark`
 
@@ -203,6 +238,18 @@ Waits until no nodes in the run are `busy`. The orchestrator prompt must tell
 the parent agent to call this before final response when it has launched async
 children.
 
+### Team Registration
+
+When an orchestrator invocation includes `--team`, Headless should pre-register
+the declared nodes before they are launched. These nodes start as `planned` and
+become `starting`, `busy`, `idle`, `done`, or `failed` as execution produces
+events. This makes `run view` useful immediately and makes never-started nodes
+visible.
+
+Nodes that appear outside the declared team should still be recorded and shown.
+Mark them as `planned: false` or `unplanned: true` so the CLI can distinguish
+surprise nodes from the orchestrator's initial team.
+
 ## Run Store
 
 Default local store:
@@ -239,12 +286,15 @@ Node state should be lightweight:
   "status": "idle",
   "lastMessage": "Implemented token refresh; tests pass.",
   "dependsOn": ["explorer"],
+  "planned": true,
+  "unplanned": false,
   "updatedAt": "2026-04-28T12:00:00.000Z"
 }
 ```
 
 Statuses:
 
+- `planned`
 - `starting`
 - `busy`
 - `idle`
@@ -281,6 +331,13 @@ Useful event types:
 - `node_failed`
 - `node_completed`
 
+Dependency and message edges have different meanings:
+
+- `dependsOn` records structural planning edges. These edges drive the primary
+  graph visualization.
+- `message_sent` records runtime communication edges. These edges drive recent
+  message flow and audit history.
+
 ## Prompt Contracts
 
 ### Common Injected Context
@@ -294,21 +351,28 @@ For any role invocation with `--run`, Headless prepends compact context:
 - roster from run state and `--team`
 - each node's status
 - each node's last message
+- each node's dependencies
+- whether each node is planned or unplanned
 - exact command to message each node
 
-Do not inject summaries.
+Do not inject summaries or full event history. The context should mark the
+current node clearly.
 
 ### Orchestrator Prompt
 
 The orchestrator role prompt must state:
 
 - Create the declared team at the beginning of the run.
-- After initial team creation, do not spawn new agents.
+- Treat the declared team as the coordination contract.
+- After initial team creation, do not spawn new agents unless the user
+  explicitly asks.
 - Use `headless run message <run> <node>` for later communication.
 - Use the selected `--coordination` style when starting nodes.
 - Use async messaging for parallel work when appropriate.
 - Call `headless run wait <run>` before final response if async work is running.
 - Coordinate based on roster status and last messages.
+- Ask each child to send an explicit status message back to the orchestrator
+  when finished or blocked.
 
 ### Explorer Prompt
 
@@ -316,6 +380,8 @@ The explorer role prompt must state:
 
 - Stay read-only.
 - Investigate and report concise findings.
+- Include enough status detail for `run view` to show useful `lastMessage`
+  text.
 - When finished or blocked, message the orchestrator:
 
 ```bash
@@ -329,6 +395,8 @@ The worker role prompt must state:
 - Implement the assigned task.
 - Keep changes scoped.
 - Run relevant verification.
+- Include enough status detail for `run view` to show useful `lastMessage`
+  text.
 - When finished or blocked, message the orchestrator with changes, tests, and
   blockers:
 
@@ -343,6 +411,8 @@ The reviewer role prompt must state:
 - Stay read-only.
 - Review for bugs, regressions, security risks, and missing tests.
 - Lead with findings and file references.
+- Include enough status detail for `run view` to show useful `lastMessage`
+  text.
 - When finished, message the orchestrator with findings or `No findings`:
 
 ```bash
