@@ -15,6 +15,7 @@ import test from "node:test";
 
 const agents = ["claude", "codex", "cursor", "gemini", "opencode", "pi"] as const;
 const selectedAgents = parseSelectedAgents(process.env.HEADLESS_INTEGRATION_AGENTS);
+const fullIntegrationSweep = process.env.HEADLESS_INTEGRATION_FULL_SWEEP === "1";
 const commandTimeoutMs = Number.parseInt(process.env.HEADLESS_INTEGRATION_TIMEOUT_MS ?? "300000", 10);
 const dockerTimeoutMs = Number.parseInt(process.env.HEADLESS_INTEGRATION_DOCKER_TIMEOUT_MS ?? "900000", 10);
 const modalTimeoutMs = Number.parseInt(process.env.HEADLESS_INTEGRATION_MODAL_TIMEOUT_MS ?? "1200000", 10);
@@ -133,6 +134,23 @@ function prompt(nonce: string): string {
   return `Read-only check. Reply with this nonce and no file edits: ${nonce}`;
 }
 
+function orchestratePrompt(runId: string, nonce: string): string {
+  const headlessCommand = process.env.HEADLESS_BIN ?? "headless";
+  const nodes = agents.map((agent) => `explorer-${agent}`).join(", ");
+  return [
+    "Build auth.",
+    "",
+    `This is a full-agent Headless orchestration integration test. Nonce: ${nonce}.`,
+    "Do not edit files.",
+    `Use this exact Headless command prefix for every coordination command: ${headlessCommand}`,
+    `Launch every declared explorer node: ${nodes}.`,
+    `For each node, run: ${headlessCommand} run message ${runId} <node> --prompt "Read README.md and reply with the nonce ${nonce}, your node name, and no file edits." --async`,
+    `After launching all nodes, run: ${headlessCommand} run wait ${runId}`,
+    `Then run: ${headlessCommand} run view ${runId}`,
+    `Your final response must include: orchestration complete ${nonce}`,
+  ].join("\n");
+}
+
 function tempWorkdir(label: string): string {
   const dir = mkdtempSync(join(tmpdir(), `headless-${label}-`));
   writeFileSync(join(dir, "README.md"), `# ${label}\n\nTemporary Headless local integration workspace.\n`);
@@ -168,6 +186,10 @@ async function tempGitWorkdir(label: string): Promise<string> {
 
 function sessionsPath(): string {
   return join(process.env.HOME ?? homedir(), ".headless", "sessions.json");
+}
+
+function runPath(runId: string): string {
+  return join(process.env.HOME ?? homedir(), ".headless", "runs", runId);
 }
 
 function snapshotSessionStore(): () => void {
@@ -341,6 +363,59 @@ test("selected backends start and send to --tmux --session aliases", { timeout: 
     }
   }
 });
+
+test(
+  "full sweep orchestrates all agent explorers",
+  { timeout: commandTimeoutMs * (agents.length + 2) },
+  async (t) => {
+    if (!fullIntegrationSweep) {
+      t.skip("set HEADLESS_INTEGRATION_FULL_SWEEP=1 via HEADLESS_HOOK_ALL_AGENTS=1 to run full orchestration");
+      return;
+    }
+    assert.deepEqual([...selectedAgents].sort(), [...agents].sort(), "full orchestration requires all agents");
+
+    const dir = tempWorkdir("full-orchestrate");
+    const runId = `${suiteNonce}-full-orchestrate`.replace(/[^A-Za-z0-9_.-]/g, "-");
+    const nonce = `${runId}-nonce`;
+    try {
+      prepareAgentWorkdir("cursor", dir);
+      const result = await headless(
+        [
+          "codex",
+          "--work-dir",
+          dir,
+          "--role",
+          "orchestrator",
+          "--run",
+          runId,
+          "--node",
+          "orchestrator",
+          "--coordination",
+          "oneshot",
+          ...agents.flatMap((agent) => ["--team", `${agent}/explorer`]),
+          "--prompt",
+          orchestratePrompt(runId, nonce),
+        ],
+        { timeoutMs: commandTimeoutMs * (agents.length + 1) },
+      );
+      assertNonce(result, `orchestration complete ${nonce}`, "full-agent orchestrator");
+
+      assertSuccess(await headless(["run", "wait", runId], { timeoutMs: commandTimeoutMs }), "full-agent run wait");
+      const runRecord = JSON.parse(readFileSync(join(runPath(runId), "run.json"), "utf8")) as {
+        nodes: Record<string, { status: string; lastMessage?: string }>;
+      };
+      for (const agent of agents) {
+        const node = runRecord.nodes[`explorer-${agent}`];
+        assert.ok(node, `missing explorer-${agent} node`);
+        assert.equal(node.status, "idle", `explorer-${agent} did not finish`);
+        assert.match(node.lastMessage ?? "", new RegExp(escapeRegExp(nonce)), `explorer-${agent} did not report nonce`);
+      }
+    } finally {
+      rmSync(runPath(runId), { force: true, recursive: true });
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
 
 test("Codex completes through Docker", { timeout: dockerTimeoutMs }, async () => {
   const dir = tempWorkdir("codex-docker");

@@ -10,9 +10,11 @@ hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$hook_dir/.." && pwd)
 headless_bin="$repo_root/dist/cli.js"
 integration_agents="codex"
+integration_full_sweep="0"
 
 if [ "${HEADLESS_HOOK_ALL_AGENTS:-}" = "1" ]; then
   integration_agents="all"
+  integration_full_sweep="1"
 fi
 
 cd "$repo_root"
@@ -29,7 +31,7 @@ EOF
 fi
 
 echo "headless pre-push: running local integration suite (${integration_agents})"
-if ! HEADLESS_BIN="$headless_bin" HEADLESS_INTEGRATION_AGENTS="$integration_agents" npm run test:integration:local; then
+if ! HEADLESS_BIN="$headless_bin" HEADLESS_INTEGRATION_AGENTS="$integration_agents" HEADLESS_INTEGRATION_FULL_SWEEP="$integration_full_sweep" npm run test:integration:local; then
   cat >&2 <<'EOF'
 headless pre-push: local integration suite failed.
 
