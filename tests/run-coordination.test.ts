@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
-import { acquireNodeLock, readRun, registerNode, updateNodeStatus } from "../src/runs.ts";
+import { acquireNodeLock, appendNodeLog, nodeLockPath, readRun, registerNode, updateNodeStatus } from "../src/runs.ts";
 import { expandTeamSpecs, parseTeamSpec } from "../src/teams.ts";
 
 async function writeExecutable(path: string, source: string): Promise<void> {
@@ -24,6 +24,10 @@ async function waitFor(assertion: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(assertion(), true);
+}
+
+function modeOf(path: string): number {
+  return statSync(path).mode & 0o777;
 }
 
 async function runStatusUpdater(env: NodeJS.ProcessEnv, runId: string, nodeId: string, barrierFile: string): Promise<number> {
@@ -111,6 +115,42 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     release();
     acquireNodeLock(env, "auth", "worker-1")();
   } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run store writes private run files, logs, and locks", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  const previousUmask = process.umask(0);
+  try {
+    const env = { HOME: join(dir, "home") };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "session",
+      status: "planned",
+      planned: true,
+    });
+    appendNodeLog(env, "auth", "worker-1", "stdout", "private output\n");
+
+    const runDir = join(env.HOME, ".headless", "runs", "auth");
+    const nodeDir = join(runDir, "nodes", "worker-1");
+    assert.equal(modeOf(runDir), 0o700);
+    assert.equal(modeOf(nodeDir), 0o700);
+    assert.equal(modeOf(join(runDir, "run.json")), 0o600);
+    assert.equal(modeOf(join(runDir, "events.jsonl")), 0o600);
+    assert.equal(modeOf(join(nodeDir, "latest.stdout.log")), 0o600);
+
+    const release = acquireNodeLock(env, "auth", "worker-1");
+    try {
+      assert.equal(modeOf(nodeLockPath(env, "auth", "worker-1")), 0o600);
+    } finally {
+      release();
+    }
+  } finally {
+    process.umask(previousUmask);
     rmSync(dir, { force: true, recursive: true });
   }
 });

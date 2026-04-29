@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -14,6 +15,9 @@ import { basename, dirname, join } from "node:path";
 
 import type { CoordinationMode, Role, RunStatus } from "./roles.js";
 import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
+
+const privateDirMode = 0o700;
+const privateFileMode = 0o600;
 
 export interface RunNode {
   runId: string;
@@ -154,8 +158,8 @@ export function appendNodeLog(
     return;
   }
   const path = nodeLogPath(env, runId, nodeId, stream);
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, text);
+  ensurePrivateDir(dirname(path));
+  appendPrivateFile(path, text);
 }
 
 export function readRun(env: Env, runId: string): RunRecord | undefined {
@@ -336,10 +340,11 @@ export function recordMessage(
 
 export function acquireNodeLock(env: Env, runId: string, nodeId: string): () => void {
   const lockPath = nodeLockPath(env, runId, nodeId);
-  mkdirSync(dirname(lockPath), { recursive: true });
+  ensurePrivateDir(dirname(lockPath));
   let fd: number;
   try {
-    fd = openSync(lockPath, "wx");
+    fd = openSync(lockPath, "wx", privateFileMode);
+    chmodSync(lockPath, privateFileMode);
   } catch {
     throw new Error(`node is locked: ${nodeId}`);
   }
@@ -352,19 +357,21 @@ export function acquireNodeLock(env: Env, runId: string, nodeId: string): () => 
 
 export function writeRun(env: Env, run: RunRecord): void {
   const dir = runDirectory(env, run.runId);
-  mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
   for (const node of Object.values(run.nodes)) {
-    mkdirSync(nodeDirectory(env, run.runId, node.nodeId), { recursive: true });
+    ensurePrivateDir(nodeDirectory(env, run.runId, node.nodeId));
   }
   run.updatedAt = new Date().toISOString();
   const path = join(dir, "run.json");
   const tmpPath = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmpPath, `${JSON.stringify(run, null, 2)}\n`);
+  writeFileSync(tmpPath, `${JSON.stringify(run, null, 2)}\n`, { mode: privateFileMode });
+  chmodSync(tmpPath, privateFileMode);
   renameSync(tmpPath, path);
+  chmodSync(path, privateFileMode);
   const eventsPath = join(dir, "events.jsonl");
   const event = run.events.at(-1);
   if (event) {
-    appendFileSync(eventsPath, `${JSON.stringify(event)}\n`);
+    appendPrivateFile(eventsPath, `${JSON.stringify(event)}\n`);
   }
 }
 
@@ -379,13 +386,14 @@ function withRunLock<T>(env: Env, runId: string, callback: () => T): T {
 
 function acquireRunLock(env: Env, runId: string): () => void {
   const dir = runDirectory(env, runId);
-  mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
   const lockPath = join(dir, "run.lock");
   const deadline = Date.now() + 30000;
   let fd: number;
   while (true) {
     try {
-      fd = openSync(lockPath, "wx");
+      fd = openSync(lockPath, "wx", privateFileMode);
+      chmodSync(lockPath, privateFileMode);
       break;
     } catch {
       if (Date.now() >= deadline) {
@@ -446,6 +454,16 @@ function logPaths(env: Env, runId: string, nodeId: string): { stdout: string; st
     stdout: join(dir, "latest.stdout.log"),
     stderr: join(dir, "latest.stderr.log"),
   };
+}
+
+function ensurePrivateDir(path: string): void {
+  mkdirSync(path, { recursive: true, mode: privateDirMode });
+  chmodSync(path, privateDirMode);
+}
+
+function appendPrivateFile(path: string, text: string): void {
+  appendFileSync(path, text, { mode: privateFileMode });
+  chmodSync(path, privateFileMode);
 }
 
 function unique(values: string[]): string[] {
