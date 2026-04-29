@@ -245,11 +245,11 @@ test("preflight verifies global Headless, selected backends, Docker, Modal, and 
   for (const agent of selectedAgents) {
     assert.match(
       check.stdout,
-      new RegExp(`^${agent}\\s+✓\\s+`, "m"),
+      new RegExp(`^\\|\\s+${agent}\\s+\\|\\s+✓\\s+\\|`, "m"),
       `missing ${agent} backend in \`headless --check\`; install and authenticate all six backends`,
     );
   }
-  assert.match(check.stdout, /^docker\s+✓\s+/m, "Docker must be installed and running");
+  assert.match(check.stdout, /^\|\s+docker\s+\|\s+✓\s+\|/m, "Docker must be installed and running");
 
   const docker = await run("docker", ["info"], { timeoutMs: 30000 });
   assertSuccess(docker, "docker info");

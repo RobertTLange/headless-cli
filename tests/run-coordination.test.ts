@@ -248,23 +248,25 @@ test("run list, view, mark, and wait operate on local run state", async () => {
 
     const stdout: string[] = [];
     assert.equal(await runCli(["run", "list"], { env, stdout: (text) => stdout.push(text) }), 0);
-    assert.match(stdout.join(""), /auth\s+session\s+2 nodes\s+0 active/);
+    assert.match(stdout.join(""), /^\+[-+]+\+$/m);
+    assert.match(stdout.join(""), /^\| auth\s+\| session\s+\| 2 nodes\s+\| 0 active\s+\| 1 idle, 1 planned\s+\|/m);
     assert.match(stdout.join(""), /UPDATED/);
     assert.match(stdout.join(""), /AGE/);
 
     stdout.length = 0;
     assert.equal(await runCli(["run", "view", "auth"], { env, stdout: (text) => stdout.push(text) }), 0);
     const view = stdout.join("");
-    assert.match(view, /created: .* updated: .* age:/);
-    assert.match(view, /status: 1 idle, 1 planned/);
+    assert.match(view, /Summary/);
+    assert.match(view, /^\| Status\s+\| 1 idle, 1 planned\s+\|$/m);
+    assert.match(view, /^\| Created\s+\| .* \|$/m);
     assert.match(view, /Graph/);
     assert.match(view, /orchestrator \[idle .* ago\] last: ready/);
     assert.match(view, /worker-1 \[planned .* ago\] depends: orchestrator/);
     assert.match(view, /Node details/);
-    assert.match(view, /NODE\s+ROLE\s+AGENT\s+STATUS\s+UPDATED\s+AGE\s+LAST/);
+    assert.match(view, /^\| NODE\s+\| ROLE\s+\| AGENT\s+\| STATUS\s+\| UPDATED\s+\| AGE\s+\| LAST\s+\|$/m);
     assert.doesNotMatch(view, /TURNS|DURATION|COST|TOKENS/);
-    assert.match(view, /orchestrator\s+orchestrator\s+codex\s+idle\s+.*\s+ready/);
-    assert.match(view, /worker-1\s+worker\s+codex\s+planned\s+.*\s+-/);
+    assert.match(view, /^\| orchestrator\s+\| orchestrator\s+\| codex\s+\| idle\s+\| .* \| .* \| ready\s+\|$/m);
+    assert.match(view, /^\| worker-1\s+\| worker\s+\| codex\s+\| planned\s+\| .* \| .* \| -\s+\|$/m);
 
     stdout.length = 0;
     assert.equal(

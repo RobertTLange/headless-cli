@@ -1,54 +1,95 @@
 import type { RunEvent, RunNode, RunRecord } from "./runs.js";
+import type { RunStatus } from "./roles.js";
+import { cell, renderTable, type TableCell, type TableColor } from "./table.js";
 
 export function renderRunList(runs: RunRecord[]): string {
   if (runs.length === 0) {
     return "No headless runs\n";
   }
   const now = Date.now();
-  const rows = runs.map((run) => {
-    const nodes = Object.values(run.nodes);
-    const active = nodes.filter((node) => node.status === "busy" || node.status === "starting").length;
-    const mode = nodes[0]?.coordination ?? "unknown";
-    return `${run.runId}\t${mode}\t${nodes.length} nodes\t${active} active\t${run.updatedAt}\t${formatAge(run.updatedAt, now)}`;
+  return renderTable({
+    columns: ["RUN", "MODE", "NODES", "ACTIVE", "STATUS", "UPDATED", "AGE"],
+    rows: runs.map((run) => {
+      const nodes = Object.values(run.nodes);
+      const active = nodes.filter((node) => node.status === "busy" || node.status === "starting").length;
+      const mode = nodes[0]?.coordination ?? "unknown";
+      const summary = statusSummary(nodes);
+      return [
+        run.runId,
+        mode,
+        `${nodes.length} nodes`,
+        cell(`${active} active`, active > 0 ? "yellow" : "dim"),
+        cell(summary, statusSummaryColor(summary)),
+        run.updatedAt,
+        formatAge(run.updatedAt, now),
+      ];
+    }),
   });
-  return `${["RUN\tMODE\tNODES\tACTIVE\tUPDATED\tAGE", ...rows].join("\n")}\n`;
 }
 
 export function renderRunView(run: RunRecord): string {
   const nodes = Object.values(run.nodes).sort((left, right) => left.nodeId.localeCompare(right.nodeId));
   const mode = nodes.find((node) => node.nodeId === "orchestrator")?.coordination ?? nodes[0]?.coordination ?? "unknown";
   const now = Date.now();
+  const summary = statusSummary(nodes);
   const lines = [
-    `${run.runId}  ${mode}  ${nodes.length} nodes  status: ${statusSummary(nodes)}`,
-    `created: ${run.createdAt}  updated: ${run.updatedAt}  age: ${formatAge(run.createdAt, now)}  updated: ${formatAge(run.updatedAt, now)} ago`,
+    "Summary",
+    renderTable({
+      columns: ["Field", "Value"],
+      rows: [
+        ["Run", run.runId],
+        ["Mode", mode],
+        ["Nodes", `${nodes.length} nodes`],
+        ["Status", cell(summary, statusSummaryColor(summary))],
+        ["Created", run.createdAt],
+        ["Updated", run.updatedAt],
+        ["Age", formatAge(run.createdAt, now)],
+        ["Updated age", `${formatAge(run.updatedAt, now)} ago`],
+      ],
+    }).trimEnd(),
     "",
     "Graph",
+    renderTable({
+      columns: ["Node"],
+      rows: renderGraph(nodes, now).map((line) => [cell(line, graphLineColor(line))]),
+    }).trimEnd(),
   ];
-  lines.push(...renderGraph(nodes, now));
   const extraEdges = dependencyEdges(nodes).filter(([from, to]) => from !== "orchestrator" && to !== "orchestrator");
   if (extraEdges.length > 0) {
     lines.push("", "Extra edges");
-    lines.push(...extraEdges.map(([from, to]) => `${from} -> ${to}`));
+    lines.push(
+      renderTable({
+        columns: ["From", "To"],
+        rows: extraEdges,
+      }).trimEnd(),
+    );
   }
   if (nodes.length > 0) {
     lines.push("", "Node details");
-    lines.push(...renderNodeTable(nodes, now));
+    lines.push(
+      renderTable({
+        columns: ["NODE", "ROLE", "AGENT", "STATUS", "UPDATED", "AGE", "LAST"],
+        rows: renderNodeRows(nodes, now),
+      }).trimEnd(),
+    );
   }
   const messages = run.events.filter((event) => event.type === "message_sent").slice(-8);
   if (messages.length > 0) {
     lines.push("", "Recent messages");
-    lines.push(...messages.map(renderMessage));
+    lines.push(
+      renderTable({
+        columns: ["TIME", "FROM", "TO", "MESSAGE"],
+        rows: messages.map(renderMessageRow),
+      }).trimEnd(),
+    );
   }
   lines.push("", "Commands");
-  for (const node of nodes) {
-    lines.push(`message ${node.nodeId}: headless run message ${run.runId} ${node.nodeId} --prompt "..."`);
-    if (node.tmuxSessionName) {
-      lines.push(`attach ${node.nodeId}:  tmux attach-session -t ${node.tmuxSessionName}`);
-    }
-    if (node.logs) {
-      lines.push(`logs ${node.nodeId}:    tail -f ${node.logs.stdout}`);
-    }
-  }
+  lines.push(
+    renderTable({
+      columns: ["NODE", "COMMAND"],
+      rows: commandRows(run.runId, nodes),
+    }).trimEnd(),
+  );
   return `${lines.join("\n")}\n`;
 }
 
@@ -71,25 +112,74 @@ function renderNode(node: RunNode, now: number): string {
   return `${node.nodeId} [${node.status} ${formatAge(node.updatedAt, now)} ago]${depends}${planned}${last}`;
 }
 
-function renderNodeTable(nodes: RunNode[], now: number): string[] {
-  const rows = [
-    ["NODE", "ROLE", "AGENT", "STATUS", "UPDATED", "AGE", "LAST"],
-    ...nodes.map((node) => [
-      node.nodeId,
-      node.role,
-      node.agent,
-      node.status,
-      node.updatedAt,
-      formatAge(node.updatedAt, now),
-      truncate(oneLine(node.lastMessage ?? ""), 60) || "-",
-    ]),
-  ];
-  const widths = rows[0].map((_, index) => Math.max(...rows.map((row) => row[index]?.length ?? 0)));
-  return rows.map((row) => row.map((value, index) => value.padEnd(widths[index] ?? 0)).join("  ").trimEnd());
+function renderNodeRows(nodes: RunNode[], now: number): Array<Array<string | TableCell>> {
+  return nodes.map((node) => [
+    node.nodeId,
+    node.role,
+    node.agent,
+    cell(node.status, statusColor(node.status)),
+    node.updatedAt,
+    formatAge(node.updatedAt, now),
+    truncate(oneLine(node.lastMessage ?? ""), 60) || "-",
+  ]);
 }
 
-function renderMessage(event: RunEvent): string {
-  return `${event.createdAt}  ${event.nodeId ?? "cli"} -> ${event.targetNodeId ?? "unknown"}  ${truncate(event.message ?? "", 100)}`;
+function renderMessageRow(event: RunEvent): string[] {
+  return [
+    event.createdAt,
+    event.nodeId ?? "cli",
+    event.targetNodeId ?? "unknown",
+    truncate(event.message ?? "", 100),
+  ];
+}
+
+function commandRows(runId: string, nodes: RunNode[]): string[][] {
+  const rows: string[][] = [];
+  for (const node of nodes) {
+    rows.push([node.nodeId, `headless run message ${runId} ${node.nodeId} --prompt "..."`]);
+    if (node.tmuxSessionName) {
+      rows.push([node.nodeId, `tmux attach-session -t ${node.tmuxSessionName}`]);
+    }
+    if (node.logs) {
+      rows.push([node.nodeId, `tail -f ${node.logs.stdout}`]);
+    }
+  }
+  return rows;
+}
+
+function graphLineColor(line: string): TableColor | undefined {
+  for (const status of ["failed", "busy", "starting", "done", "idle", "planned", "unknown"] as const) {
+    if (line.includes(`[${status} `)) {
+      return statusColor(status);
+    }
+  }
+  return undefined;
+}
+
+function statusColor(status: RunStatus): TableColor | undefined {
+  switch (status) {
+    case "done":
+      return "green";
+    case "busy":
+    case "starting":
+      return "yellow";
+    case "failed":
+    case "unknown":
+      return "red";
+    case "idle":
+      return "cyan";
+    case "planned":
+      return "dim";
+  }
+}
+
+function statusSummaryColor(summary: string): TableColor | undefined {
+  if (summary.includes("failed") || summary.includes("unknown")) return "red";
+  if (summary.includes("busy") || summary.includes("starting")) return "yellow";
+  if (summary.includes("done")) return "green";
+  if (summary.includes("idle")) return "cyan";
+  if (summary.includes("planned")) return "dim";
+  return undefined;
 }
 
 function dependencyEdges(nodes: RunNode[]): Array<[string, string]> {

@@ -1218,7 +1218,7 @@ test("CLI docker doctor reports image status and local build guidance", async ()
 
     const output = stdout.join("");
     assert.equal(code, 0);
-    assert.match(output, /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/roberttlange\/headless:latest \(missing\)$/m);
+    assert.match(output, /^\| docker\s+\| ✓\s+\| 27\.1\.2\s+\| ghcr\.io\/roberttlange\/headless:latest \(missing\)\s+\|$/m);
     assert.match(output, /Plain `headless --docker` will let Docker pull the default image automatically\./);
     assert.match(output, /For local development, run: headless docker build/);
   } finally {
