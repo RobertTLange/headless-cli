@@ -108,7 +108,7 @@ export interface RegisterNodeInput {
 }
 
 export function validateRunId(value: string | undefined, label: string): string {
-  if (!value || !/^[A-Za-z0-9_.-]+$/.test(value)) {
+  if (!value || value === "." || value === ".." || !/^[A-Za-z0-9_.-]+$/.test(value)) {
     throw new Error(`invalid ${label}; use letters, numbers, dots, dashes, or underscores`);
   }
   return value;

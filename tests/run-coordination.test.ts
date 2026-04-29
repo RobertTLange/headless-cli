@@ -155,6 +155,39 @@ test("run store writes private run files, logs, and locks", () => {
   }
 });
 
+test("run store rejects dot segment run and node names", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { HOME: join(dir, "home") };
+    const node = {
+      role: "worker" as const,
+      agent: "codex" as const,
+      coordination: "session" as const,
+      status: "planned" as const,
+      planned: true,
+    };
+
+    assert.throws(
+      () => registerNode(env, { ...node, runId: ".", nodeId: "worker-1" }),
+      /invalid run/,
+    );
+    assert.throws(
+      () => registerNode(env, { ...node, runId: "..", nodeId: "worker-1" }),
+      /invalid run/,
+    );
+    assert.throws(
+      () => registerNode(env, { ...node, runId: "auth", nodeId: "." }),
+      /invalid node/,
+    );
+    assert.throws(
+      () => registerNode(env, { ...node, runId: "auth", nodeId: ".." }),
+      /invalid node/,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("run store preserves concurrent status updates from async children", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
