@@ -126,6 +126,16 @@ function assertNonce(result: CommandResult, nonce: string, label: string): void 
   );
 }
 
+function assertAgentsAvailable(output: string, requiredAgents: readonly (typeof agents)[number][], label: string): void {
+  for (const agent of requiredAgents) {
+    assert.match(
+      output,
+      new RegExp(`^\\|\\s+${agent}\\s+\\|\\s+✓\\s+\\|`, "m"),
+      `missing ${agent} backend in \`${label}\`; install and authenticate all required backends`,
+    );
+  }
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -134,9 +144,9 @@ function prompt(nonce: string): string {
   return `Read-only check. Reply with this nonce and no file edits: ${nonce}`;
 }
 
-function orchestratePrompt(runId: string, nonce: string): string {
+function orchestratePrompt(runId: string, nonce: string, orchestrationAgents: readonly (typeof agents)[number][] = agents): string {
   const headlessCommand = process.env.HEADLESS_BIN ?? "headless";
-  const nodes = agents.map((agent) => `explorer-${agent}`).join(", ");
+  const nodes = orchestrationAgents.map((agent) => `explorer-${agent}`).join(", ");
   return [
     "Build auth.",
     "",
@@ -242,13 +252,7 @@ test("preflight verifies global Headless, selected backends, Docker, Modal, and 
 
   const check = await headless(["--check"], { timeoutMs: 120000 });
   assertSuccess(check, "headless --check");
-  for (const agent of selectedAgents) {
-    assert.match(
-      check.stdout,
-      new RegExp(`^\\|\\s+${agent}\\s+\\|\\s+✓\\s+\\|`, "m"),
-      `missing ${agent} backend in \`headless --check\`; install and authenticate all six backends`,
-    );
-  }
+  assertAgentsAvailable(check.stdout, selectedAgents, "headless --check");
   assert.match(check.stdout, /^\|\s+docker\s+\|\s+✓\s+\|/m, "Docker must be installed and running");
 
   const docker = await run("docker", ["info"], { timeoutMs: 30000 });
@@ -372,7 +376,10 @@ test(
       t.skip("set HEADLESS_INTEGRATION_FULL_SWEEP=1 via HEADLESS_HOOK_ALL_AGENTS=1 to run full orchestration");
       return;
     }
-    assert.deepEqual([...selectedAgents].sort(), [...agents].sort(), "full orchestration requires all agents");
+    const orchestrationAgents = agents;
+    const check = await headless(["--check"], { timeoutMs: 120000 });
+    assertSuccess(check, "headless --check before full-agent orchestration");
+    assertAgentsAvailable(check.stdout, orchestrationAgents, "headless --check before full-agent orchestration");
 
     const dir = tempWorkdir("full-orchestrate");
     const runId = `${suiteNonce}-full-orchestrate`.replace(/[^A-Za-z0-9_.-]/g, "-");
@@ -392,11 +399,11 @@ test(
           "orchestrator",
           "--coordination",
           "oneshot",
-          ...agents.flatMap((agent) => ["--team", `${agent}/explorer`]),
+          ...orchestrationAgents.flatMap((agent) => ["--team", `${agent}/explorer`]),
           "--prompt",
-          orchestratePrompt(runId, nonce),
+          orchestratePrompt(runId, nonce, orchestrationAgents),
         ],
-        { timeoutMs: commandTimeoutMs * (agents.length + 1) },
+        { timeoutMs: commandTimeoutMs * (orchestrationAgents.length + 1) },
       );
       assertNonce(result, `orchestration complete ${nonce}`, "full-agent orchestrator");
 
@@ -404,7 +411,7 @@ test(
       const runRecord = JSON.parse(readFileSync(join(runPath(runId), "run.json"), "utf8")) as {
         nodes: Record<string, { status: string; lastMessage?: string }>;
       };
-      for (const agent of agents) {
+      for (const agent of orchestrationAgents) {
         const node = runRecord.nodes[`explorer-${agent}`];
         assert.ok(node, `missing explorer-${agent} node`);
         assert.equal(node.status, "idle", `explorer-${agent} did not finish`);
