@@ -795,6 +795,61 @@ test("run message --async records busy status, logs output, and marks completion
   }
 });
 
+test("run message --async logs child stderr before marking failure", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const fakeHeadless = join(binDir, "headless");
+    mkdirSync(home);
+    await writeExecutable(
+      fakeHeadless,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'run' && args[1] === 'mark') {",
+        "  const runId = args[2]; const nodeId = args[3]; const status = args[5];",
+        "  const file = path.join(process.env.HOME, '.headless', 'runs', runId, 'run.json');",
+        "  const run = JSON.parse(fs.readFileSync(file, 'utf8'));",
+        "  run.nodes[nodeId].status = status; run.nodes[nodeId].updatedAt = new Date().toISOString();",
+        "  fs.writeFileSync(file, JSON.stringify(run, null, 2) + '\\n');",
+        "  process.exit(0);",
+        "}",
+        "process.stderr.write('child boom before logging\\n');",
+        "process.exit(9);",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HEADLESS_CLI_BIN: fakeHeadless, HOME: home };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "pi",
+      coordination: "oneshot",
+      status: "idle",
+      planned: true,
+    });
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--async"], {
+        env,
+        stdout: () => undefined,
+      }),
+      0,
+    );
+    await waitFor(() => readRun(env, "auth")?.nodes["worker-1"].status === "failed");
+    const stderrLog = readRun(env, "auth")?.nodes["worker-1"].logs?.stderr ?? "";
+    const stderrText = readFileSync(stderrLog, "utf8");
+    assert.match(stderrText, /child boom before logging/);
+    assert.match(stderrText, /async child exited with code 9/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("run message --async uses HEADLESS_BIN for detached child invocations", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
@@ -880,6 +935,7 @@ test("run message --async print-command uses a non-login shell to preserve PATH"
     );
     const output = stdout.join("");
     assert.match(output, /^sh -c /);
+    assert.match(output, /trap /);
     assert.doesNotMatch(output, /^sh -lc /);
     assert.equal(readRun(env, "auth")?.nodes["explorer-1"].status, "idle");
     assert.equal(readRun(env, "auth")?.nodes["explorer-1"].lastMessage, undefined);

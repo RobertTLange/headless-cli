@@ -229,7 +229,16 @@ function buildAsyncRunMessageCommand(env: Env, runId: string, nodeId: string, no
   const success = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "idle"] });
   const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
   const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(env, runId, nodeId)] });
-  const script = `${child} >/dev/null 2>/dev/null; code=$?; if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotePath(stderrLog)}; else printf '%s\\n' "async child exited with code $code" >> ${quotePath(stderrLog)}; ${failure} >/dev/null 2>> ${quotePath(stderrLog)}; fi; ${unlock}; exit "$code"`;
+  const quotedStderrLog = quotePath(stderrLog);
+  const signalFailure = `${failure} >/dev/null 2>> ${quotedStderrLog}; ${unlock}; exit 143`;
+  const script = [
+    `trap "${signalFailure}" INT TERM HUP`,
+    `trap "${unlock}" EXIT`,
+    `${child} >/dev/null 2>> ${quotedStderrLog}`,
+    "code=$?",
+    `if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotedStderrLog}; else printf '%s\\n' "async child exited with code $code" >> ${quotedStderrLog}; ${failure} >/dev/null 2>> ${quotedStderrLog}; fi`,
+    'exit "$code"',
+  ].join("; ");
   return { command: "sh", args: ["-c", script] };
 }
 
