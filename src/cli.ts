@@ -2085,7 +2085,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     const stdoutHandling: StdoutHandling = parsed.json
-      ? parsed.sessionAlias
+      ? parsed.sessionAlias || parsed.runId
         ? "capture-and-stream"
         : "stream"
       : parsed.debug

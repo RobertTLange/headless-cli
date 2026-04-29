@@ -298,7 +298,9 @@ test("orchestrator run status reporter stays off for json runs", async () => {
       },
     );
     assert.equal(code, 0, stderr.join(""));
+    assert.match(stdout.join(""), /"orchestrator final"/);
     assert.doesNotMatch(stderr.join(""), /headless run json-run/);
+    assert.equal(readRun(env, "json-run")?.nodes.orchestrator.lastMessage, "orchestrator final");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
