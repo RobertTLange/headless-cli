@@ -265,6 +265,7 @@ Modal mode is only for headless execution. It cannot be combined with `--docker`
 ### 7) Role and run coordination (`--role`, `--run`)
 
 Role mode adds compact instructions and, with `--run`, records a local roster, dependencies, statuses, recent messages, and log paths.
+When an orchestrator run executes locally or through Docker, Headless also writes timestamped lifecycle logs to stderr while it runs. The stream reports node status changes and message routes without printing prompt text, uses ANSI colors on TTYs unless `NO_COLOR` is set, and leaves stdout reserved for final answers or JSON/debug output. Tune the polling interval with `HEADLESS_RUN_STATUS_INTERVAL_MS` if needed. Modal orchestrator runs still rely on final synced run state and node logs for status.
 
 ```bash
 headless codex --role orchestrator --run auth --node orchestrator --team explorer --team worker=2 --prompt "Build auth"

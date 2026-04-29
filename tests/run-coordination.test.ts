@@ -144,8 +144,10 @@ test("orchestrator run registers declared team and injects run context", async (
     );
 
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const env = {
       ...process.env,
+      HEADLESS_RUN_STATUS_INTERVAL_MS: "1",
       HEADLESS_STDIN_CAPTURE: stdinCapture,
       HOME: home,
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -166,11 +168,14 @@ test("orchestrator run registers declared team and injects run context", async (
         "--prompt",
         "Build auth",
       ],
-      { env, stdout: (text) => stdout.push(text) },
+      { env, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
     );
 
     assert.equal(code, 0);
     assert.equal(stdout.join(""), "orchestrator final\n");
+    assert.match(stderr.join(""), /^\d{4}-\d{2}-\d{2}T.* INFO  headless run auth started orchestrator \(4 nodes,/m);
+    assert.match(stderr.join(""), /^\d{4}-\d{2}-\d{2}T.* INFO  headless run auth orchestrator starting -> busy/m);
+    assert.match(stderr.join(""), /^\d{4}-\d{2}-\d{2}T.* OK    headless run auth idle \(0 active;/m);
     const run = readRun(env, "auth");
     assert.equal(run?.nodes.orchestrator.status, "done");
     assert.deepEqual(
@@ -194,6 +199,46 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.match(prompt, /status becomes busy, logs are written/);
     assert.match(prompt, /headless run wait auth/);
     assert.match(prompt, /declared team:/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("orchestrator run status reporter stays off for json runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "codex"),
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'orchestrator final' }));",
+        "",
+      ].join("\n"),
+    );
+
+    const env = {
+      ...process.env,
+      HEADLESS_RUN_STATUS_INTERVAL_MS: "1",
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    const stderr: string[] = [];
+    const stdout: string[] = [];
+
+    const code = await runCli(
+      ["codex", "--role", "orchestrator", "--run", "json-run", "--coordination", "oneshot", "--prompt", "Build auth", "--json"],
+      {
+        env,
+        stdout: (text) => stdout.push(text),
+        stderr: (text) => stderr.push(text),
+      },
+    );
+    assert.equal(code, 0, stderr.join(""));
+    assert.doesNotMatch(stderr.join(""), /headless run json-run/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

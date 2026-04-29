@@ -55,6 +55,7 @@ import {
 } from "./output.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
+import { createRunStatusReporter, parseRunStatusIntervalMs } from "./run-status.js";
 import {
   appendNodeLog,
   completeIdleRunNodes,
@@ -565,6 +566,17 @@ function hasModalOptions(parsed: ParsedArgs): boolean {
     parsed.modalMemoryMiB !== undefined ||
     parsed.modalSecrets.length > 0 ||
     parsed.modalTimeoutSeconds !== undefined
+  );
+}
+
+function shouldStreamRunStatus(parsed: ParsedArgs): boolean {
+  return (
+    parsed.runId !== undefined &&
+    parsed.role === "orchestrator" &&
+    !parsed.printCommand &&
+    !parsed.json &&
+    !parsed.tmux &&
+    !parsed.modal
   );
 }
 
@@ -2074,54 +2086,73 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         : "capture";
     if (parsed.runId && parsed.role && nodeId) {
       appendRunInvocationLog(env, parsed.runId, nodeId, "node invocation");
-      updateNodeStatus(env, parsed.runId, nodeId, "busy");
     }
-    const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
-    const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
-    const result = parsed.modal
-      ? await executeModalAgent({
-          agent: parsed.agent,
-          appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
-          command,
-          cpu: parsed.modalCpu ?? DEFAULT_MODAL_CPU,
+    const statusReporter = shouldStreamRunStatus(parsed) && parsed.runId
+      ? createRunStatusReporter({
           env,
-          image: parsed.modalImage ?? DEFAULT_MODAL_IMAGE,
-          imageSecret: parsed.modalImageSecret,
-          includeGit: parsed.modalIncludeGit,
-          memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
-          modalEnv: parsed.modalEnv,
-          modalSecrets: parsed.modalSecrets,
-          stderr: (text) => {
-            commandStderr?.(text);
-            const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
-            if (filtered) {
-              stderr(filtered);
-            }
-          },
-          stdout: (text) => {
-            commandStdoutLog?.(text);
-            stdout(text);
-          },
-          stdoutHandling,
-          timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
-          workDir: cwd ?? process.cwd(),
+          intervalMs: parseRunStatusIntervalMs(env.HEADLESS_RUN_STATUS_INTERVAL_MS),
+          runId: parsed.runId,
+          write: stderr,
         })
-      : await executeCommand(parsed.agent, command, cwd, env, stderr, {
-          stdout,
-          stdoutHandling,
-          stdoutLog: commandStdoutLog,
-          stderr: commandStderr,
-        });
-    if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
-      appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
-    }
-    if (parsed.runId && parsed.role && nodeId) {
-      const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-      const metrics = extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env));
-      updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
-      if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
-        completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
+      : undefined;
+    statusReporter?.start();
+    let result: ExecuteResult | undefined;
+    try {
+      if (parsed.runId && parsed.role && nodeId) {
+        updateNodeStatus(env, parsed.runId, nodeId, "busy");
       }
+      const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
+      const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
+      result = parsed.modal
+        ? await executeModalAgent({
+            agent: parsed.agent,
+            appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
+            command,
+            cpu: parsed.modalCpu ?? DEFAULT_MODAL_CPU,
+            env,
+            image: parsed.modalImage ?? DEFAULT_MODAL_IMAGE,
+            imageSecret: parsed.modalImageSecret,
+            includeGit: parsed.modalIncludeGit,
+            memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
+            modalEnv: parsed.modalEnv,
+            modalSecrets: parsed.modalSecrets,
+            stderr: (text) => {
+              commandStderr?.(text);
+              const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
+              if (filtered) {
+                stderr(filtered);
+              }
+            },
+            stdout: (text) => {
+              commandStdoutLog?.(text);
+              stdout(text);
+            },
+            stdoutHandling,
+            timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
+            workDir: cwd ?? process.cwd(),
+          })
+        : await executeCommand(parsed.agent, command, cwd, env, stderr, {
+            stdout,
+            stdoutHandling,
+            stdoutLog: commandStdoutLog,
+            stderr: commandStderr,
+          });
+      if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
+        appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
+      }
+      if (parsed.runId && parsed.role && nodeId) {
+        const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
+        const metrics = extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env));
+        updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
+        if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
+          completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
+        }
+      }
+    } finally {
+      statusReporter?.stop();
+    }
+    if (!result) {
+      throw new CliError("agent execution did not produce a result");
     }
     if (result.code === 0 && sessionPlan) {
       await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
