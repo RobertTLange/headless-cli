@@ -499,6 +499,10 @@ test("run message routes tmux nodes through tmux buffers", async () => {
     );
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(calls[0], ["set-buffer", "-b", "headless-codex-worker-1-send", "continue"]);
+    const run = readRun(env, "auth");
+    assert.equal(run?.events.filter((event) => event.type === "message_sent").length, 1);
+    assert.equal(run?.events.find((event) => event.type === "message_sent")?.targetNodeId, "worker-1");
+    assert.equal(run?.nodes["worker-1"].lastMessage, "continue");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

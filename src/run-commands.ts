@@ -97,6 +97,7 @@ async function handleRunMessage(
     const sessionName = node.tmuxSessionName ?? `headless-${node.agent}-${node.sessionAlias ?? node.nodeId}`;
     const code = await handlers.sendTmux(sessionName, prompt.prompt, input.printCommand);
     if (code === 0 && !input.printCommand) {
+      recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
       handlers.stdout(`sent: ${runId}/${nodeId}\n`);
     }
     return code;
