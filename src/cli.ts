@@ -132,6 +132,7 @@ interface ParsedArgs {
   list: boolean;
   tmux: boolean;
   help: boolean;
+  version: boolean;
 }
 
 interface CliDeps {
@@ -206,6 +207,7 @@ function usage(): string {
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
+    "  -v, --version        Print the Headless CLI version.",
     "  -h, --help           Show this help.",
     "",
     "If neither --prompt nor --prompt-file is provided, stdin is used when piped.",
@@ -236,6 +238,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     list: false,
     tmux: false,
     help: false,
+    version: false,
   };
   const args = [...argv];
 
@@ -247,6 +250,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   const first = args.shift();
   if (first === "-h" || first === "--help") {
     parsed.help = true;
+    return parsed;
+  }
+  if (first === "-v" || first === "--version") {
+    parsed.version = true;
     return parsed;
   }
   if (first === undefined) {
@@ -388,6 +395,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--show-config":
         parsed.showConfig = true;
+        break;
+      case "-v":
+      case "--version":
+        parsed.version = true;
         break;
       case "-h":
       case "--help":
@@ -594,6 +605,14 @@ function renderConfig(agent: AgentName): string {
 
 function packageRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+
+function packageVersion(): string {
+  const packageJson = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as { version?: unknown };
+  if (typeof packageJson.version !== "string") {
+    throw new CliError("package version not found");
+  }
+  return packageJson.version;
 }
 
 function dockerfilePath(): string {
@@ -1586,6 +1605,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
 
     if (parsed.help) {
       stdout(usage());
+      return 0;
+    }
+    if (parsed.version) {
+      stdout(`${packageVersion()}\n`);
       return 0;
     }
     if (parsed.runCommand) {

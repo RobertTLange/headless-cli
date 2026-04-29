@@ -1792,6 +1792,17 @@ test("CLI help lists usage output option", async () => {
   assert.match(stdout.join(""), /--usage/);
 });
 
+test("CLI --version prints package version", async () => {
+  const stdout: string[] = [];
+  const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
+  const code = await runCli(["--version"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.join(""), `${packageJson.version}\n`);
+});
+
 test("CLI --tmux launches an interactive tmux session and sends the prompt", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -2659,6 +2670,18 @@ test("CLI entrypoint runs when invoked as a script", () => {
 
   assert.equal(run.status, 0);
   assert.match(run.stdout, /Usage: headless \[agent\]/);
+});
+
+test("CLI entrypoint prints version", () => {
+  const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
+  const run = spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "--version"],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(run.status, 0);
+  assert.equal(run.stdout, `${packageJson.version}\n`);
 });
 
 test("CLI help lists all Modal options", async () => {
