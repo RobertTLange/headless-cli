@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { extractAgentError, extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
+import { extractRunNodeMetrics } from "../src/run-metrics.ts";
 
 test("extracts final Codex assistant message from JSONL trace", () => {
   const trace = [
@@ -254,6 +255,33 @@ test("extracts Claude usage and preserves native cost", () => {
     },
     pricingSource: "native",
     pricingStatus: "native",
+  });
+});
+
+test("extracts run node metrics from Claude result traces", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    duration_ms: 123456,
+    duration_api_ms: 100000,
+    num_turns: 3,
+    total_cost_usd: 0.18331675,
+    usage: {
+      input_tokens: 3,
+      cache_creation_input_tokens: 29231,
+      cache_read_input_tokens: 0,
+      output_tokens: 8,
+    },
+  });
+
+  assert.deepEqual(extractRunNodeMetrics("claude", trace), {
+    turns: 3,
+    durationMs: 123456,
+    apiDurationMs: 100000,
+    totalCostUsd: 0.18331675,
+    inputTokens: 3,
+    cacheWriteTokens: 29231,
+    outputTokens: 8,
+    totalTokens: 29242,
   });
 });
 

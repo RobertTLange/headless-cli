@@ -3,6 +3,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 import { listAgents } from "./agents.js";
+import { cell, renderTable, type TableColor } from "./table.js";
 import type { AgentName, Env } from "./types.js";
 
 interface CaptureResult {
@@ -261,39 +262,39 @@ export async function checkDocker(env: Env, image: string): Promise<DockerCheck>
 }
 
 export function renderAgentChecks(checks: AgentCheck[]): string {
-  const rows = [
-    ["Agent", "Status", "Auth", "Version", "Binary"],
-    ...checks.map((check) => [
+  return renderTable({
+    columns: ["Agent", "Status", "Auth", "Version", "Binary"],
+    rows: checks.map((check) => [
       check.agent,
-      check.available ? "✓" : "✗",
-      check.auth,
+      cell(check.available ? "✓" : "✗", check.available ? "green" : "red"),
+      cell(check.auth, authColor(check.auth)),
       check.version,
       check.command,
     ]),
-  ];
-  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
-  return rows
-    .map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd())
-    .join("\n")
-    .concat("\n");
+  });
 }
 
 export function renderDockerCheck(check: DockerCheck): string {
-  return renderRows([
-    ["Docker", "Status", "Version", "Default image"],
-    [
+  return renderTable({
+    columns: ["Docker", "Status", "Version", "Default image"],
+    rows: [[
       check.command,
-      check.available ? "✓" : "✗",
+      cell(check.available ? "✓" : "✗", check.available ? "green" : "red"),
       check.version,
       check.available ? `${check.image} (${check.imageAvailable ? "present" : "missing"})` : check.image,
-    ],
-  ]);
+    ]],
+  });
 }
 
-function renderRows(rows: string[][]): string {
-  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
-  return rows
-    .map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  ").trimEnd())
-    .join("\n")
-    .concat("\n");
+function authColor(auth: AuthLabel): TableColor {
+  switch (auth) {
+    case "api":
+      return "cyan";
+    case "oauth":
+      return "magenta";
+    case "api+oauth":
+      return "green";
+    case "-":
+      return "dim";
+  }
 }

@@ -17,13 +17,15 @@ export const DEFAULT_CURSOR_MODEL = BUILTIN_AGENT_DEFAULTS.cursor.model ?? "gpt-
 export const DEFAULT_GEMINI_MODEL = BUILTIN_AGENT_DEFAULTS.gemini.model ?? "gemini-3.1-pro-preview";
 export const DEFAULT_OPENCODE_MODEL = BUILTIN_AGENT_DEFAULTS.opencode.model ?? "openai/gpt-5.4";
 export const DEFAULT_PI_MODEL = BUILTIN_AGENT_DEFAULTS.pi.model ?? "openai-codex/gpt-5.5";
+const claudeReadOnlyTools = "Read,Grep,Glob,LS,WebFetch,WebSearch";
 const opencodeReadOnlyConfig = JSON.stringify({
   permission: {
+    read: "allow",
     edit: "deny",
     bash: "deny",
-    webfetch: "deny",
-    websearch: "deny",
-    codesearch: "deny",
+    webfetch: "allow",
+    websearch: "allow",
+    codesearch: "allow",
     task: "deny",
   },
 });
@@ -38,7 +40,7 @@ function withClaudeEffort(args: string[], effort: ReasoningEffort | undefined): 
 
 function withClaudeAllow(args: string[], allow: AllowMode | undefined): string[] {
   if (allow === "read-only") {
-    return [...args, "--permission-mode", "plan"];
+    return [...args, "--permission-mode", "plan", "--allowedTools", claudeReadOnlyTools];
   }
   return allow === "yolo" || allow === undefined ? [...args, "--dangerously-skip-permissions"] : args;
 }
@@ -129,9 +131,6 @@ function buildClaude(options: BuildOptions): BuiltCommand {
     args.push("--resume", options.sessionId);
   } else if (options.sessionMode === "new" && options.sessionId) {
     args.push("--session-id", options.sessionId);
-    if (options.sessionAlias) {
-      args.push("--name", options.sessionAlias);
-    }
   }
 
   if (options.promptFile) {
@@ -151,7 +150,7 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
   const model = options.model || env.CODEX_MODEL || defaultCodexModel;
   const args = [
     ...(options.allow === "read-only"
-      ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
+      ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]
       : ["--dangerously-bypass-approvals-and-sandbox"]),
     "exec",
     ...(options.sessionMode === "resume" && options.sessionId ? ["resume"] : []),
@@ -177,7 +176,7 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
   const model = options.model || env.CODEX_MODEL || defaultCodexModel;
   const args =
     options.allow === "read-only"
-      ? ["--sandbox", "read-only", "--ask-for-approval", "never"]
+      ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]
       : options.allow === "yolo" || options.allow === undefined
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : [];

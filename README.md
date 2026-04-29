@@ -57,6 +57,12 @@ headless codex --prompt "Summarize this repo" --model gpt-5 --usage
 headless codex --prompt "Fix the failing tests" --tmux
 # Start or resume a named native session.
 headless codex --prompt "Continue the fix" --session bughunt
+# Start an orchestrated run with a declared local team.
+headless codex --role orchestrator --run auth --node orchestrator --team explorer --team worker=2 --prompt "Build auth"
+# Inspect or message a coordinated run.
+headless run view auth
+headless run message auth worker-1 --prompt "Implement token refresh" --async
+headless run wait auth
 # Run the agent inside the default Docker image.
 headless codex --prompt "Fix the failing tests" --docker
 # Run the agent in a Modal CPU sandbox and sync edits back.
@@ -98,6 +104,10 @@ When no agent is specified, Headless selects the first installed agent in this o
 
 Pass `--session <name>` to start or resume a named session. Headless stores per-agent aliases in `~/.headless/sessions.json`, separate from `config.toml`, and maps each alias to the selected backend's native session id or session file. A missing alias starts a new session and records it after the run succeeds; an existing alias resumes that native session. In tmux mode, `--session <name>` maps to `headless-<agent>-<name>`: an active tmux session receives the prompt, otherwise Headless starts a new named tmux session. `--session` cannot be combined with `--name`, `--docker`, or `--modal`.
 
+Pass `--role orchestrator|explorer|worker|reviewer` to prepend role-specific coordination instructions. `explorer` and `reviewer` default to `--allow read-only` unless `--allow` is explicit; `worker` and `orchestrator` keep the normal edit-capable default. Add `--run <name>` and optional `--node <name>` to track local state in `~/.headless/runs/<name>/run.json`, with per-node logs under `nodes/<node>/`.
+
+Use `--coordination session|tmux|oneshot` to choose how a run node receives later messages. `session` resumes native Headless sessions, `tmux` sends through the existing tmux buffer flow, and `oneshot` launches a fresh stateless invocation. Orchestrators can declare prompt-only teams with repeatable `--team` specs such as `explorer`, `worker=2`, `claude/reviewer`, or `codex/worker=3`.
+
 ## User Defaults
 
 Headless reads optional model and reasoning defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults.
@@ -134,7 +144,7 @@ reasoning_effort = "xhigh"
 
 The full template is tracked as `config.toml.example`.
 
-## 6 Execution Modes
+## 7 Execution Modes
 
 ### 1) Raw mode (default)
 
@@ -252,6 +262,27 @@ Modal mode requires a git workdir. By default, it uploads tracked and untracked 
 
 Modal mode is only for headless execution. It cannot be combined with `--docker`, `--tmux`, `send`, `rename`, or `--list`.
 
+### 7) Role and run coordination (`--role`, `--run`)
+
+Role mode adds compact instructions and, with `--run`, records a local roster, dependencies, statuses, recent messages, and log paths.
+When an orchestrator run executes locally or through Docker, Headless also writes compact lifecycle logs to stderr while it runs. The stream reports node status changes and message routes without printing prompt text, uses short timestamps and ANSI colors on TTYs unless `NO_COLOR` is set, and leaves stdout reserved for final answers or JSON/debug output. Tune the polling interval with `HEADLESS_RUN_STATUS_INTERVAL_MS` if needed. Modal orchestrator runs still rely on final synced run state and node logs for status.
+
+```bash
+headless codex --role orchestrator --run auth --node orchestrator --team explorer --team worker=2 --prompt "Build auth"
+headless run view auth
+headless run message auth worker-1 --prompt "Continue with refresh token tests"
+headless run message auth reviewer --prompt "Review the diff" --async
+headless run wait auth
+```
+
+Run commands are local:
+
+- `headless run list`: list known runs.
+- `headless run view <run>`: render the graph, recent messages, and exact message/log/attach commands.
+- `headless run mark <run> <node> --status planned|starting|busy|idle|done|failed|unknown`: manually adjust status.
+- `headless run message <run> <node> --prompt "..." [--async]`: route a prompt using stored node metadata.
+- `headless run wait <run>`: wait until no nodes are `busy` or `starting`.
+
 ## CLI Reference
 
 ```bash
@@ -260,6 +291,7 @@ headless docker doctor [options]
 headless docker build [options]
 headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]
 headless rename <session-name> <new-name> [options]
+headless run <list|view|mark|message|wait> [args] [options]
 ```
 
 Options:
@@ -269,6 +301,12 @@ Options:
 - `--model`, `--agent-model`: model override passed to the agent CLI.
 - `--reasoning-effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
 - `--allow`: permission mode, either `read-only` or `yolo`.
+- `--role`: role prompt, one of `orchestrator`, `explorer`, `worker`, or `reviewer`.
+- `--coordination`: run coordination mode, one of `session`, `tmux`, or `oneshot`.
+- `--run`: local run id. Uses `~/.headless/runs/<run>` unless `HEADLESS_RUN_DIR` points to a concrete run directory.
+- `--node`: node id inside `--run`. Defaults to the role name.
+- `--depends-on`: record a dependency edge for run visualization. Repeatable.
+- `--team`: declare orchestrator team nodes. Repeatable; accepts `role`, `role=N`, `agent/role`, or `agent/role=N`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
 - `--docker-image`: Docker image override. Defaults to `ghcr.io/roberttlange/headless:latest`.
@@ -292,6 +330,11 @@ Options:
 - `--session`: start or resume a named Headless session. Uses `~/.headless/sessions.json`; in tmux mode starts or sends to `headless-<agent>-<name>`.
 - `send <session-name>`: send a message to an existing Headless tmux session.
 - `rename <session-name> <new-name>`: rename an existing Headless tmux session.
+- `run list`: list known local coordinated runs.
+- `run view <run>`: show run graph, messages, and exact commands.
+- `run mark <run> <node> --status <status>`: manually update node status.
+- `run message <run> <node> --prompt "..." [--async]`: route a prompt to a node by stored metadata.
+- `run wait <run>`: wait until no nodes are busy.
 - `docker doctor`: check Docker setup and image availability.
 - `docker build`: build the packaged Dockerfile as `headless-local:dev`, or `--docker-image <image>`.
 - `--check`: check which supported agent binaries are installed, print their versions, and report local API/OAuth credential signals.
@@ -311,6 +354,7 @@ If no prompt or prompt file is supplied, Headless reads from piped stdin.
 - `PI_CODING_AGENT_PROVIDER`: Pi provider override used when the Pi model value does not include `provider/model`.
 - `PI_CODING_AGENT_MODEL`: Pi model override when `--model` is omitted. Accepts `provider/model` (for example, `openai-codex/gpt-5.5`) or a bare model paired with `PI_CODING_AGENT_PROVIDER`. When unset, Headless defaults Pi to `openai-codex/gpt-5.5`.
 - `PI_CODING_AGENT_MODELS`: passed to Pi as `--models`.
+- `HEADLESS_RUN_DIR`: concrete directory for the active run store, mainly used by Docker run coordination.
 
 Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.
 
@@ -326,7 +370,7 @@ npm run check
 npm run hooks:install
 ```
 
-`npm run check` builds the package and runs the TypeScript test suite. `npm run test:integration:local` runs authenticated local integration coverage; set `HEADLESS_INTEGRATION_AGENTS=codex` to limit it to Codex. After `npm run hooks:install`, the pre-push hook builds the local CLI and runs Codex integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents. `npm run test:agents` is an optional real-agent smoke test; set `HEADLESS_AGENT_SMOKE=1` to run Codex, Claude, Pi, and Gemini with an example prompt. The package exports one binary, `headless`, from `dist/cli.js`.
+`npm run check` builds the package and runs the TypeScript test suite. `npm run test:integration:local` runs authenticated local integration coverage; set `HEADLESS_INTEGRATION_AGENTS=claude` to limit it to Claude. After `npm run hooks:install`, the pre-push hook builds the local CLI and runs Claude integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents. `npm run test:agents` is an optional real-agent smoke test; set `HEADLESS_AGENT_SMOKE=1` to run Codex, Claude, Pi, and Gemini with an example prompt. The package exports one binary, `headless`, from `dist/cli.js`.
 
 ## Layout
 
@@ -335,6 +379,10 @@ src/cli.ts      CLI parsing, validation, execution
 src/agents.ts   Agent registry and command builders
 src/output.ts   Final-message extraction from agent JSON traces
 src/modal.ts    Modal sandbox execution and workspace sync
+src/roles.ts    Role defaults and prompt composition
+src/runs.ts     Local run-state store and locks
+src/teams.ts    Team spec parser and generated node names
+src/run-view.ts Run graph/list rendering
 src/shell.ts    Shell-safe dry-run rendering
 src/types.ts    Shared TypeScript contracts
 tests/          CLI and command-builder coverage

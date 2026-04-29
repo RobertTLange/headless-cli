@@ -4,9 +4,23 @@
 
 - Added API/OAuth credential signal reporting to `headless --check` for supported agent backends.
 - Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`. Thanks @RobertTLange for PR #7.
+- Added role-aware coordinated runs with `--role orchestrator|explorer|worker|reviewer`, `--run`, `--node`, `--depends-on`, `--team`, and `--coordination session|tmux|oneshot`.
+- Added `headless run list|view|mark|message|wait` for local run observability, run graph rendering, node status updates, message routing, async child launches, and wait handling.
+- Added local run state under `~/.headless/runs`, including per-node logs, message/status events, usage metrics, private file permissions, and run-status stderr summaries for orchestrators.
+- Added configurable role defaults in `~/.headless/config.toml`, including role-specific model, reasoning effort, allow mode, and base instruction prompts.
+- Added `headless --version` and `headless -v` to print the packaged CLI version.
+- Added a multi-agent role and run coordination spec in `docs/spec.md`.
 - Added a local integration suite plus a tracked pre-push hook that builds the local CLI before running integration coverage.
 - Added expanded Docker and Modal integration coverage for Codex `--json`, `--debug`, and `--usage` modes.
-- Changed the pre-push hook to run Codex integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents.
+- Changed the pre-push hook to run Claude integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents.
+- Changed read-only agent modes to preserve search/read capabilities where supported while still denying edits and shell execution.
+- Changed `headless --check`, `headless docker doctor`, and run views to use bordered, color-aware tables when appropriate.
+- Changed Docker run coordination to mount the host run directory into containers with `HEADLESS_RUN_DIR`.
+- Changed orchestrator pre-push coverage so `HEADLESS_HOOK_ALL_AGENTS=1` enables the full multi-agent integration sweep.
+- Fixed run and node ID validation to reject dot segments.
+- Fixed run nodes to be marked failed when setup or execution errors occur after registration.
+- Fixed `run message` so locked session/oneshot nodes do not record undelivered messages.
+- Fixed async `run message` wrappers to preserve child stderr in node logs and clean up node locks via shell traps.
 - Fixed the pre-push hook to run against the freshly built local CLI.
 - Fixed Gemini session alias persistence to select the newest native session.
 

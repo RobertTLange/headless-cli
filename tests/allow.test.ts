@@ -23,6 +23,7 @@ test("builds read-only commands for supported agents", () => {
       "read-only",
       "--ask-for-approval",
       "never",
+      "--search",
       "exec",
       "--model",
       "gpt-5.5",
@@ -45,6 +46,8 @@ test("builds read-only commands for supported agents", () => {
       "--verbose",
       "--permission-mode",
       "plan",
+      "--allowedTools",
+      "Read,Grep,Glob,LS,WebFetch,WebSearch",
     ],
   });
 
@@ -73,7 +76,7 @@ test("builds read-only commands for supported agents", () => {
     args: ["run", "--format", "json", "--model", "openai/gpt-5.4", "hello"],
     env: {
       OPENCODE_CONFIG_CONTENT:
-        '{"permission":{"edit":"deny","bash":"deny","webfetch":"deny","websearch":"deny","codesearch":"deny","task":"deny"}}',
+        '{"permission":{"read":"allow","edit":"deny","bash":"deny","webfetch":"allow","websearch":"allow","codesearch":"allow","task":"deny"}}',
     },
   });
 
@@ -175,11 +178,19 @@ test("defaults to yolo commands for supported agents", () => {
 test("builds read-only interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", allow: "read-only" }, {}), {
     command: "codex",
-    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--model", "gpt-5.5", "hello"],
+    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--search", "--model", "gpt-5.5", "hello"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", allow: "read-only" }, {}), {
     command: "claude",
-    args: ["--model", "claude-opus-4-6", "--permission-mode", "plan", "hello"],
+    args: [
+      "--model",
+      "claude-opus-4-6",
+      "--permission-mode",
+      "plan",
+      "--allowedTools",
+      "Read,Grep,Glob,LS,WebFetch,WebSearch",
+      "hello",
+    ],
   });
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
     command: "gemini",
@@ -190,7 +201,7 @@ test("builds read-only interactive commands for tmux mode", () => {
     args: ["--model", "openai/gpt-5.4"],
     env: {
       OPENCODE_CONFIG_CONTENT:
-        '{"permission":{"edit":"deny","bash":"deny","webfetch":"deny","websearch":"deny","codesearch":"deny","task":"deny"}}',
+        '{"permission":{"read":"allow","edit":"deny","bash":"deny","webfetch":"allow","websearch":"allow","codesearch":"allow","task":"deny"}}',
     },
   });
 });
@@ -308,7 +319,7 @@ test("CLI tmux print-command includes allow mode flags", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --model gpt-5\.5 hello/);
+  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search --model gpt-5\.5 hello/);
 });
 
 test("CLI execution passes command environment overrides", async () => {

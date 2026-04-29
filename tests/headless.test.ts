@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
 import { runCli } from "../src/cli.ts";
+import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
@@ -308,8 +309,6 @@ test("builds native session commands for supported agents", () => {
       "-p",
       "--session-id",
       "11111111-1111-4111-8111-111111111111",
-      "--name",
-      "work",
       "hello",
       "--output-format",
       "stream-json",
@@ -652,6 +651,163 @@ test("CLI falls back to built-in defaults when ~/.headless/config.toml is missin
       stdout.join(""),
       "opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions hello\n",
     );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("config parser accepts role sections and validates role fields", () => {
+  assert.deepEqual(
+    parseHeadlessConfig(
+      [
+        "[roles.explorer]",
+        'allow = "read-only"',
+        'reasoning_effort = "high"',
+        'base_instruction_prompt = """',
+        "Configured explorer prompt.",
+        '"""',
+        "",
+      ].join("\n"),
+    ).roles.explorer,
+    {
+      allow: "read-only",
+      reasoningEffort: "high",
+      baseInstructionPrompt: "Configured explorer prompt.",
+    },
+  );
+
+  assert.throws(() => parseHeadlessConfig("[roles.scout]\nallow = \"read-only\"\n"), /unsupported headless config role/);
+  assert.throws(() => parseHeadlessConfig("[roles.explorer]\nunknown = \"value\"\n"), /unsupported headless role config key/);
+  assert.throws(() => parseHeadlessConfig("[roles.explorer]\nallow = \"maybe\"\n"), /unsupported headless config allow/);
+  assert.throws(
+    () => parseHeadlessConfig("[roles.explorer]\nreasoning_effort = \"max\"\n"),
+    /unsupported headless config reasoning_effort/,
+  );
+});
+
+test("CLI applies configured role defaults and replaces the built-in role prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      [
+        "[roles.explorer]",
+        'allow = "yolo"',
+        'reasoning_effort = "high"',
+        'base_instruction_prompt = """',
+        "Configured explorer prompt.",
+        '"""',
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--role", "explorer", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const output = stdout.join("");
+    assert.match(output, /codex --dangerously-bypass-approvals-and-sandbox exec --model gpt-5\.5/);
+    assert.match(output, /-c 'model_reasoning_effort="high"'/);
+    assert.match(output, /Configured explorer prompt/);
+    assert.match(output, /User prompt:/);
+    assert.doesNotMatch(output, /Stay read-only/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI flags override configured role allow and reasoning effort", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[roles.explorer]", 'model = "gpt-role"', 'allow = "read-only"', 'reasoning_effort = "high"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      [
+        "codex",
+        "--role",
+        "explorer",
+        "--model",
+        "gpt-cli",
+        "--allow",
+        "yolo",
+        "--reasoning-effort",
+        "low",
+        "--prompt",
+        "hello",
+        "--print-command",
+      ],
+      { env: { ...process.env, HOME: home }, stdout: (text) => stdout.push(text) },
+    );
+
+    assert.equal(code, 0);
+    const output = stdout.join("");
+    assert.match(output, /codex --dangerously-bypass-approvals-and-sandbox exec --model gpt-cli/);
+    assert.match(output, /-c 'model_reasoning_effort="low"'/);
+    assert.doesNotMatch(output, /--sandbox read-only/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("environment model overrides stay above role config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[agents.codex]", 'model = "gpt-agent"', "", "[roles.worker]", 'model = "gpt-role"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--role", "worker", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home, CODEX_MODEL: "gpt-env" },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /codex --dangerously-bypass-approvals-and-sandbox exec --model gpt-env/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("role config model is optional and falls back to agent config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      [
+        "[agents.opencode]",
+        'model = "openai/gpt-agent"',
+        "",
+        "[roles.worker]",
+        'reasoning_effort = "high"',
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["opencode", "--role", "worker", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /opencode run --format json --model openai\/gpt-agent --variant high/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1062,7 +1218,7 @@ test("CLI docker doctor reports image status and local build guidance", async ()
 
     const output = stdout.join("");
     assert.equal(code, 0);
-    assert.match(output, /^docker\s+✓\s+27\.1\.2\s+ghcr\.io\/roberttlange\/headless:latest \(missing\)$/m);
+    assert.match(output, /^\| docker\s+\| ✓\s+\| 27\.1\.2\s+\| ghcr\.io\/roberttlange\/headless:latest \(missing\)\s+\|$/m);
     assert.match(output, /Plain `headless --docker` will let Docker pull the default image automatically\./);
     assert.match(output, /For local development, run: headless docker build/);
   } finally {
@@ -1634,6 +1790,17 @@ test("CLI help lists usage output option", async () => {
 
   assert.equal(code, 0);
   assert.match(stdout.join(""), /--usage/);
+});
+
+test("CLI --version prints package version", async () => {
+  const stdout: string[] = [];
+  const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
+  const code = await runCli(["--version"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.join(""), `${packageJson.version}\n`);
 });
 
 test("CLI --tmux launches an interactive tmux session and sends the prompt", async () => {
@@ -2503,6 +2670,18 @@ test("CLI entrypoint runs when invoked as a script", () => {
 
   assert.equal(run.status, 0);
   assert.match(run.stdout, /Usage: headless \[agent\]/);
+});
+
+test("CLI entrypoint prints version", () => {
+  const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
+  const run = spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "--version"],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(run.status, 0);
+  assert.equal(run.stdout, `${packageJson.version}\n`);
 });
 
 test("CLI help lists all Modal options", async () => {
