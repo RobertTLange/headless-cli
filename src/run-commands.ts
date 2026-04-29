@@ -111,14 +111,13 @@ async function handleRunMessage(
     return 0;
   }
 
-  recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
-
   if (input.async) {
     return startAsyncRunMessage(handlers, runId, nodeId, node, prompt.prompt);
   }
 
   const releaseLock = acquireNodeLock(handlers.env, runId, nodeId);
   try {
+    recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
     updateNodeStatus(handlers.env, runId, nodeId, "busy");
     const result = await handlers.executeNode(node, prompt.prompt);
     const finalMessage = extractFinalMessage(node.agent, result.stdout);
@@ -166,6 +165,7 @@ function startAsyncRunMessage(
 ): number {
   const releaseLock = acquireNodeLock(handlers.env, runId, nodeId);
   const stderrLog = node.logs?.stderr ?? join(runDirectory(handlers.env, runId), "nodes", nodeId, "latest.stderr.log");
+  recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt);
   updateNodeStatus(handlers.env, runId, nodeId, "busy");
   appendNodeLog(handlers.env, runId, nodeId, "stdout", `\n===== async message ${new Date().toISOString()} =====\n`);
   appendNodeLog(handlers.env, runId, nodeId, "stderr", `\n===== async message ${new Date().toISOString()} =====\n`);

@@ -690,6 +690,42 @@ test("run message --print-command does not execute or mutate session nodes", asy
   }
 });
 
+test("run message does not record delivery when a session node is locked", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home") };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "session",
+      status: "idle",
+      planned: true,
+      sessionAlias: "worker-1",
+    });
+    const release = acquireNodeLock(env, "auth", "worker-1");
+    try {
+      const stderr: string[] = [];
+      const code = await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue"], {
+        env,
+        stdout: () => undefined,
+        stderr: (text) => stderr.push(text),
+      });
+
+      assert.equal(code, 2);
+      assert.match(stderr.join(""), /node is locked: worker-1/);
+      const run = readRun(env, "auth");
+      assert.equal(run?.nodes["worker-1"].lastMessage, undefined);
+      assert.equal(run?.events.some((event) => event.type === "message_sent"), false);
+    } finally {
+      release();
+    }
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("run message --async records busy status, logs output, and marks completion", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
