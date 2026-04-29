@@ -131,6 +131,11 @@ test("orchestrator run registers declared team and injects run context", async (
         "#!/usr/bin/env node",
         "const fs = require('node:fs');",
         "fs.writeFileSync(process.env.HEADLESS_STDIN_CAPTURE, fs.readFileSync(0, 'utf8'));",
+        "const runFile = process.env.HOME + '/.headless/runs/auth/run.json';",
+        "const run = JSON.parse(fs.readFileSync(runFile, 'utf8'));",
+        "run.nodes['worker-1'].status = 'idle';",
+        "run.nodes.reviewer.status = 'idle';",
+        "fs.writeFileSync(runFile, JSON.stringify(run, null, 2) + '\\n');",
         "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));",
         "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 100, reasoning_output_tokens: 25 } }));",
         "console.log(JSON.stringify({ type: 'agent_message', text: 'orchestrator final' }));",
@@ -167,15 +172,16 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(code, 0);
     assert.equal(stdout.join(""), "orchestrator final\n");
     const run = readRun(env, "auth");
-    assert.equal(run?.nodes.orchestrator.status, "idle");
+    assert.equal(run?.nodes.orchestrator.status, "done");
     assert.deepEqual(
       run?.events.filter((event) => event.nodeId === "orchestrator" && event.type === "status_changed").map((event) => event.status),
       ["busy"],
     );
     assert.equal(run?.nodes.orchestrator.metrics?.totalTokens, 1100);
     assert.equal(run?.nodes.orchestrator.metrics?.outputTokens, 100);
-    assert.equal(run?.nodes["worker-1"].status, "planned");
+    assert.equal(run?.nodes["worker-1"].status, "done");
     assert.equal(run?.nodes["worker-2"].status, "planned");
+    assert.equal(run?.nodes.reviewer.status, "done");
     assert.equal(run?.nodes.reviewer.role, "reviewer");
     const orchestratorLog = readFileSync(run?.nodes.orchestrator.logs?.stdout ?? "", "utf8");
     assert.match(orchestratorLog, /node invocation/);

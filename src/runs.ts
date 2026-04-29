@@ -271,6 +271,31 @@ export function updateNodeStatus(
   return node;
 }
 
+export function completeIdleRunNodes(env: Env, runId: string, orchestratorNodeId: string, orchestratorMessage?: string): void {
+  const run = requireRun(env, runId);
+  const now = new Date().toISOString();
+  for (const node of Object.values(run.nodes)) {
+    const shouldComplete = node.nodeId === orchestratorNodeId || node.status === "idle";
+    if (!shouldComplete) {
+      continue;
+    }
+    node.status = "done";
+    node.updatedAt = now;
+    if (node.nodeId === orchestratorNodeId && orchestratorMessage) {
+      node.lastMessage = orchestratorMessage;
+    }
+    addEvent(run, {
+      type: "node_completed",
+      runId,
+      nodeId: node.nodeId,
+      status: "done",
+      message: node.nodeId === orchestratorNodeId ? orchestratorMessage : undefined,
+      createdAt: now,
+    });
+  }
+  writeRun(env, run);
+}
+
 export function recordMessage(
   env: Env,
   runId: string,

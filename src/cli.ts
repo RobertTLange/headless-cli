@@ -57,6 +57,7 @@ import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import {
   appendNodeLog,
+  completeIdleRunNodes,
   readRun,
   registerNode,
   runDirectory,
@@ -2116,14 +2117,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.runId && parsed.role && nodeId) {
       const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-      updateNodeStatus(
-        env,
-        parsed.runId,
-        nodeId,
-        result.code === 0 ? "idle" : "failed",
-        finalMessage || undefined,
-        extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)),
-      );
+      const metrics = extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env));
+      updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
+      if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
+        completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
+      }
     }
     if (result.code === 0 && sessionPlan) {
       await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
