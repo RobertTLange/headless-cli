@@ -194,7 +194,7 @@ function buildNodeInvocationCommand(env: Env, runId: string, nodeId: string, nod
   command: string;
   args: string[];
 } {
-  const cli = env.HEADLESS_CLI_BIN ?? "headless";
+  const cli = headlessCli(env);
   return {
     command: cli,
     args: [
@@ -224,12 +224,16 @@ function buildAsyncRunMessageCommand(env: Env, runId: string, nodeId: string, no
 } {
   const stderrLog = node.logs?.stderr ?? join(runDirectory(env, runId), "nodes", nodeId, "latest.stderr.log");
   const child = quoteCommand(buildNodeInvocationCommand(env, runId, nodeId, node, prompt));
-  const cli = env.HEADLESS_CLI_BIN ?? "headless";
+  const cli = headlessCli(env);
   const success = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "idle"] });
   const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
   const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(env, runId, nodeId)] });
   const script = `${child} >/dev/null 2>/dev/null; code=$?; if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotePath(stderrLog)}; else printf '%s\\n' "async child exited with code $code" >> ${quotePath(stderrLog)}; ${failure} >/dev/null 2>> ${quotePath(stderrLog)}; fi; ${unlock}; exit "$code"`;
   return { command: "sh", args: ["-c", script] };
+}
+
+function headlessCli(env: Env): string {
+  return env.HEADLESS_CLI_BIN ?? env.HEADLESS_BIN ?? "headless";
 }
 
 function parseDelayMs(value: string | undefined, fallback: number): number {

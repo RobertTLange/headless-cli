@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
@@ -563,6 +563,66 @@ test("run message --async records busy status, logs output, and marks completion
     assert.match(stdoutText, /previous output/);
     assert.doesNotMatch(stdoutText, /marked fake/);
     assert.doesNotMatch(stdoutText, /wrapper-redirected/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run message --async uses HEADLESS_BIN for detached child invocations", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const fakeHeadless = join(binDir, "headless-under-test");
+    const captureFile = join(dir, "headless-args.jsonl");
+    mkdirSync(home);
+    await writeExecutable(
+      fakeHeadless,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'run' && args[1] === 'mark') {",
+        "  const runId = args[2]; const nodeId = args[3]; const status = args[5];",
+        "  const file = path.join(process.env.HOME, '.headless', 'runs', runId, 'run.json');",
+        "  const run = JSON.parse(fs.readFileSync(file, 'utf8'));",
+        "  run.nodes[nodeId].status = status; run.nodes[nodeId].updatedAt = new Date().toISOString();",
+        "  fs.writeFileSync(file, JSON.stringify(run, null, 2) + '\\n');",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const env = {
+      ...process.env,
+      HEADLESS_BIN: fakeHeadless,
+      HEADLESS_CAPTURE: captureFile,
+      HEADLESS_CLI_BIN: undefined,
+      HOME: home,
+      PATH: `${dirname(process.execPath)}:/bin:/usr/bin`,
+    };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "pi",
+      coordination: "oneshot",
+      status: "idle",
+      planned: true,
+    });
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--async"], {
+        env,
+        stdout: () => undefined,
+      }),
+      0,
+    );
+    await waitFor(() => readRun(env, "auth")?.nodes["worker-1"].status === "idle");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls[0].slice(0, 7), ["pi", "--role", "worker", "--coordination", "oneshot", "--run", "auth"]);
+    assert.deepEqual(calls.at(-1), ["run", "mark", "auth", "worker-1", "--status", "idle"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
