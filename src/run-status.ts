@@ -10,6 +10,7 @@ export interface RunStatusReporter {
 
 export interface RunStatusReporterOptions {
   color?: boolean;
+  columns?: number;
   env: Env;
   intervalMs?: number;
   now?: () => Date;
@@ -37,6 +38,7 @@ type LogLevel = "info" | "ok" | "warn" | "error";
 export function createRunStatusReporter(options: RunStatusReporterOptions): RunStatusReporter {
   const intervalMs = options.intervalMs ?? parseRunStatusIntervalMs(options.env.HEADLESS_RUN_STATUS_INTERVAL_MS);
   const color = shouldUseColor(options);
+  const columns = Math.max(40, options.columns ?? process.stderr.columns ?? 100);
   const now = options.now ?? (() => new Date());
   let previous: RunSnapshot | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -50,13 +52,13 @@ export function createRunStatusReporter(options: RunStatusReporterOptions): RunS
     }
 
     if (!previous) {
-      writeLog(options.write, now, color, "info", run.runId, `started ${rootNodeName(run)} (${initialRunSummary(run, color)})`);
+      writeLog(options.write, now, color, columns, "info", run.runId, `started ${rootNodeName(run)} (${initialRunSummary(run, color)})`);
       previous = snapshot(run);
       return;
     }
 
-    emitStatusTransitions(options.write, now, color, previous, run);
-    emitMessageEvents(options.write, now, color, previous.eventCount, run);
+    emitStatusTransitions(options.write, now, color, columns, previous, run);
+    emitMessageEvents(options.write, now, color, columns, previous.eventCount, run);
     previous = snapshot(run);
   };
 
@@ -80,7 +82,7 @@ export function createRunStatusReporter(options: RunStatusReporterOptions): RunS
     if (run && !finalEmitted) {
       finalEmitted = true;
       const label = activeCount(run) === 0 ? "idle" : "stopped";
-      writeLog(options.write, now, color, activeCount(run) === 0 ? "ok" : "warn", run.runId, `${label} (${runSummary(run, color)})`);
+      writeLog(options.write, now, color, columns, activeCount(run) === 0 ? "ok" : "warn", run.runId, `${label} (${runSummary(run, color)})`);
     }
   };
 
@@ -99,13 +101,14 @@ function emitStatusTransitions(
   write: (text: string) => void,
   now: () => Date,
   color: boolean,
+  columns: number,
   previous: RunSnapshot,
   run: RunRecord,
 ): void {
   for (const node of sortedNodes(run)) {
     const oldStatus = previous.statuses.get(node.nodeId);
     if (oldStatus === undefined) {
-      writeLog(write, now, color, "info", run.runId, `${node.nodeId} registered ${paintStatus(node.status, color)}`);
+      writeLog(write, now, color, columns, "info", run.runId, `${node.nodeId} registered ${paintStatus(node.status, color)}`);
       continue;
     }
     if (oldStatus !== node.status) {
@@ -113,6 +116,7 @@ function emitStatusTransitions(
         write,
         now,
         color,
+        columns,
         transitionLevel(node.status),
         run.runId,
         `${node.nodeId} ${paintStatus(oldStatus, color)} -> ${paintStatus(node.status, color)}`,
@@ -125,6 +129,7 @@ function emitMessageEvents(
   write: (text: string) => void,
   now: () => Date,
   color: boolean,
+  columns: number,
   previousEventCount: number,
   run: RunRecord,
 ): void {
@@ -133,7 +138,7 @@ function emitMessageEvents(
     if (event.type !== "message_sent") {
       continue;
     }
-    writeLog(write, now, color, "info", run.runId, `message ${event.nodeId ?? "cli"} -> ${event.targetNodeId ?? "unknown"}`);
+    writeLog(write, now, color, columns, "info", run.runId, `message ${event.nodeId ?? "cli"} -> ${event.targetNodeId ?? "unknown"}`);
   }
 }
 
@@ -179,13 +184,55 @@ function writeLog(
   write: (text: string) => void,
   now: () => Date,
   color: boolean,
+  columns: number,
   level: LogLevel,
   runId: string,
   message: string,
 ): void {
-  const timestamp = paint(now().toISOString(), "dim", color);
+  const timestamp = paint(formatTimestamp(now()), "dim", color);
   const label = level.toUpperCase();
-  write(`${timestamp} ${paint(label, levelColor(level), color)}${" ".repeat(5 - label.length)} headless run ${runId} ${message}\n`);
+  const line = `${timestamp} ${paint(label, levelColor(level), color)}${" ".repeat(5 - label.length)} ${runId} ${message}`;
+  write(`${truncateAnsi(line, columns)}\n`);
+}
+
+function formatTimestamp(date: Date): string {
+  const hours = pad2(date.getHours());
+  const minutes = pad2(date.getMinutes());
+  const seconds = pad2(date.getSeconds());
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function truncateAnsi(text: string, maxWidth: number): string {
+  if (visibleLength(text) <= maxWidth) {
+    return text;
+  }
+  const limit = Math.max(0, maxWidth - 3);
+  const ansiPattern = /\x1b\[[0-9;]*m/y;
+  let output = "";
+  let visible = 0;
+  let sawAnsi = false;
+  for (let index = 0; index < text.length && visible < limit;) {
+    ansiPattern.lastIndex = index;
+    const match = ansiPattern.exec(text);
+    if (match) {
+      sawAnsi = true;
+      output += match[0];
+      index += match[0].length;
+      continue;
+    }
+    output += text[index];
+    visible += 1;
+    index += 1;
+  }
+  return `${output}...${sawAnsi ? "\x1b[0m" : ""}`;
+}
+
+function visibleLength(text: string): number {
+  return text.replace(/\x1b\[[0-9;]*m/g, "").length;
 }
 
 function transitionLevel(status: string): LogLevel {

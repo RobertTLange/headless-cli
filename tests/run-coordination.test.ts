@@ -173,9 +173,9 @@ test("orchestrator run registers declared team and injects run context", async (
 
     assert.equal(code, 0);
     assert.equal(stdout.join(""), "orchestrator final\n");
-    assert.match(stderr.join(""), /^\d{4}-\d{2}-\d{2}T.* INFO  headless run auth started orchestrator \(4 nodes,/m);
-    assert.match(stderr.join(""), /^\d{4}-\d{2}-\d{2}T.* INFO  headless run auth orchestrator starting -> busy/m);
-    assert.match(stderr.join(""), /^\d{4}-\d{2}-\d{2}T.* OK    headless run auth idle \(0 active;/m);
+    assert.match(stderr.join(""), /^\d{2}:\d{2}:\d{2} INFO  auth started orchestrator \(4 nodes,/m);
+    assert.match(stderr.join(""), /^\d{2}:\d{2}:\d{2} INFO  auth orchestrator starting -> busy/m);
+    assert.match(stderr.join(""), /^\d{2}:\d{2}:\d{2} OK    auth idle \(0 active;/m);
     const run = readRun(env, "auth");
     assert.equal(run?.nodes.orchestrator.status, "done");
     assert.deepEqual(
