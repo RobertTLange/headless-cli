@@ -444,6 +444,61 @@ test("run message routes tmux nodes through tmux buffers", async () => {
   }
 });
 
+test("run message --print-command does not execute or mutate session nodes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "codex-args.jsonl");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "codex"),
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'executed' }));",
+        "",
+      ].join("\n"),
+    );
+    const env = {
+      ...process.env,
+      HEADLESS_CAPTURE: captureFile,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "session",
+      status: "idle",
+      lastMessage: undefined,
+      planned: true,
+      sessionAlias: "worker-1",
+    });
+    const before = readRun(env, "auth")?.nodes["worker-1"];
+
+    const stdout: string[] = [];
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--print-command"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+
+    assert.match(stdout.join(""), /^headless codex --role worker --coordination session --run auth --node worker-1 --prompt continue/);
+    const after = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(after?.status, before?.status);
+    assert.equal(after?.lastMessage, before?.lastMessage);
+    assert.equal(existsSync(captureFile), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("run message --async records busy status, logs output, and marks completion", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
@@ -539,6 +594,8 @@ test("run message --async print-command uses a non-login shell to preserve PATH"
     const output = stdout.join("");
     assert.match(output, /^sh -c /);
     assert.doesNotMatch(output, /^sh -lc /);
+    assert.equal(readRun(env, "auth")?.nodes["explorer-1"].status, "idle");
+    assert.equal(readRun(env, "auth")?.nodes["explorer-1"].lastMessage, undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

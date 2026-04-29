@@ -92,7 +92,6 @@ async function handleRunMessage(
     throw new Error(`unknown node in run ${runId}: ${nodeId}`);
   }
   const prompt = await handlers.resolvePrompt();
-  recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
 
   if (node.coordination === "tmux") {
     const sessionName = node.tmuxSessionName ?? `headless-${node.agent}-${node.sessionAlias ?? node.nodeId}`;
@@ -103,8 +102,18 @@ async function handleRunMessage(
     return code;
   }
 
+  if (input.printCommand) {
+    const command = input.async
+      ? buildAsyncRunMessageCommand(handlers.env, runId, nodeId, node, prompt.prompt)
+      : buildNodeInvocationCommand(handlers.env, runId, nodeId, node, prompt.prompt);
+    handlers.stdout(`${quoteCommand(command)}\n`);
+    return 0;
+  }
+
+  recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
+
   if (input.async) {
-    return startAsyncRunMessage(input, handlers, runId, nodeId, node, prompt.prompt);
+    return startAsyncRunMessage(handlers, runId, nodeId, node, prompt.prompt);
   }
 
   const releaseLock = acquireNodeLock(handlers.env, runId, nodeId);
@@ -148,7 +157,6 @@ async function waitForRunIdle(env: Env, runId: string): Promise<void> {
 }
 
 function startAsyncRunMessage(
-  input: RunCommandInput,
   handlers: RunCommandHandlers,
   runId: string,
   nodeId: string,
@@ -156,42 +164,11 @@ function startAsyncRunMessage(
   prompt: string,
 ): number {
   const releaseLock = acquireNodeLock(handlers.env, runId, nodeId);
-  const stdoutLog = node.logs?.stdout ?? join(runDirectory(handlers.env, runId), "nodes", nodeId, "latest.stdout.log");
   const stderrLog = node.logs?.stderr ?? join(runDirectory(handlers.env, runId), "nodes", nodeId, "latest.stderr.log");
   updateNodeStatus(handlers.env, runId, nodeId, "busy");
   appendNodeLog(handlers.env, runId, nodeId, "stdout", `\n===== async message ${new Date().toISOString()} =====\n`);
   appendNodeLog(handlers.env, runId, nodeId, "stderr", `\n===== async message ${new Date().toISOString()} =====\n`);
-  const cli = handlers.env.HEADLESS_CLI_BIN ?? "headless";
-  const childArgs = [
-    node.agent,
-    "--role",
-    node.role,
-    "--coordination",
-    node.coordination,
-    "--run",
-    runId,
-    "--node",
-    nodeId,
-    "--prompt",
-    prompt,
-    ...(node.allow ? ["--allow", node.allow] : []),
-    ...(node.model ? ["--model", node.model] : []),
-    ...(node.reasoningEffort ? ["--reasoning-effort", node.reasoningEffort] : []),
-    ...(node.workDir ? ["--work-dir", node.workDir] : []),
-    ...(node.coordination === "session" ? ["--session", node.sessionAlias ?? nodeId] : []),
-  ];
-  const child = quoteCommand({ command: cli, args: childArgs });
-  const success = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "idle"] });
-  const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
-  const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(handlers.env, runId, nodeId)] });
-  const script = `${child} >/dev/null 2>/dev/null; code=$?; if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotePath(stderrLog)}; else printf '%s\\n' "async child exited with code $code" >> ${quotePath(stderrLog)}; ${failure} >/dev/null 2>> ${quotePath(stderrLog)}; fi; ${unlock}; exit "$code"`;
-  const command = { command: "sh", args: ["-c", script] };
-
-  if (input.printCommand) {
-    releaseLock();
-    handlers.stdout(`${quoteCommand(command)}\n`);
-    return 0;
-  }
+  const command = buildAsyncRunMessageCommand(handlers.env, runId, nodeId, node, prompt);
 
   const errFd = openSync(stderrLog, "a");
   try {
@@ -211,6 +188,48 @@ function startAsyncRunMessage(
   }
   handlers.stdout(`started: ${runId}/${nodeId}\n`);
   return 0;
+}
+
+function buildNodeInvocationCommand(env: Env, runId: string, nodeId: string, node: RunNode, prompt: string): {
+  command: string;
+  args: string[];
+} {
+  const cli = env.HEADLESS_CLI_BIN ?? "headless";
+  return {
+    command: cli,
+    args: [
+      node.agent,
+      "--role",
+      node.role,
+      "--coordination",
+      node.coordination,
+      "--run",
+      runId,
+      "--node",
+      nodeId,
+      "--prompt",
+      prompt,
+      ...(node.allow ? ["--allow", node.allow] : []),
+      ...(node.model ? ["--model", node.model] : []),
+      ...(node.reasoningEffort ? ["--reasoning-effort", node.reasoningEffort] : []),
+      ...(node.workDir ? ["--work-dir", node.workDir] : []),
+      ...(node.coordination === "session" ? ["--session", node.sessionAlias ?? nodeId] : []),
+    ],
+  };
+}
+
+function buildAsyncRunMessageCommand(env: Env, runId: string, nodeId: string, node: RunNode, prompt: string): {
+  command: string;
+  args: string[];
+} {
+  const stderrLog = node.logs?.stderr ?? join(runDirectory(env, runId), "nodes", nodeId, "latest.stderr.log");
+  const child = quoteCommand(buildNodeInvocationCommand(env, runId, nodeId, node, prompt));
+  const cli = env.HEADLESS_CLI_BIN ?? "headless";
+  const success = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "idle"] });
+  const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
+  const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(env, runId, nodeId)] });
+  const script = `${child} >/dev/null 2>/dev/null; code=$?; if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotePath(stderrLog)}; else printf '%s\\n' "async child exited with code $code" >> ${quotePath(stderrLog)}; ${failure} >/dev/null 2>> ${quotePath(stderrLog)}; fi; ${unlock}; exit "$code"`;
+  return { command: "sh", args: ["-c", script] };
 }
 
 function parseDelayMs(value: string | undefined, fallback: number): number {
