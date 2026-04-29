@@ -504,6 +504,38 @@ test("run message routes tmux nodes through tmux buffers", async () => {
   }
 });
 
+test("tmux run launch failure marks the node failed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "tmux"),
+      [
+        "#!/usr/bin/env node",
+        "process.stderr.write('tmux launch failed\\n');",
+        "process.exit(1);",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    const stderr: string[] = [];
+
+    const code = await runCli(
+      ["codex", "--tmux", "--role", "worker", "--run", "auth", "--node", "worker-1", "--prompt", "hello"],
+      { env, stdout: () => undefined, stderr: (text) => stderr.push(text) },
+    );
+
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /tmux launch failed/);
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].status, "failed");
+    assert.match(readRun(env, "auth")?.nodes["worker-1"].lastMessage ?? "", /tmux command exited with code 1/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("run message --print-command does not execute or mutate session nodes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {

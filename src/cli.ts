@@ -1929,9 +1929,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           return 0;
         }
         const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
-        if (code === 0) {
-          stdout(`sent: ${tmuxCommands.sessionName}\n`);
-          if (parsed.runId && parsed.role && nodeId) {
+        if (parsed.runId && parsed.role && nodeId) {
+          if (code === 0) {
             registerNode(env, {
               runId: parsed.runId,
               nodeId,
@@ -1948,7 +1947,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               sessionAlias: parsed.sessionAlias ?? nodeId,
               tmuxSessionName: sessionName,
             });
+          } else {
+            updateNodeStatus(env, parsed.runId, nodeId, "failed", `tmux command exited with code ${code}`);
           }
+        }
+        if (code === 0) {
+          stdout(`sent: ${tmuxCommands.sessionName}\n`);
         }
         return code;
       }
@@ -1974,25 +1978,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         env,
         parsed.sessionAlias ?? parsed.tmuxName,
       );
-      if (!parsed.printCommand && parsed.runId && parsed.role && nodeId) {
-        registerNode(env, {
-          runId: parsed.runId,
-          nodeId,
-          role: parsed.role,
-          agent: parsed.agent,
-          coordination,
-          status: "busy",
-          dependsOn: parsed.dependsOn,
-          planned: true,
-          allow,
-          model: configuredDefaults.model,
-          reasoningEffort: configuredDefaults.reasoningEffort,
-          workDir: cwd ?? process.cwd(),
-          sessionAlias: parsed.sessionAlias ?? parsed.tmuxName ?? nodeId,
-          tmuxSessionName: tmuxCommands.sessionName,
-        });
-      }
-
       if (parsed.printCommand) {
         stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
         for (const postLaunch of tmuxCommands.postLaunch) {
@@ -2009,6 +1994,28 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
 
       const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
+      if (parsed.runId && parsed.role && nodeId) {
+        if (code === 0) {
+          registerNode(env, {
+            runId: parsed.runId,
+            nodeId,
+            role: parsed.role,
+            agent: parsed.agent,
+            coordination,
+            status: "busy",
+            dependsOn: parsed.dependsOn,
+            planned: true,
+            allow,
+            model: configuredDefaults.model,
+            reasoningEffort: configuredDefaults.reasoningEffort,
+            workDir: cwd ?? process.cwd(),
+            sessionAlias: parsed.sessionAlias ?? parsed.tmuxName ?? nodeId,
+            tmuxSessionName: tmuxCommands.sessionName,
+          });
+        } else {
+          updateNodeStatus(env, parsed.runId, nodeId, "failed", `tmux command exited with code ${code}`);
+        }
+      }
       if (code === 0) {
         stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
         stdout(`attach: tmux attach-session -t ${tmuxCommands.sessionName}\n`);
