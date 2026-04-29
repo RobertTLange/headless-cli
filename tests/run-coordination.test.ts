@@ -390,6 +390,26 @@ test("orchestrator run rejects read-only mode because it must update run state",
   assert.match(stderr.join(""), /orchestrator with --run cannot use --allow read-only/);
 });
 
+test("run launch setup failures mark registered nodes failed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home"), PATH: dirname(process.execPath) };
+    const stderr: string[] = [];
+
+    const code = await runCli(
+      ["codex", "--role", "worker", "--run", "auth", "--node", "worker-1", "--prompt", "hello", "--docker"],
+      { env, stdout: () => undefined, stderr: (text) => stderr.push(text) },
+    );
+
+    assert.equal(code, 2);
+    assert.match(stderr.join(""), /docker not found on PATH/);
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].status, "failed");
+    assert.match(readRun(env, "auth")?.nodes["worker-1"].lastMessage ?? "", /docker not found on PATH/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("run list, view, mark, and wait operate on local run state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {

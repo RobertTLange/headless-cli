@@ -1579,6 +1579,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const env = deps.env ?? process.env;
+  let registeredRunNode: { runId: string; nodeId: string } | undefined;
 
   try {
     const parsed = parseArgs(argv);
@@ -1895,6 +1896,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         workDir: cwd ?? process.cwd(),
         sessionAlias: coordination === "session" ? (parsed.sessionAlias ?? nodeId) : parsed.sessionAlias,
       });
+      registeredRunNode = { runId: parsed.runId, nodeId };
     }
     const composedPrompt = composeRolePrompt(
       prompt.prompt,
@@ -2194,6 +2196,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     return result.code;
   } catch (error) {
+    if (registeredRunNode) {
+      try {
+        updateNodeStatus(
+          env,
+          registeredRunNode.runId,
+          registeredRunNode.nodeId,
+          "failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      } catch {
+        // Preserve the original CLI error.
+      }
+    }
     if (error instanceof CliError) {
       stderr(`headless: ${error.message}\n`);
       return 2;
