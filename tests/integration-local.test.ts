@@ -414,7 +414,7 @@ test(
       for (const agent of orchestrationAgents) {
         const node = runRecord.nodes[`explorer-${agent}`];
         assert.ok(node, `missing explorer-${agent} node`);
-        assert.equal(node.status, "idle", `explorer-${agent} did not finish`);
+        assert.equal(node.status, "done", `explorer-${agent} did not complete`);
         assert.match(node.lastMessage ?? "", new RegExp(escapeRegExp(nonce)), `explorer-${agent} did not report nonce`);
       }
     } finally {
