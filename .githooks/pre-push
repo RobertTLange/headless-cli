@@ -9,7 +9,7 @@ fi
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$hook_dir/.." && pwd)
 headless_bin="$repo_root/dist/cli.js"
-integration_agents="codex"
+integration_agents="claude"
 integration_full_sweep="0"
 
 if [ "${HEADLESS_HOOK_ALL_AGENTS:-}" = "1" ]; then
@@ -36,7 +36,7 @@ if ! HEADLESS_BIN="$headless_bin" HEADLESS_INTEGRATION_AGENTS="$integration_agen
 headless pre-push: local integration suite failed.
 
 Expected local prerequisites:
-  - Codex installed and authenticated by default
+  - Claude installed and authenticated by default
   - all six Headless backends installed and authenticated when HEADLESS_HOOK_ALL_AGENTS=1
   - Docker installed, running, and able to pull/run the default image
   - Modal configured with MODAL_TOKEN_ID/MODAL_TOKEN_SECRET or ~/.modal.toml

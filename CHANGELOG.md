@@ -12,7 +12,7 @@
 - Added a multi-agent role and run coordination spec in `docs/spec.md`.
 - Added a local integration suite plus a tracked pre-push hook that builds the local CLI before running integration coverage.
 - Added expanded Docker and Modal integration coverage for Codex `--json`, `--debug`, and `--usage` modes.
-- Changed the pre-push hook to run Codex integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents.
+- Changed the pre-push hook to run Claude integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents.
 - Changed read-only agent modes to preserve search/read capabilities where supported while still denying edits and shell execution.
 - Changed `headless --check`, `headless docker doctor`, and run views to use bordered, color-aware tables when appropriate.
 - Changed Docker run coordination to mount the host run directory into containers with `HEADLESS_RUN_DIR`.

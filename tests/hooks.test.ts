@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-test("pre-push hook defaults local integration tests to Codex only", () => {
+test("pre-push hook defaults local integration tests to Claude only", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-hook-test-"));
   try {
     const binDir = join(dir, "bin");
@@ -38,7 +38,7 @@ test("pre-push hook defaults local integration tests to Codex only", () => {
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => line.split("\t"));
     assert.deepEqual(calls, [
       ["run build", "", "", ""],
-      ["run test:integration:local", join(repoRoot, "dist", "cli.js"), "codex", "0"],
+      ["run test:integration:local", join(repoRoot, "dist", "cli.js"), "claude", "0"],
     ]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
