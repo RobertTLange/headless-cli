@@ -73,7 +73,7 @@ function renderNode(node: RunNode, now: number): string {
 
 function renderNodeTable(nodes: RunNode[], now: number): string[] {
   const rows = [
-    ["NODE", "ROLE", "AGENT", "STATUS", "UPDATED", "AGE", "TURNS", "DURATION", "COST", "TOKENS", "LAST"],
+    ["NODE", "ROLE", "AGENT", "STATUS", "UPDATED", "AGE", "LAST"],
     ...nodes.map((node) => [
       node.nodeId,
       node.role,
@@ -81,10 +81,6 @@ function renderNodeTable(nodes: RunNode[], now: number): string[] {
       node.status,
       node.updatedAt,
       formatAge(node.updatedAt, now),
-      formatNumber(node.metrics?.turns),
-      formatDuration(node.metrics?.durationMs),
-      formatCost(node.metrics?.totalCostUsd),
-      formatCompactNumber(node.metrics?.totalTokens),
       truncate(oneLine(node.lastMessage ?? ""), 60) || "-",
     ]),
   ];
@@ -142,25 +138,4 @@ function formatDuration(value: number | undefined): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return `${hours}h${String(remainingMinutes).padStart(2, "0")}m`;
-}
-
-function formatNumber(value: number | undefined): string {
-  return value === undefined ? "-" : String(value);
-}
-
-function formatCompactNumber(value: number | undefined): string {
-  if (value === undefined) return "-";
-  if (value >= 1_000_000) return `${trimTrailingZero(value / 1_000_000)}m`;
-  if (value >= 1_000) return `${trimTrailingZero(value / 1_000)}k`;
-  return String(value);
-}
-
-function formatCost(value: number | undefined): string {
-  if (value === undefined) return "-";
-  if (value === 0) return "$0";
-  return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
-}
-
-function trimTrailingZero(value: number): string {
-  return value.toFixed(1).replace(/\.0$/, "");
 }

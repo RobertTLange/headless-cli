@@ -255,9 +255,10 @@ test("run list, view, mark, and wait operate on local run state", async () => {
     assert.match(view, /orchestrator \[idle .* ago\] last: ready/);
     assert.match(view, /worker-1 \[planned .* ago\] depends: orchestrator/);
     assert.match(view, /Node details/);
-    assert.match(view, /NODE\s+ROLE\s+AGENT\s+STATUS\s+UPDATED\s+AGE\s+TURNS\s+DURATION\s+COST\s+TOKENS\s+LAST/);
-    assert.match(view, /orchestrator\s+orchestrator\s+codex\s+idle\s+.*\s+3\s+2m03s\s+\$0\.42\s+1\.1k\s+ready/);
-    assert.match(view, /worker-1\s+worker\s+codex\s+planned\s+.*\s+-\s+-\s+-\s+-/);
+    assert.match(view, /NODE\s+ROLE\s+AGENT\s+STATUS\s+UPDATED\s+AGE\s+LAST/);
+    assert.doesNotMatch(view, /TURNS|DURATION|COST|TOKENS/);
+    assert.match(view, /orchestrator\s+orchestrator\s+codex\s+idle\s+.*\s+ready/);
+    assert.match(view, /worker-1\s+worker\s+codex\s+planned\s+.*\s+-/);
 
     stdout.length = 0;
     assert.equal(
