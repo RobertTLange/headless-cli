@@ -195,49 +195,51 @@ export function listRuns(env: Env): RunRecord[] {
 export function registerNode(env: Env, input: RegisterNodeInput): RunNode {
   validateRunId(input.runId, "run");
   validateRunId(input.nodeId, "node");
-  const run = readRun(env, input.runId) ?? emptyRun(input.runId);
-  const now = new Date().toISOString();
-  const existing = run.nodes[input.nodeId];
-  const status =
-    existing?.status === "busy" && input.status === "starting"
-      ? "busy"
-      : (input.status ?? existing?.status ?? "planned");
-  const node: RunNode = {
-    runId: input.runId,
-    nodeId: input.nodeId,
-    role: input.role,
-    agent: input.agent,
-    coordination: input.coordination,
-    status,
-    lastMessage: existing?.lastMessage,
-    dependsOn: unique(input.dependsOn ?? existing?.dependsOn ?? []),
-    planned: input.planned ?? existing?.planned ?? false,
-    unplanned: !(input.planned ?? existing?.planned ?? false),
-    allow: input.allow ?? existing?.allow,
-    model: input.model ?? existing?.model,
-    reasoningEffort: input.reasoningEffort ?? existing?.reasoningEffort,
-    workDir: input.workDir ?? existing?.workDir,
-    sessionAlias: input.sessionAlias ?? existing?.sessionAlias,
-    tmuxSessionName: input.tmuxSessionName ?? existing?.tmuxSessionName,
-    logs: existing?.logs ?? logPaths(env, input.runId, input.nodeId),
-    metrics: existing?.metrics,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-  };
-  run.nodes[input.nodeId] = node;
-  addEvent(run, {
-    type: existing ? "node_started" : "node_registered",
-    runId: input.runId,
-    nodeId: input.nodeId,
-    role: input.role,
-    agent: input.agent,
-    coordination: input.coordination,
-    status: node.status,
-    dependsOn: node.dependsOn,
-    createdAt: now,
+  return withRunLock(env, input.runId, () => {
+    const run = readRun(env, input.runId) ?? emptyRun(input.runId);
+    const now = new Date().toISOString();
+    const existing = run.nodes[input.nodeId];
+    const status =
+      existing?.status === "busy" && input.status === "starting"
+        ? "busy"
+        : (input.status ?? existing?.status ?? "planned");
+    const node: RunNode = {
+      runId: input.runId,
+      nodeId: input.nodeId,
+      role: input.role,
+      agent: input.agent,
+      coordination: input.coordination,
+      status,
+      lastMessage: existing?.lastMessage,
+      dependsOn: unique(input.dependsOn ?? existing?.dependsOn ?? []),
+      planned: input.planned ?? existing?.planned ?? false,
+      unplanned: !(input.planned ?? existing?.planned ?? false),
+      allow: input.allow ?? existing?.allow,
+      model: input.model ?? existing?.model,
+      reasoningEffort: input.reasoningEffort ?? existing?.reasoningEffort,
+      workDir: input.workDir ?? existing?.workDir,
+      sessionAlias: input.sessionAlias ?? existing?.sessionAlias,
+      tmuxSessionName: input.tmuxSessionName ?? existing?.tmuxSessionName,
+      logs: existing?.logs ?? logPaths(env, input.runId, input.nodeId),
+      metrics: existing?.metrics,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    run.nodes[input.nodeId] = node;
+    addEvent(run, {
+      type: existing ? "node_started" : "node_registered",
+      runId: input.runId,
+      nodeId: input.nodeId,
+      role: input.role,
+      agent: input.agent,
+      coordination: input.coordination,
+      status: node.status,
+      dependsOn: node.dependsOn,
+      createdAt: now,
+    });
+    writeRun(env, run);
+    return node;
   });
-  writeRun(env, run);
-  return node;
 }
 
 export function updateNodeStatus(
@@ -248,52 +250,58 @@ export function updateNodeStatus(
   message?: string,
   metrics?: RunNodeMetrics,
 ): RunNode {
-  const run = requireRun(env, runId);
-  const node = requireNode(run, nodeId);
-  const now = new Date().toISOString();
-  node.status = status;
-  node.updatedAt = now;
-  if (message) {
-    node.lastMessage = message;
-  }
-  if (metrics && Object.keys(metrics).length > 0) {
-    node.metrics = { ...node.metrics, ...metrics };
-  }
-  addEvent(run, {
-    type: status === "failed" ? "node_failed" : status === "done" || status === "idle" ? "node_completed" : "status_changed",
-    runId,
-    nodeId,
-    status,
-    message,
-    createdAt: now,
+  validateRunId(runId, "run");
+  return withRunLock(env, runId, () => {
+    const run = requireRun(env, runId);
+    const node = requireNode(run, nodeId);
+    const now = new Date().toISOString();
+    node.status = status;
+    node.updatedAt = now;
+    if (message) {
+      node.lastMessage = message;
+    }
+    if (metrics && Object.keys(metrics).length > 0) {
+      node.metrics = { ...node.metrics, ...metrics };
+    }
+    addEvent(run, {
+      type: status === "failed" ? "node_failed" : status === "done" || status === "idle" ? "node_completed" : "status_changed",
+      runId,
+      nodeId,
+      status,
+      message,
+      createdAt: now,
+    });
+    writeRun(env, run);
+    return node;
   });
-  writeRun(env, run);
-  return node;
 }
 
 export function completeIdleRunNodes(env: Env, runId: string, orchestratorNodeId: string, orchestratorMessage?: string): void {
-  const run = requireRun(env, runId);
-  const now = new Date().toISOString();
-  for (const node of Object.values(run.nodes)) {
-    const shouldComplete = node.nodeId === orchestratorNodeId || node.status === "idle";
-    if (!shouldComplete) {
-      continue;
+  validateRunId(runId, "run");
+  withRunLock(env, runId, () => {
+    const run = requireRun(env, runId);
+    const now = new Date().toISOString();
+    for (const node of Object.values(run.nodes)) {
+      const shouldComplete = node.nodeId === orchestratorNodeId || node.status === "idle";
+      if (!shouldComplete) {
+        continue;
+      }
+      node.status = "done";
+      node.updatedAt = now;
+      if (node.nodeId === orchestratorNodeId && orchestratorMessage) {
+        node.lastMessage = orchestratorMessage;
+      }
+      addEvent(run, {
+        type: "node_completed",
+        runId,
+        nodeId: node.nodeId,
+        status: "done",
+        message: node.nodeId === orchestratorNodeId ? orchestratorMessage : undefined,
+        createdAt: now,
+      });
     }
-    node.status = "done";
-    node.updatedAt = now;
-    if (node.nodeId === orchestratorNodeId && orchestratorMessage) {
-      node.lastMessage = orchestratorMessage;
-    }
-    addEvent(run, {
-      type: "node_completed",
-      runId,
-      nodeId: node.nodeId,
-      status: "done",
-      message: node.nodeId === orchestratorNodeId ? orchestratorMessage : undefined,
-      createdAt: now,
-    });
-  }
-  writeRun(env, run);
+    writeRun(env, run);
+  });
 }
 
 export function recordMessage(
@@ -303,24 +311,27 @@ export function recordMessage(
   targetNodeId: string,
   message: string,
 ): void {
-  const run = requireRun(env, runId);
-  const now = new Date().toISOString();
-  if (!run.nodes[targetNodeId]) {
-    throw new Error(`unknown node in run ${runId}: ${targetNodeId}`);
-  }
-  const sourceNode = run.nodes[fromNodeId];
-  const messageOwner = sourceNode ?? run.nodes[targetNodeId];
-  messageOwner.lastMessage = message;
-  messageOwner.updatedAt = now;
-  addEvent(run, {
-    type: "message_sent",
-    runId,
-    nodeId: fromNodeId,
-    targetNodeId,
-    message,
-    createdAt: now,
+  validateRunId(runId, "run");
+  withRunLock(env, runId, () => {
+    const run = requireRun(env, runId);
+    const now = new Date().toISOString();
+    if (!run.nodes[targetNodeId]) {
+      throw new Error(`unknown node in run ${runId}: ${targetNodeId}`);
+    }
+    const sourceNode = run.nodes[fromNodeId];
+    const messageOwner = sourceNode ?? run.nodes[targetNodeId];
+    messageOwner.lastMessage = message;
+    messageOwner.updatedAt = now;
+    addEvent(run, {
+      type: "message_sent",
+      runId,
+      nodeId: fromNodeId,
+      targetNodeId,
+      message,
+      createdAt: now,
+    });
+    writeRun(env, run);
   });
-  writeRun(env, run);
 }
 
 export function acquireNodeLock(env: Env, runId: string, nodeId: string): () => void {
@@ -355,6 +366,43 @@ export function writeRun(env: Env, run: RunRecord): void {
   if (event) {
     appendFileSync(eventsPath, `${JSON.stringify(event)}\n`);
   }
+}
+
+function withRunLock<T>(env: Env, runId: string, callback: () => T): T {
+  const release = acquireRunLock(env, runId);
+  try {
+    return callback();
+  } finally {
+    release();
+  }
+}
+
+function acquireRunLock(env: Env, runId: string): () => void {
+  const dir = runDirectory(env, runId);
+  mkdirSync(dir, { recursive: true });
+  const lockPath = join(dir, "run.lock");
+  const deadline = Date.now() + 30000;
+  let fd: number;
+  while (true) {
+    try {
+      fd = openSync(lockPath, "wx");
+      break;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error(`run is locked: ${runId}`);
+      }
+      sleepSync(10);
+    }
+  }
+  writeFileSync(fd, `${process.pid}\n`);
+  return () => {
+    closeSync(fd);
+    rmSync(lockPath, { force: true });
+  };
+}
+
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 function requireRun(env: Env, runId: string): RunRecord {

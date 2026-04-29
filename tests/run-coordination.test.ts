@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,6 +24,31 @@ async function waitFor(assertion: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(assertion(), true);
+}
+
+async function runStatusUpdater(env: NodeJS.ProcessEnv, runId: string, nodeId: string, barrierFile: string): Promise<number> {
+  return await new Promise((resolve) => {
+    const source = [
+      "import { existsSync } from 'node:fs';",
+      "import { updateNodeStatus } from './src/runs.ts';",
+      "while (!existsSync(process.env.HEADLESS_BARRIER_FILE)) {",
+      "  await new Promise((resolve) => setTimeout(resolve, 5));",
+      "}",
+      "updateNodeStatus(process.env, process.env.HEADLESS_TEST_RUN_ID, process.env.HEADLESS_TEST_NODE_ID, 'idle');",
+    ].join("\n");
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source], {
+      cwd: process.cwd(),
+      env: {
+        ...env,
+        HEADLESS_BARRIER_FILE: barrierFile,
+        HEADLESS_TEST_NODE_ID: nodeId,
+        HEADLESS_TEST_RUN_ID: runId,
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    child.on("close", (code) => resolve(code ?? 1));
+    child.on("error", () => resolve(127));
+  });
 }
 
 test("parses team specs and generated node names", () => {
@@ -84,6 +110,40 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     assert.throws(() => acquireNodeLock(env, "auth", "worker-1"), /node is locked/);
     release();
     acquireNodeLock(env, "auth", "worker-1")();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run store preserves concurrent status updates from async children", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home") };
+    const runId = "race";
+    const nodeCount = 32;
+    const barrierFile = join(dir, "release-workers");
+    for (let index = 0; index < nodeCount; index += 1) {
+      registerNode(env, {
+        runId,
+        nodeId: `worker-${index}`,
+        role: "worker",
+        agent: "codex",
+        coordination: "oneshot",
+        status: "busy",
+        planned: true,
+      });
+    }
+
+    const updaters = Array.from({ length: nodeCount }, (_, index) =>
+      runStatusUpdater(env, runId, `worker-${index}`, barrierFile),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    writeFileSync(barrierFile, "go\n");
+
+    assert.deepEqual(await Promise.all(updaters), Array(nodeCount).fill(0));
+    const run = readRun(env, runId);
+    const idle = Object.values(run?.nodes ?? {}).filter((node) => node.status === "idle").length;
+    assert.equal(idle, nodeCount);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
