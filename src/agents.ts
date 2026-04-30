@@ -194,7 +194,7 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
 
 function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.CURSOR_CLI_BIN || "agent";
-  const args = ["-p", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
+  const args = ["-p", "--trust", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
   const model = cursorModel(options);
 
   if (env.CURSOR_API_KEY) {

@@ -53,7 +53,7 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", allow: "read-only" }, {}), {
     command: "agent",
-    args: ["-p", "--output-format", "stream-json", "--model", "gpt-5.5-medium", "--mode", "plan", "hello"],
+    args: ["-p", "--trust", "--output-format", "stream-json", "--model", "gpt-5.5-medium", "--mode", "plan", "hello"],
   });
 
   assert.deepEqual(buildAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
@@ -119,6 +119,7 @@ test("builds explicit yolo commands for supported agents", () => {
   ]);
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", allow: "yolo" }, {}).args, [
     "-p",
+    "--trust",
     "--force",
     "--output-format",
     "stream-json",
@@ -269,7 +270,7 @@ test("CLI maps Cursor reasoning effort to model variants", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "agent -p --force --output-format stream-json --model gpt-5.5-high hello\n");
+  assert.equal(stdout.join(""), "agent -p --trust --force --output-format stream-json --model gpt-5.5-high hello\n");
   assert.equal(stderr.join(""), "");
 });
 
