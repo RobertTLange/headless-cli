@@ -22,6 +22,7 @@
 - Fixed `run message` so locked session/oneshot nodes do not record undelivered messages.
 - Fixed async `run message` wrappers to preserve child stderr in node logs and clean up node locks via shell traps.
 - Fixed the pre-push hook to run against the freshly built local CLI.
+- Fixed Cursor headless runs to pass `--trust` so staged workspaces do not block on workspace trust prompts.
 - Fixed Gemini session alias persistence to select the newest native session.
 
 ## 0.2.1 - 2026-04-27
