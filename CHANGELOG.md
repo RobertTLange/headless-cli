@@ -6,6 +6,7 @@
 - Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`.
 - Added role-aware coordinated runs with `--role orchestrator|explorer|worker|reviewer`, `--run`, `--node`, `--depends-on`, `--team`, and `--coordination session|tmux|oneshot`.
 - Added `headless run list|view|mark|message|wait` for local run observability, run graph rendering, node status updates, message routing, async child launches, and wait handling.
+- Added `headless attach` for attaching to the most recently active Headless tmux session, plus `headless attach --all` for tiled attachment to all active Headless tmux sessions.
 - Added local run state under `~/.headless/runs`, including per-node logs, message/status events, usage metrics, private file permissions, and run-status stderr summaries for orchestrators.
 - Added configurable role defaults in `~/.headless/config.toml`, including role-specific model, reasoning effort, allow mode, and base instruction prompts.
 - Added `--effort` as a shorter alias for `--reasoning-effort`.

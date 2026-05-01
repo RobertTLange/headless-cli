@@ -80,9 +80,13 @@ Use `headless --list` to list active tmux sessions created by Headless. Use `hea
 
 ```bash
 headless --list
+headless attach headless-codex-work
+headless attach --all
 headless rename headless-codex-12345 work
 headless send headless-codex-work --prompt "Run the focused tests now"
 ```
+
+Use `headless attach` without a session name to attach to the most recently active Headless tmux session. Use `headless attach --all` to create a temporary tiled tmux view across all active Headless sessions.
 
 ## Docker
 
@@ -169,6 +173,7 @@ The full template is tracked as `config.toml.example`.
 headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]
 headless docker doctor [options]
 headless docker build [options]
+headless attach [session-name] [--all]
 headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]
 headless rename <session-name> <new-name> [options]
 headless run <list|view|mark|message|wait> [args] [options]
@@ -190,6 +195,7 @@ Options:
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
 - `--name`: use a stable managed session name with `--tmux`.
 - `--session`: start or resume a named Headless session. Uses `~/.headless/sessions.json`; in tmux mode starts or sends to `headless-<agent>-<name>`.
+- `headless attach`: attach to the most recently active Headless tmux session; add `--all` to tile all active sessions.
 - `--check`: check supported agent binaries, versions, Docker status, and local API/OAuth credential signals.
 - `--list`: list active tmux sessions created by Headless, including state and timestamps.
 - `--print-command`: print the shell command without executing it.
