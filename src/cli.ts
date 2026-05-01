@@ -91,6 +91,9 @@ import { expandTeamSpecs } from "./teams.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
+  attach: boolean;
+  attachSession?: string;
+  attachAll: boolean;
   send: boolean;
   sendSession?: string;
   rename: boolean;
@@ -164,6 +167,7 @@ function usage(): string {
     "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]",
     "       headless docker doctor [options]",
     "       headless docker build [options]",
+    "       headless attach [session-name] [--all]",
     "       headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]",
     "       headless rename <session-name> <new-name> [options]",
     "       headless run <list|view|mark|message|wait> [args] [options]",
@@ -207,6 +211,8 @@ function usage(): string {
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --name <name>        Use a managed tmux session name with --tmux.",
     "  --session <name>     Start or resume a named Headless session.",
+    "  attach [session]     Attach to one or all active headless tmux sessions.",
+    "  --all                With attach, tile all active headless tmux sessions.",
     "  send <session-name>  Send a message to an existing headless tmux session.",
     "  rename <session> <name> Rename an existing headless tmux session.",
     "  run list            List local coordinated runs.",
@@ -230,6 +236,8 @@ function usage(): string {
 
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
+    attach: false,
+    attachAll: false,
     send: false,
     rename: false,
     runCommandAsync: false,
@@ -273,7 +281,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.help = true;
     return parsed;
   }
-  if (first === "send") {
+  if (first === "attach") {
+    parsed.attach = true;
+  } else if (first === "send") {
     parsed.send = true;
   } else if (first === "rename") {
     parsed.rename = true;
@@ -392,6 +402,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--tmux":
         parsed.tmux = true;
         break;
+      case "--all":
+        parsed.attachAll = true;
+        break;
       case "--check":
         parsed.check = true;
         break;
@@ -425,6 +438,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         }
         break;
       default:
+        if (parsed.attach && arg && !arg.startsWith("-") && parsed.attachSession === undefined) {
+          parsed.attachSession = arg;
+          break;
+        }
         if (parsed.send && arg && !arg.startsWith("-") && parsed.sendSession === undefined) {
           parsed.sendSession = arg;
           break;
@@ -592,6 +609,10 @@ function hasModalOptions(parsed: ParsedArgs): boolean {
     parsed.modalSecrets.length > 0 ||
     parsed.modalTimeoutSeconds !== undefined
   );
+}
+
+function hasDockerOptions(parsed: ParsedArgs): boolean {
+  return parsed.dockerImage !== undefined || parsed.dockerArgs.length > 0 || parsed.dockerEnv.length > 0;
 }
 
 function shouldStreamRunStatus(parsed: ParsedArgs): boolean {
@@ -814,6 +835,16 @@ interface TmuxRenameCommand {
   sourceName: string;
   targetName: string;
   command: BuiltCommand;
+}
+
+interface TmuxAttachCommand {
+  sessionName: string;
+  command: BuiltCommand;
+}
+
+interface TmuxAttachAllCommands {
+  sessionNames: string[];
+  commands: BuiltCommand[];
 }
 
 interface TmuxPostLaunchCommand {
@@ -1457,6 +1488,41 @@ function buildTmuxRenameCommand(session: HeadlessTmuxSession, targetName: string
   };
 }
 
+function buildTmuxAttachCommand(sessionName: string): TmuxAttachCommand {
+  return {
+    sessionName,
+    command: { command: "tmux", args: ["attach-session", "-t", sessionName] },
+  };
+}
+
+function buildTmuxAttachAllCommands(sessions: HeadlessTmuxSessionDetails[]): TmuxAttachAllCommands {
+  const sessionNames = sessions.map((session) => session.name);
+  if (sessionNames.length === 0) {
+    return { sessionNames, commands: [] };
+  }
+  if (sessionNames.length === 1) {
+    return { sessionNames, commands: [buildTmuxAttachCommand(sessionNames[0] as string).command] };
+  }
+
+  const aggregatorName = `headless-attach-${process.pid}`;
+  const attachShellCommand = (sessionName: string) =>
+    quoteCommand({ command: "env", args: ["-u", "TMUX", "tmux", "attach-session", "-t", sessionName] });
+  const [firstSession, ...remainingSessions] = sessionNames as [string, ...string[]];
+  return {
+    sessionNames,
+    commands: [
+      { command: "tmux", args: ["new-session", "-d", "-s", aggregatorName, attachShellCommand(firstSession)] },
+      ...remainingSessions.map((sessionName) => ({
+        command: "tmux",
+        args: ["split-window", "-t", aggregatorName, attachShellCommand(sessionName)],
+      })),
+      { command: "tmux", args: ["select-layout", "-t", aggregatorName, "tiled"] },
+      { command: "tmux", args: ["set-hook", "-t", aggregatorName, "client-detached", `kill-session -t ${aggregatorName}`] },
+      buildTmuxAttachCommand(aggregatorName).command,
+    ],
+  };
+}
+
 function validateHeadlessTmuxSessionName(sessionName: string | undefined): string {
   if (!sessionName) {
     throw new CliError("missing tmux session");
@@ -1472,7 +1538,23 @@ function validateHeadlessTmuxSession(sessionName: string | undefined): HeadlessT
   return parseHeadlessTmuxSession(name) as HeadlessTmuxSession;
 }
 
+function resolveDefaultAttachSessionName(sessions: HeadlessTmuxSessionDetails[]): string {
+  if (sessions.length === 0) {
+    throw new CliError("No active headless tmux sessions");
+  }
+  return sessions.reduce((latest, session) =>
+    session.lastActivityAt > latest.lastActivityAt ? session : latest,
+  ).name;
+}
+
 async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env): Promise<string> {
+  return renderHeadlessTmuxSessions(await listHeadlessTmuxSessionDetails(agent, env));
+}
+
+async function listHeadlessTmuxSessionDetails(
+  agent: AgentName | undefined,
+  env: Env,
+): Promise<HeadlessTmuxSessionDetails[]> {
   const result = await captureSimpleCommand(
     {
       command: "tmux",
@@ -1484,21 +1566,19 @@ async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env):
 
   if (result.code !== 0) {
     if (result.stderr.includes("no server running")) {
-      return renderHeadlessTmuxSessions([]);
+      return [];
     }
     throw new CliError(result.stderr.trim() || "could not list tmux sessions");
   }
 
   const waitingAfterMs = parseWaitingAfterMs(env);
-  const sessions = result.stdout
+  return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => parseHeadlessTmuxSessionDetails(line, waitingAfterMs))
     .filter((session): session is HeadlessTmuxSessionDetails => Boolean(session))
     .filter((session) => agent === undefined || session.agent === agent);
-
-  return renderHeadlessTmuxSessions(sessions);
 }
 
 async function headlessTmuxSessionExists(sessionName: string, env: Env): Promise<boolean> {
@@ -1602,6 +1682,29 @@ async function executeSimpleCommand(
   });
 }
 
+async function executeInteractiveCommand(
+  command: BuiltCommand,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    const child = spawn(command.command, command.args, {
+      cwd,
+      env: commandEnv(env, command) as NodeJS.ProcessEnv,
+      stdio: "inherit",
+    });
+
+    child.on("error", (error) => {
+      stderr(`${error.message}\n`);
+      resolve(127);
+    });
+    child.on("close", (code, signal) => {
+      resolve(signal ? 1 : (code ?? 1));
+    });
+  });
+}
+
 async function waitForDelay(ms: number): Promise<void> {
   if (ms <= 0) {
     return;
@@ -1650,6 +1753,32 @@ async function executeTmuxRenameCommand(
   stderr: (text: string) => void,
 ): Promise<number> {
   return await executeSimpleCommand(command.command, undefined, env, stderr);
+}
+
+async function executeTmuxAttachCommand(
+  command: TmuxAttachCommand,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await executeInteractiveCommand(command.command, undefined, env, stderr);
+}
+
+async function executeTmuxAttachAllCommands(
+  commands: TmuxAttachAllCommands,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  const finalCommand = commands.commands.at(-1);
+  if (!finalCommand) {
+    return 0;
+  }
+  for (const command of commands.commands.slice(0, -1)) {
+    const code = await executeSimpleCommand(command, undefined, env, stderr);
+    if (code !== 0) {
+      return code;
+    }
+  }
+  return await executeInteractiveCommand(finalCommand, undefined, env, stderr);
 }
 
 function effectiveCoordination(parsed: ParsedArgs): CoordinationMode {
@@ -1852,6 +1981,113 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         throw new CliError("docker not found on PATH");
       }
       return await executeSimpleCommand(command, undefined, env, stderr, stdout);
+    }
+    if (parsed.attach) {
+      if (parsed.docker) {
+        throw new CliError("--docker cannot be used with attach");
+      }
+      if (parsed.modal) {
+        throw new CliError("--modal cannot be used with attach");
+      }
+      if (parsed.tmux) {
+        throw new CliError("--tmux cannot be used with attach");
+      }
+      if (parsed.json) {
+        throw new CliError("--json cannot be used with attach");
+      }
+      if (parsed.debug) {
+        throw new CliError("--debug cannot be used with attach");
+      }
+      if (parsed.usage) {
+        throw new CliError("--usage cannot be used with attach");
+      }
+      if (parsed.tmuxName !== undefined) {
+        throw new CliError("--name cannot be used with attach");
+      }
+      if (parsed.sessionAlias !== undefined) {
+        throw new CliError("--session cannot be used with attach");
+      }
+      if (parsed.prompt !== undefined) {
+        throw new CliError("--prompt cannot be used with attach");
+      }
+      if (parsed.promptFile !== undefined) {
+        throw new CliError("--prompt-file cannot be used with attach");
+      }
+      if (parsed.model !== undefined) {
+        throw new CliError("--model cannot be used with attach");
+      }
+      if (parsed.reasoningEffort !== undefined) {
+        throw new CliError("--reasoning-effort cannot be used with attach");
+      }
+      if (parsed.allow !== undefined) {
+        throw new CliError("--allow cannot be used with attach");
+      }
+      if (parsed.workDir !== undefined) {
+        throw new CliError("--work-dir cannot be used with attach");
+      }
+      if (parsed.role !== undefined) {
+        throw new CliError("--role cannot be used with attach");
+      }
+      if (parsed.coordination !== undefined) {
+        throw new CliError("--coordination cannot be used with attach");
+      }
+      if (parsed.runId !== undefined) {
+        throw new CliError("--run cannot be used with attach");
+      }
+      if (parsed.nodeId !== undefined) {
+        throw new CliError("--node cannot be used with attach");
+      }
+      if (parsed.dependsOn.length > 0) {
+        throw new CliError("--depends-on cannot be used with attach");
+      }
+      if (parsed.teamSpecs.length > 0) {
+        throw new CliError("--team cannot be used with attach");
+      }
+      if (parsed.check) {
+        throw new CliError("--check cannot be used with attach");
+      }
+      if (parsed.list) {
+        throw new CliError("--list cannot be used with attach");
+      }
+      if (parsed.showConfig) {
+        throw new CliError("--show-config cannot be used with attach");
+      }
+      if (hasDockerOptions(parsed)) {
+        throw new CliError("--docker-* options cannot be used with attach");
+      }
+      if (hasModalOptions(parsed)) {
+        throw new CliError("--modal-* options cannot be used with attach");
+      }
+      if (parsed.attachSession !== undefined && parsed.attachAll) {
+        throw new CliError("session name cannot be used with attach --all");
+      }
+
+      if (parsed.attachAll) {
+        const tmuxCommands = buildTmuxAttachAllCommands(await listHeadlessTmuxSessionDetails(undefined, env));
+        if (tmuxCommands.commands.length === 0) {
+          throw new CliError("No active headless tmux sessions");
+        }
+        if (parsed.printCommand) {
+          for (const command of tmuxCommands.commands) {
+            stdout(`${quoteCommand(command)}\n`);
+          }
+          return 0;
+        }
+        return await executeTmuxAttachAllCommands(tmuxCommands, env, stderr);
+      }
+
+      const targetSessionName = parsed.attachSession
+        ? validateHeadlessTmuxSessionName(parsed.attachSession)
+        : resolveDefaultAttachSessionName(await listHeadlessTmuxSessionDetails(undefined, env));
+      const tmuxCommand = buildTmuxAttachCommand(targetSessionName);
+      if (parsed.printCommand) {
+        stdout(`${quoteCommand(tmuxCommand.command)}\n`);
+        return 0;
+      }
+      return await executeTmuxAttachCommand(tmuxCommand, env, stderr);
+    }
+    if (parsed.attachAll) {
+      throw new CliError("--all can only be used with attach");
     }
     if (parsed.rename) {
       if (parsed.docker) {

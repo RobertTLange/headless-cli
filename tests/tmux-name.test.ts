@@ -163,3 +163,161 @@ test("CLI send accepts named headless tmux sessions", async () => {
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("CLI attach prints a single session attach command", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["attach", "headless-codex-work", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.join(""), "tmux attach-session -t headless-codex-work\n");
+});
+
+test("CLI attach attaches the only active headless tmux session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "tmux.jsonl");
+    await installFakeTmux(
+      binDir,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args.join(' ') === 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') {",
+        "  process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\nother\\t1700000000\\t1700000000\\t0\\n');",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const code = await runCli(["attach"], {
+      env: { ...process.env, HEADLESS_TMUX_CAPTURE: captureFile, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: () => undefined,
+    });
+
+    assert.equal(code, 0);
+    assert.deepEqual(readTmuxCalls(captureFile), [
+      ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}"],
+      ["attach-session", "-t", "headless-codex-work"],
+    ]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI attach uses the most recently active headless tmux session by default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "tmux.jsonl");
+    await installFakeTmux(
+      binDir,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args.join(' ') === 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') {",
+        "  process.stdout.write('headless-codex-work\\t1700000000\\t1700000000\\t0\\nheadless-opencode-review\\t1700000000\\t4102444800\\t0\\n');",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const code = await runCli(["attach"], {
+      env: { ...process.env, HEADLESS_TMUX_CAPTURE: captureFile, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: () => undefined,
+    });
+
+    assert.equal(code, 0);
+    assert.deepEqual(readTmuxCalls(captureFile), [
+      ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}"],
+      ["attach-session", "-t", "headless-opencode-review"],
+    ]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI attach --all prints tiled aggregator commands", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await installFakeTmux(
+      binDir,
+      [
+        "#!/usr/bin/env node",
+        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+        "process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\nheadless-opencode-review\\t1700000000\\t1700000000\\t0\\n');",
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["attach", "--all", "--print-command"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^tmux new-session -d -s headless-attach-\d+ /);
+    assert.match(stdout.join(""), /\ntmux split-window -t headless-attach-\d+ /);
+    assert.match(stdout.join(""), /\ntmux select-layout -t headless-attach-\d+ tiled/);
+    assert.match(stdout.join(""), /\ntmux set-hook -t headless-attach-\d+ client-detached 'kill-session -t headless-attach-\d+'/);
+    assert.match(stdout.join(""), /\ntmux attach-session -t headless-attach-\d+\n$/);
+    assert.match(stdout.join(""), /env -u TMUX tmux attach-session -t headless-codex-work/);
+    assert.match(stdout.join(""), /env -u TMUX tmux attach-session -t headless-opencode-review/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI attach --all attaches directly when only one session exists", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await installFakeTmux(
+      binDir,
+      [
+        "#!/usr/bin/env node",
+        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+        "process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\n');",
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["attach", "--all", "--print-command"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "tmux attach-session -t headless-codex-work\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI attach rejects non-headless session names", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["attach", "other-session"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /not a headless tmux session/);
+});
+
+test("CLI attach rejects execution options", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["attach", "headless-codex-work", "--prompt", "hello"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /--prompt cannot be used with attach/);
+});
