@@ -1986,6 +1986,19 @@ test("CLI help lists usage output option", async () => {
   assert.match(stdout.join(""), /--usage/);
 });
 
+test("CLI help explains what Headless accomplishes", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["--help"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(
+    stdout.join(""),
+    /Headless gives coding-agent CLIs one shared interface for prompts, models, reasoning effort, output modes, sessions, and work directories\.\nIt runs supported agents locally, in tmux, in Docker, or in Modal while preserving each backend's native execution behavior\.\nUse it to launch one-off tasks, resume named sessions, or coordinate multi-agent runs from scripts and terminals\./,
+  );
+});
+
 test("CLI --version prints package version", async () => {
   const stdout: string[] = [];
   const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
