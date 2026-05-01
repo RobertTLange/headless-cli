@@ -543,6 +543,75 @@ test("exposes config metadata", () => {
   });
 });
 
+test("CLI --show-config renders agent config and effective defaults as a table", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--show-config"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^\+[-+]+\+$/m);
+    assert.match(output, /^\| Field\s+\| Value\s+\|$/m);
+    assert.match(output, /^\| Agent\s+\| codex\s+\|$/m);
+    assert.match(output, /^\| Model\s+\| gpt-5\.5\s+\|$/m);
+    assert.match(output, /^\| Effort\s+\| -\s+\|$/m);
+    assert.match(output, /^\| Config dir\s+\| \.codex\s+\|$/m);
+    assert.match(output, /^\| Workspace config dir\s+\| \.codex\s+\|$/m);
+    assert.match(output, /^\| Seed path\s+\| \.codex\/auth\.json\s+\|$/m);
+    assert.match(output, /^\| Seed path\s+\| \.codex\/config\.toml\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --show-config displays CLI model and effort overrides", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["cursor", "--show-config", "--model", "gpt-custom", "--effort", "high"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^\| Agent\s+\| cursor\s+\|$/m);
+    assert.match(output, /^\| Model\s+\| gpt-custom\s+\|$/m);
+    assert.match(output, /^\| Effort\s+\| high\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --show-config resolves env above headless config and built-in defaults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[agents.codex]", 'model = "gpt-config"', 'reasoning_effort = "xhigh"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--show-config"], {
+      env: { ...process.env, CODEX_MODEL: "gpt-env", HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^\| Model\s+\| gpt-env\s+\|$/m);
+    assert.match(output, /^\| Effort\s+\| xhigh\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("quotes commands for print-command output", () => {
   assert.equal(
     quoteCommand({ command: "codex", args: ["exec", "hello world"], stdinFile: "/tmp/prompt file.md" }),

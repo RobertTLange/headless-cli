@@ -30,7 +30,13 @@ import {
   listAgents,
 } from "./agents.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
-import { loadHeadlessConfig, resolveInvocationDefaults, type HeadlessConfig, type InvocationDefaults } from "./config.js";
+import {
+  BUILTIN_AGENT_DEFAULTS,
+  loadHeadlessConfig,
+  resolveInvocationDefaults,
+  type HeadlessConfig,
+  type InvocationDefaults,
+} from "./config.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -69,6 +75,7 @@ import {
 } from "./runs.js";
 import { readStoredSession, sessionStorePath, writeStoredSession } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
+import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
   composeRolePrompt,
   isCoordinationMode,
@@ -594,16 +601,41 @@ function shouldStreamRunStatus(parsed: ParsedArgs): boolean {
   );
 }
 
-function renderConfig(agent: AgentName): string {
+function renderConfig(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+): string {
   const config = getAgentConfig(agent);
-  return [
-    `name=${config.name}`,
-    `config_rel_dir=${config.configRelDir}`,
-    `workspace_config_rel_dir=${config.workspaceConfigRelDir}`,
-    "seed_paths:",
-    ...config.seedPaths.map((path) => `  ${path}`),
-    "",
-  ].join("\n");
+  const rows: Array<[string, string | TableCell]> = [
+    ["Agent", cell(config.name, "magenta")],
+    ["Model", valueCell(defaults.model, "magenta")],
+    ["Effort", valueCell(defaults.reasoningEffort, "yellow")],
+    ["Config dir", cell(config.configRelDir, "cyan")],
+    ["Workspace config dir", cell(config.workspaceConfigRelDir, "cyan")],
+    ...config.seedPaths.map((path): [string, TableCell] => ["Seed path", cell(path, "cyan")]),
+  ];
+  return renderBoxTable({ columns: ["Field", "Value"], rows }, { env });
+}
+
+function valueCell(value: string | undefined, color: "magenta" | "yellow"): TableCell {
+  return value ? cell(value, color) : cell("-", "dim");
+}
+
+function resolveDisplayedDefaults(
+  agent: AgentName,
+  role: Role | undefined,
+  options: InvocationDefaults,
+  env: Env,
+  config: HeadlessConfig,
+): InvocationDefaults {
+  const resolved = resolveInvocationDefaults(agent, role, options, env, config);
+  const builtin = BUILTIN_AGENT_DEFAULTS[agent];
+  const usesBuiltinModel = resolved.model === undefined;
+  return {
+    model: resolved.model ?? builtin.model,
+    reasoningEffort: resolved.reasoningEffort ?? (usesBuiltinModel ? builtin.reasoningEffort : undefined),
+  };
 }
 
 function packageRoot(): string {
@@ -1995,7 +2027,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--team requires --role orchestrator");
     }
     if (parsed.showConfig) {
-      stdout(renderConfig(parsed.agent));
+      try {
+        const config = loadHeadlessConfig(env);
+        const defaults = resolveDisplayedDefaults(
+          parsed.agent,
+          parsed.role,
+          { model: parsed.model, reasoningEffort: parsed.reasoningEffort, allow: parsed.allow },
+          env,
+          config,
+        );
+        stdout(renderConfig(parsed.agent, defaults, env));
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
       return 0;
     }
 

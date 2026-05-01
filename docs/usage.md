@@ -193,7 +193,7 @@ Options:
 - `--check`: check supported agent binaries, versions, Docker status, and local API/OAuth credential signals.
 - `--list`: list active tmux sessions created by Headless, including state and timestamps.
 - `--print-command`: print the shell command without executing it.
-- `--show-config`: print config paths and auth seed paths for an agent.
+- `--show-config`: print the selected agent's effective model, reasoning effort, config paths, and auth seed paths.
 - `--help`: show usage.
 
 See [orchestration.md](orchestration.md) for `--role`, `--run`, `--node`, `--team`, and `headless run`.
