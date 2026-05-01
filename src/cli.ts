@@ -21,6 +21,7 @@ import {
   buildInteractiveAgentCommand,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OPENCODE_MODEL,
+  DEFAULT_PI_MODEL,
   cursorModel,
   piModelSpec,
   getAgentConfig,
@@ -29,7 +30,13 @@ import {
   listAgents,
 } from "./agents.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
-import { loadHeadlessConfig, resolveInvocationDefaults, type HeadlessConfig, type InvocationDefaults } from "./config.js";
+import {
+  BUILTIN_AGENT_DEFAULTS,
+  loadHeadlessConfig,
+  resolveInvocationDefaults,
+  type HeadlessConfig,
+  type InvocationDefaults,
+} from "./config.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -68,6 +75,7 @@ import {
 } from "./runs.js";
 import { readStoredSession, sessionStorePath, writeStoredSession } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
+import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
   composeRolePrompt,
   isCoordinationMode,
@@ -83,6 +91,9 @@ import { expandTeamSpecs } from "./teams.js";
 import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
+  attach: boolean;
+  attachSession?: string;
+  attachAll: boolean;
   send: boolean;
   sendSession?: string;
   rename: boolean;
@@ -139,6 +150,7 @@ interface CliDeps {
   env?: Env;
   stdin?: string;
   stdinIsTTY?: boolean;
+  stderrIsTTY?: boolean;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
 }
@@ -155,9 +167,14 @@ function usage(): string {
     "Usage: headless [agent] (--prompt <text> | --prompt-file <path> | --check | --list | --show-config) [options]",
     "       headless docker doctor [options]",
     "       headless docker build [options]",
+    "       headless attach [session-name] [--all]",
     "       headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]",
     "       headless rename <session-name> <new-name> [options]",
     "       headless run <list|view|mark|message|wait> [args] [options]",
+    "",
+    "Headless gives coding-agent CLIs one shared interface for prompts, models, reasoning effort, output modes, sessions, and work directories.",
+    "It runs supported agents locally, in tmux, in Docker, or in Modal while preserving each backend's native execution behavior.",
+    "Use it to launch one-off tasks, resume named sessions, or coordinate multi-agent runs from scripts and terminals.",
     "",
     `Agents: ${listAgents().join(", ")}`,
     "",
@@ -194,6 +211,8 @@ function usage(): string {
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --name <name>        Use a managed tmux session name with --tmux.",
     "  --session <name>     Start or resume a named Headless session.",
+    "  attach [session]     Attach to one or all active headless tmux sessions.",
+    "  --all                With attach, tile all active headless tmux sessions.",
     "  send <session-name>  Send a message to an existing headless tmux session.",
     "  rename <session> <name> Rename an existing headless tmux session.",
     "  run list            List local coordinated runs.",
@@ -203,7 +222,7 @@ function usage(): string {
     "  run wait <run>      Wait until no nodes are busy.",
     "  docker doctor       Check Docker setup and image availability.",
     "  docker build        Build the local Docker image tag headless-local:dev.",
-    "  --check              Check installed agent binaries, versions, and local API/OAuth credentials.",
+    "  --check              Check agents, versions, auth, configured models/effort, and Docker.",
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
@@ -217,6 +236,8 @@ function usage(): string {
 
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
+    attach: false,
+    attachAll: false,
     send: false,
     rename: false,
     runCommandAsync: false,
@@ -260,7 +281,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.help = true;
     return parsed;
   }
-  if (first === "send") {
+  if (first === "attach") {
+    parsed.attach = true;
+  } else if (first === "send") {
     parsed.send = true;
   } else if (first === "rename") {
     parsed.rename = true;
@@ -379,6 +402,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--tmux":
         parsed.tmux = true;
         break;
+      case "--all":
+        parsed.attachAll = true;
+        break;
       case "--check":
         parsed.check = true;
         break;
@@ -412,6 +438,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         }
         break;
       default:
+        if (parsed.attach && arg && !arg.startsWith("-") && parsed.attachSession === undefined) {
+          parsed.attachSession = arg;
+          break;
+        }
         if (parsed.send && arg && !arg.startsWith("-") && parsed.sendSession === undefined) {
           parsed.sendSession = arg;
           break;
@@ -581,6 +611,10 @@ function hasModalOptions(parsed: ParsedArgs): boolean {
   );
 }
 
+function hasDockerOptions(parsed: ParsedArgs): boolean {
+  return parsed.dockerImage !== undefined || parsed.dockerArgs.length > 0 || parsed.dockerEnv.length > 0;
+}
+
 function shouldStreamRunStatus(parsed: ParsedArgs): boolean {
   return (
     parsed.runId !== undefined &&
@@ -592,16 +626,41 @@ function shouldStreamRunStatus(parsed: ParsedArgs): boolean {
   );
 }
 
-function renderConfig(agent: AgentName): string {
+function renderConfig(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+): string {
   const config = getAgentConfig(agent);
-  return [
-    `name=${config.name}`,
-    `config_rel_dir=${config.configRelDir}`,
-    `workspace_config_rel_dir=${config.workspaceConfigRelDir}`,
-    "seed_paths:",
-    ...config.seedPaths.map((path) => `  ${path}`),
-    "",
-  ].join("\n");
+  const rows: Array<[string, string | TableCell]> = [
+    ["Agent", cell(config.name, "magenta")],
+    ["Model", valueCell(defaults.model, "magenta")],
+    ["Effort", valueCell(defaults.reasoningEffort, "yellow")],
+    ["Config dir", cell(config.configRelDir, "cyan")],
+    ["Workspace config dir", cell(config.workspaceConfigRelDir, "cyan")],
+    ...config.seedPaths.map((path): [string, TableCell] => ["Seed path", cell(path, "cyan")]),
+  ];
+  return renderBoxTable({ columns: ["Field", "Value"], rows }, { env });
+}
+
+function valueCell(value: string | undefined, color: "magenta" | "yellow"): TableCell {
+  return value ? cell(value, color) : cell("-", "dim");
+}
+
+function resolveDisplayedDefaults(
+  agent: AgentName,
+  role: Role | undefined,
+  options: InvocationDefaults,
+  env: Env,
+  config: HeadlessConfig,
+): InvocationDefaults {
+  const resolved = resolveInvocationDefaults(agent, role, options, env, config);
+  const builtin = BUILTIN_AGENT_DEFAULTS[agent];
+  const usesBuiltinModel = resolved.model === undefined;
+  return {
+    model: resolved.model ?? builtin.model,
+    reasoningEffort: resolved.reasoningEffort ?? (usesBuiltinModel ? builtin.reasoningEffort : undefined),
+  };
 }
 
 function packageRoot(): string {
@@ -778,6 +837,16 @@ interface TmuxRenameCommand {
   command: BuiltCommand;
 }
 
+interface TmuxAttachCommand {
+  sessionName: string;
+  command: BuiltCommand;
+}
+
+interface TmuxAttachAllCommands {
+  sessionNames: string[];
+  commands: BuiltCommand[];
+}
+
 interface TmuxPostLaunchCommand {
   command: BuiltCommand;
   delayMs: number;
@@ -803,6 +872,132 @@ interface ExecuteCommandOptions {
   stdout: (text: string) => void;
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
+}
+
+interface WaitingSpinner {
+  clear(): void;
+  start(): void;
+  stop(): void;
+}
+
+const waitingSpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const waitingSpinnerDotCounts = [0, 1, 2, 3, 2, 1];
+const waitingSpinnerDotFrameHold = 2;
+const waitingSpinnerVerbs = [
+  "token churning",
+  "context folding",
+  "plan shaping",
+  "prompt weaving",
+  "attention drifting",
+  "logits simmering",
+  "context packing",
+  "reasoning loops",
+  "trace reading",
+  "tool scouting",
+  "clue chasing",
+  "thread finding",
+  "state sorting",
+  "memory paging",
+  "diff sniffing",
+  "patch sizing",
+  "flops spinning",
+  "decoder humming",
+  "entropy nudging",
+  "answer brewing",
+  "signal finding",
+  "thought stacking",
+  "path tracing",
+  "output polishing",
+];
+
+function randomWaitingSpinnerVerb(): string {
+  return waitingSpinnerVerbs[Math.floor(Math.random() * waitingSpinnerVerbs.length)] ?? waitingSpinnerVerbs[0];
+}
+
+function createWaitingSpinner(label: string, write: (text: string) => void): WaitingSpinner {
+  const verb = randomWaitingSpinnerVerb();
+  let frameIndex = 0;
+  let dotIndex = 0;
+  let dotFrameIndex = 0;
+  let timer: NodeJS.Timeout | undefined;
+  let active = false;
+
+  const clear = () => {
+    write("\r\u001b[2K");
+  };
+  const render = () => {
+    const frame = waitingSpinnerFrames[frameIndex] ?? waitingSpinnerFrames[0];
+    const dots = ".".repeat(waitingSpinnerDotCounts[dotIndex] ?? 1);
+    write(`\r\u001b[2K${frame} ${label} ${verb} ${dots}`);
+    frameIndex = (frameIndex + 1) % waitingSpinnerFrames.length;
+    dotFrameIndex = (dotFrameIndex + 1) % waitingSpinnerDotFrameHold;
+    if (dotFrameIndex === 0) {
+      dotIndex = (dotIndex + 1) % waitingSpinnerDotCounts.length;
+    }
+  };
+
+  return {
+    clear,
+    start() {
+      if (active) {
+        return;
+      }
+      active = true;
+      render();
+      timer = setInterval(render, 120);
+    },
+    stop() {
+      if (!active) {
+        return;
+      }
+      active = false;
+      if (timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+      clear();
+    },
+  };
+}
+
+function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: Env): string {
+  if (agent === "codex") {
+    return defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5";
+  }
+  if (agent === "claude") {
+    return defaults.model ?? "claude-opus-4-6";
+  }
+  if (agent === "cursor") {
+    return cursorModel(defaults);
+  }
+  if (agent === "gemini") {
+    return defaults.model ?? DEFAULT_GEMINI_MODEL;
+  }
+  if (agent === "opencode") {
+    return defaults.model ?? DEFAULT_OPENCODE_MODEL;
+  }
+  if (agent === "pi") {
+    return defaults.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
+  }
+  return defaults.model ?? "default";
+}
+
+function paintWaitingSpinnerPart(text: string, colorCode: string, enabled: boolean): string {
+  return enabled ? `\u001b[${colorCode}m${text}\u001b[0m` : text;
+}
+
+function waitingSpinnerLabel(agent: AgentName, defaults: InvocationDefaults, env: Env, color: boolean): string {
+  const model = spinnerModelLabel(agent, defaults, env);
+  const reasoning = defaults.reasoningEffort ?? "default";
+  return [
+    "[",
+    paintWaitingSpinnerPart(agent, "36", color),
+    "-",
+    paintWaitingSpinnerPart(model, "35", color),
+    "-",
+    paintWaitingSpinnerPart(reasoning, "33", color),
+    "]",
+  ].join("");
 }
 
 interface SessionPlan {
@@ -1267,7 +1462,7 @@ function renderHeadlessTmuxSessions(sessions: HeadlessTmuxSessionDetails[]): str
       session.state,
       session.createdAt,
       session.lastActivityAt,
-      `tmux attach-session -t ${session.name}`,
+      quoteCommand(buildTmuxAttachCommand(session.name).command),
     ]),
   );
 }
@@ -1293,6 +1488,41 @@ function buildTmuxRenameCommand(session: HeadlessTmuxSession, targetName: string
   };
 }
 
+function buildTmuxAttachCommand(sessionName: string): TmuxAttachCommand {
+  return {
+    sessionName,
+    command: { command: "env", args: ["-u", "TMUX", "tmux", "attach-session", "-t", sessionName] },
+  };
+}
+
+function buildTmuxAttachAllCommands(sessions: HeadlessTmuxSessionDetails[]): TmuxAttachAllCommands {
+  const sessionNames = sessions.map((session) => session.name);
+  if (sessionNames.length === 0) {
+    return { sessionNames, commands: [] };
+  }
+  if (sessionNames.length === 1) {
+    return { sessionNames, commands: [buildTmuxAttachCommand(sessionNames[0] as string).command] };
+  }
+
+  const aggregatorName = `headless-attach-${process.pid}`;
+  const attachShellCommand = (sessionName: string) =>
+    quoteCommand({ command: "env", args: ["-u", "TMUX", "tmux", "attach-session", "-t", sessionName] });
+  const [firstSession, ...remainingSessions] = sessionNames as [string, ...string[]];
+  return {
+    sessionNames,
+    commands: [
+      { command: "tmux", args: ["new-session", "-d", "-s", aggregatorName, attachShellCommand(firstSession)] },
+      ...remainingSessions.map((sessionName) => ({
+        command: "tmux",
+        args: ["split-window", "-t", aggregatorName, attachShellCommand(sessionName)],
+      })),
+      { command: "tmux", args: ["select-layout", "-t", aggregatorName, "tiled"] },
+      { command: "tmux", args: ["set-hook", "-t", aggregatorName, "client-detached", `kill-session -t ${aggregatorName}`] },
+      buildTmuxAttachCommand(aggregatorName).command,
+    ],
+  };
+}
+
 function validateHeadlessTmuxSessionName(sessionName: string | undefined): string {
   if (!sessionName) {
     throw new CliError("missing tmux session");
@@ -1308,7 +1538,23 @@ function validateHeadlessTmuxSession(sessionName: string | undefined): HeadlessT
   return parseHeadlessTmuxSession(name) as HeadlessTmuxSession;
 }
 
+function resolveDefaultAttachSessionName(sessions: HeadlessTmuxSessionDetails[]): string {
+  if (sessions.length === 0) {
+    throw new CliError("No active headless tmux sessions");
+  }
+  return sessions.reduce((latest, session) =>
+    session.lastActivityAt > latest.lastActivityAt ? session : latest,
+  ).name;
+}
+
 async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env): Promise<string> {
+  return renderHeadlessTmuxSessions(await listHeadlessTmuxSessionDetails(agent, env));
+}
+
+async function listHeadlessTmuxSessionDetails(
+  agent: AgentName | undefined,
+  env: Env,
+): Promise<HeadlessTmuxSessionDetails[]> {
   const result = await captureSimpleCommand(
     {
       command: "tmux",
@@ -1320,21 +1566,19 @@ async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env):
 
   if (result.code !== 0) {
     if (result.stderr.includes("no server running")) {
-      return renderHeadlessTmuxSessions([]);
+      return [];
     }
     throw new CliError(result.stderr.trim() || "could not list tmux sessions");
   }
 
   const waitingAfterMs = parseWaitingAfterMs(env);
-  const sessions = result.stdout
+  return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => parseHeadlessTmuxSessionDetails(line, waitingAfterMs))
     .filter((session): session is HeadlessTmuxSessionDetails => Boolean(session))
     .filter((session) => agent === undefined || session.agent === agent);
-
-  return renderHeadlessTmuxSessions(sessions);
 }
 
 async function headlessTmuxSessionExists(sessionName: string, env: Env): Promise<boolean> {
@@ -1438,6 +1682,29 @@ async function executeSimpleCommand(
   });
 }
 
+async function executeInteractiveCommand(
+  command: BuiltCommand,
+  cwd: string | undefined,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    const child = spawn(command.command, command.args, {
+      cwd,
+      env: commandEnv(env, command) as NodeJS.ProcessEnv,
+      stdio: "inherit",
+    });
+
+    child.on("error", (error) => {
+      stderr(`${error.message}\n`);
+      resolve(127);
+    });
+    child.on("close", (code, signal) => {
+      resolve(signal ? 1 : (code ?? 1));
+    });
+  });
+}
+
 async function waitForDelay(ms: number): Promise<void> {
   if (ms <= 0) {
     return;
@@ -1486,6 +1753,32 @@ async function executeTmuxRenameCommand(
   stderr: (text: string) => void,
 ): Promise<number> {
   return await executeSimpleCommand(command.command, undefined, env, stderr);
+}
+
+async function executeTmuxAttachCommand(
+  command: TmuxAttachCommand,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  return await executeInteractiveCommand(command.command, undefined, env, stderr);
+}
+
+async function executeTmuxAttachAllCommands(
+  commands: TmuxAttachAllCommands,
+  env: Env,
+  stderr: (text: string) => void,
+): Promise<number> {
+  const finalCommand = commands.commands.at(-1);
+  if (!finalCommand) {
+    return 0;
+  }
+  for (const command of commands.commands.slice(0, -1)) {
+    const code = await executeSimpleCommand(command, undefined, env, stderr);
+    if (code !== 0) {
+      return code;
+    }
+  }
+  return await executeInteractiveCommand(finalCommand, undefined, env, stderr);
 }
 
 function effectiveCoordination(parsed: ParsedArgs): CoordinationMode {
@@ -1598,6 +1891,7 @@ async function executeStoredNode(
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
+  const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env = deps.env ?? process.env;
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
 
@@ -1687,6 +1981,113 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         throw new CliError("docker not found on PATH");
       }
       return await executeSimpleCommand(command, undefined, env, stderr, stdout);
+    }
+    if (parsed.attach) {
+      if (parsed.docker) {
+        throw new CliError("--docker cannot be used with attach");
+      }
+      if (parsed.modal) {
+        throw new CliError("--modal cannot be used with attach");
+      }
+      if (parsed.tmux) {
+        throw new CliError("--tmux cannot be used with attach");
+      }
+      if (parsed.json) {
+        throw new CliError("--json cannot be used with attach");
+      }
+      if (parsed.debug) {
+        throw new CliError("--debug cannot be used with attach");
+      }
+      if (parsed.usage) {
+        throw new CliError("--usage cannot be used with attach");
+      }
+      if (parsed.tmuxName !== undefined) {
+        throw new CliError("--name cannot be used with attach");
+      }
+      if (parsed.sessionAlias !== undefined) {
+        throw new CliError("--session cannot be used with attach");
+      }
+      if (parsed.prompt !== undefined) {
+        throw new CliError("--prompt cannot be used with attach");
+      }
+      if (parsed.promptFile !== undefined) {
+        throw new CliError("--prompt-file cannot be used with attach");
+      }
+      if (parsed.model !== undefined) {
+        throw new CliError("--model cannot be used with attach");
+      }
+      if (parsed.reasoningEffort !== undefined) {
+        throw new CliError("--reasoning-effort cannot be used with attach");
+      }
+      if (parsed.allow !== undefined) {
+        throw new CliError("--allow cannot be used with attach");
+      }
+      if (parsed.workDir !== undefined) {
+        throw new CliError("--work-dir cannot be used with attach");
+      }
+      if (parsed.role !== undefined) {
+        throw new CliError("--role cannot be used with attach");
+      }
+      if (parsed.coordination !== undefined) {
+        throw new CliError("--coordination cannot be used with attach");
+      }
+      if (parsed.runId !== undefined) {
+        throw new CliError("--run cannot be used with attach");
+      }
+      if (parsed.nodeId !== undefined) {
+        throw new CliError("--node cannot be used with attach");
+      }
+      if (parsed.dependsOn.length > 0) {
+        throw new CliError("--depends-on cannot be used with attach");
+      }
+      if (parsed.teamSpecs.length > 0) {
+        throw new CliError("--team cannot be used with attach");
+      }
+      if (parsed.check) {
+        throw new CliError("--check cannot be used with attach");
+      }
+      if (parsed.list) {
+        throw new CliError("--list cannot be used with attach");
+      }
+      if (parsed.showConfig) {
+        throw new CliError("--show-config cannot be used with attach");
+      }
+      if (hasDockerOptions(parsed)) {
+        throw new CliError("--docker-* options cannot be used with attach");
+      }
+      if (hasModalOptions(parsed)) {
+        throw new CliError("--modal-* options cannot be used with attach");
+      }
+      if (parsed.attachSession !== undefined && parsed.attachAll) {
+        throw new CliError("session name cannot be used with attach --all");
+      }
+
+      if (parsed.attachAll) {
+        const tmuxCommands = buildTmuxAttachAllCommands(await listHeadlessTmuxSessionDetails(undefined, env));
+        if (tmuxCommands.commands.length === 0) {
+          throw new CliError("No active headless tmux sessions");
+        }
+        if (parsed.printCommand) {
+          for (const command of tmuxCommands.commands) {
+            stdout(`${quoteCommand(command)}\n`);
+          }
+          return 0;
+        }
+        return await executeTmuxAttachAllCommands(tmuxCommands, env, stderr);
+      }
+
+      const targetSessionName = parsed.attachSession
+        ? validateHeadlessTmuxSessionName(parsed.attachSession)
+        : resolveDefaultAttachSessionName(await listHeadlessTmuxSessionDetails(undefined, env));
+      const tmuxCommand = buildTmuxAttachCommand(targetSessionName);
+      if (parsed.printCommand) {
+        stdout(`${quoteCommand(tmuxCommand.command)}\n`);
+        return 0;
+      }
+      return await executeTmuxAttachCommand(tmuxCommand, env, stderr);
+    }
+    if (parsed.attachAll) {
+      throw new CliError("--all can only be used with attach");
     }
     if (parsed.rename) {
       if (parsed.docker) {
@@ -1778,7 +2179,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --check");
       }
-      stdout(renderAgentChecks(await checkAgents(env)));
+      try {
+        stdout(renderAgentChecks(await checkAgents(env)));
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
       stdout(renderDockerCheck(await checkDocker(env, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE)));
       return 0;
     }
@@ -1862,7 +2267,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--team requires --role orchestrator");
     }
     if (parsed.showConfig) {
-      stdout(renderConfig(parsed.agent));
+      try {
+        const config = loadHeadlessConfig(env);
+        const defaults = resolveDisplayedDefaults(
+          parsed.agent,
+          parsed.role,
+          { model: parsed.model, reasoningEffort: parsed.reasoningEffort, allow: parsed.allow },
+          env,
+          config,
+        );
+        stdout(renderConfig(parsed.agent, defaults, env));
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
       return 0;
     }
 
@@ -2044,7 +2461,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (code === 0) {
         stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
-        stdout(`attach: tmux attach-session -t ${tmuxCommands.sessionName}\n`);
+        stdout(`attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`);
       }
       return code;
     }
@@ -2128,7 +2545,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           write: stderr,
         })
       : undefined;
+    const waitingSpinner =
+      stdoutHandling === "capture" && stderrIsTTY && !statusReporter
+        ? createWaitingSpinner(waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined), stderr)
+        : undefined;
+    const displayStderr = (text: string) => {
+      waitingSpinner?.clear();
+      stderr(text);
+    };
     statusReporter?.start();
+    waitingSpinner?.start();
     let result: ExecuteResult | undefined;
     try {
       if (parsed.runId && parsed.role && nodeId) {
@@ -2153,7 +2579,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               commandStderr?.(text);
               const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
               if (filtered) {
-                stderr(filtered);
+                displayStderr(filtered);
               }
             },
             stdout: (text) => {
@@ -2164,7 +2590,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
             workDir: cwd ?? process.cwd(),
           })
-        : await executeCommand(parsed.agent, command, cwd, env, stderr, {
+        : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
             stdout,
             stdoutHandling,
             stdoutLog: commandStdoutLog,
@@ -2182,6 +2608,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
       }
     } finally {
+      waitingSpinner?.stop();
       statusReporter?.stop();
     }
     if (!result) {

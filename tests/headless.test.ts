@@ -543,6 +543,75 @@ test("exposes config metadata", () => {
   });
 });
 
+test("CLI --show-config renders agent config and effective defaults as a table", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--show-config"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^\+[-+]+\+$/m);
+    assert.match(output, /^\| Field\s+\| Value\s+\|$/m);
+    assert.match(output, /^\| Agent\s+\| codex\s+\|$/m);
+    assert.match(output, /^\| Model\s+\| gpt-5\.5\s+\|$/m);
+    assert.match(output, /^\| Effort\s+\| -\s+\|$/m);
+    assert.match(output, /^\| Config dir\s+\| \.codex\s+\|$/m);
+    assert.match(output, /^\| Workspace config dir\s+\| \.codex\s+\|$/m);
+    assert.match(output, /^\| Seed path\s+\| \.codex\/auth\.json\s+\|$/m);
+    assert.match(output, /^\| Seed path\s+\| \.codex\/config\.toml\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --show-config displays CLI model and effort overrides", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stdout: string[] = [];
+    const code = await runCli(["cursor", "--show-config", "--model", "gpt-custom", "--effort", "high"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^\| Agent\s+\| cursor\s+\|$/m);
+    assert.match(output, /^\| Model\s+\| gpt-custom\s+\|$/m);
+    assert.match(output, /^\| Effort\s+\| high\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --show-config resolves env above headless config and built-in defaults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      ["[agents.codex]", 'model = "gpt-config"', 'reasoning_effort = "xhigh"', ""].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--show-config"], {
+      env: { ...process.env, CODEX_MODEL: "gpt-env", HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const output = stdout.join("");
+    assert.equal(code, 0);
+    assert.match(output, /^\| Model\s+\| gpt-env\s+\|$/m);
+    assert.match(output, /^\| Effort\s+\| xhigh\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("quotes commands for print-command output", () => {
   assert.equal(
     quoteCommand({ command: "codex", args: ["exec", "hello world"], stdinFile: "/tmp/prompt file.md" }),
@@ -1372,6 +1441,88 @@ test("CLI prints final assistant message by default", async () => {
   }
 });
 
+test("CLI shows a waiting spinner on stderr for interactive captured runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => {",
+          "  console.log(JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "}, 180);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: { ...process.env, NO_COLOR: undefined, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+      stderrIsTTY: true,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    const output = stderr.join("");
+    assert.match(
+      output,
+      /\[\x1b\[36mpi\x1b\[0m-\x1b\[35mopenai-codex\/gpt-5\.5\x1b\[0m-\x1b\[33mdefault\x1b\[0m\] [a-z ]+ (?:\.{0,3})/,
+    );
+    assert.match(
+      output,
+      /\[\x1b\[36mpi\x1b\[0m-\x1b\[35mopenai-codex\/gpt-5\.5\x1b\[0m-\x1b\[33mdefault\x1b\[0m\] [a-z ]+ (?=\r|\x1b|$)/,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI does not show a waiting spinner for non-interactive captured runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => {",
+          "  console.log(JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "}, 180);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+      stderrIsTTY: false,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    assert.equal(stderr.join(""), "");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI does not pass inherited stdin to agent when prompt is an argument", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -1440,6 +1591,47 @@ test("CLI --json prints raw trace output", async () => {
 
     assert.equal(code, 0);
     assert.equal(stdout.join(""), trace);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json does not show a waiting spinner on stderr", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const trace = `${JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+    })}\n`;
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => {",
+          `  process.stdout.write(${JSON.stringify(trace)});`,
+          "}, 180);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello", "--json"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+      stderrIsTTY: true,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), trace);
+    assert.equal(stderr.join(""), "");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1792,6 +1984,19 @@ test("CLI help lists usage output option", async () => {
 
   assert.equal(code, 0);
   assert.match(stdout.join(""), /--usage/);
+});
+
+test("CLI help explains what Headless accomplishes", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["--help"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(
+    stdout.join(""),
+    /Headless gives coding-agent CLIs one shared interface for prompts, models, reasoning effort, output modes, sessions, and work directories\.\nIt runs supported agents locally, in tmux, in Docker, or in Modal while preserving each backend's native execution behavior\.\nUse it to launch one-off tasks, resume named sessions, or coordinate multi-agent runs from scripts and terminals\./,
+  );
 });
 
 test("CLI --version prints package version", async () => {
@@ -2187,8 +2392,8 @@ test("CLI --list lists active headless tmux sessions", async () => {
       stdout.join(""),
       [
         "NAME                   AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
-        "headless-codex-123     codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  tmux attach-session -t headless-codex-123",
-        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-456",
+        "headless-codex-123     codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  env -u TMUX tmux attach-session -t headless-codex-123",
+        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  env -u TMUX tmux attach-session -t headless-opencode-456",
         "",
       ].join("\n"),
     );
@@ -2226,7 +2431,7 @@ test("CLI agent --list filters active headless tmux sessions by agent", async ()
       stdout.join(""),
       [
         "NAME                   AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
-        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-456",
+        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  env -u TMUX tmux attach-session -t headless-opencode-456",
         "",
       ].join("\n"),
     );

@@ -64,6 +64,7 @@ headless codex --prompt "Continue the fix" --session bughunt
 
 # Launch an interactive tmux session.
 headless codex --prompt "Fix the failing tests" --tmux
+headless attach --all
 
 # Validate local setup.
 headless --check
@@ -113,3 +114,10 @@ npm run check
 ```
 
 See [docs/development.md](docs/development.md) for integration tests, hooks, and repository layout.
+
+## Related Inspirations
+
+Projects that shaped parts of Headless' CLI and session-management ergonomics:
+
+- [mngr](https://github.com/imbue-ai/mngr): a tmux-based manager for running and monitoring multiple coding-agent sessions.
+- [llm](https://github.com/simonw/llm): Simon Willison's CLI and Python library for running prompts, models, plugins, and local/remote LLM workflows.

@@ -3,18 +3,23 @@
 ## Unreleased
 
 - Added API/OAuth credential signal reporting to `headless --check` for supported agent backends.
-- Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`. Thanks @RobertTLange for PR #7.
+- Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`.
 - Added role-aware coordinated runs with `--role orchestrator|explorer|worker|reviewer`, `--run`, `--node`, `--depends-on`, `--team`, and `--coordination session|tmux|oneshot`.
 - Added `headless run list|view|mark|message|wait` for local run observability, run graph rendering, node status updates, message routing, async child launches, and wait handling.
+- Added `headless attach` for attaching to the most recently active Headless tmux session, plus `headless attach --all` for tiled attachment to all active Headless tmux sessions.
 - Added local run state under `~/.headless/runs`, including per-node logs, message/status events, usage metrics, private file permissions, and run-status stderr summaries for orchestrators.
 - Added configurable role defaults in `~/.headless/config.toml`, including role-specific model, reasoning effort, allow mode, and base instruction prompts.
+- Added `--effort` as a shorter alias for `--reasoning-effort`.
 - Added `headless --version` and `headless -v` to print the packaged CLI version.
+- Added an interactive wait spinner that shows the active agent, model, and reasoning effort while captured runs are in progress.
 - Added a multi-agent role and run coordination spec in `docs/spec.md`.
 - Added a local integration suite plus a tracked pre-push hook that builds the local CLI before running integration coverage.
 - Added expanded Docker and Modal integration coverage for Codex `--json`, `--debug`, and `--usage` modes.
 - Changed the pre-push hook to run Claude integration by default; set `HEADLESS_HOOK_ALL_AGENTS=1` to run all agents.
 - Changed read-only agent modes to preserve search/read capabilities where supported while still denying edits and shell execution.
 - Changed `headless --check`, `headless docker doctor`, and run views to use bordered, color-aware tables when appropriate.
+- Changed `headless --check` to show configured model and reasoning effort defaults while using a compact `S` status column.
+- Changed `headless --show-config` to render a bordered table with the selected agent's effective model, reasoning effort, config paths, and seed paths.
 - Changed Docker run coordination to mount the host run directory into containers with `HEADLESS_RUN_DIR`.
 - Changed orchestrator pre-push coverage so `HEADLESS_HOOK_ALL_AGENTS=1` enables the full multi-agent integration sweep.
 - Fixed run and node ID validation to reject dot segments.
@@ -27,7 +32,7 @@
 
 ## 0.2.1 - 2026-04-27
 
-- Added `~/.headless/config.toml` support for per-agent default `model` and `reasoning_effort` values, plus a packaged `config.toml.example` template and README setup docs. Thanks @RobertTLange for PR #6.
+- Added `~/.headless/config.toml` support for per-agent default `model` and `reasoning_effort` values, plus a packaged `config.toml.example` template and README setup docs.
 - Added provider-specific default models for Cursor, Gemini, OpenCode, and Pi, including Gemini `gemini-3.1-pro-preview` and Pi `openai-codex/gpt-5.5`.
 - Changed Pi model overrides to accept `provider/model` specs such as `openai-codex/gpt-5.4`, splitting them into native Pi provider and model flags.
 - Changed Cursor model handling so base GPT model families and `--reasoning-effort` combine into Cursor model variants, while usage pricing falls back to the base model.
@@ -40,11 +45,11 @@
 ## 0.2.0 - 2026-04-26
 
 - Added normalized `--reasoning-effort low|medium|high|xhigh` support across Claude, Codex, OpenCode one-shot, and Pi, with warnings for unsupported agent modes.
-- Added `--usage` accounting for one-shot runs, with normalized token counts and native or models.dev-backed cost summaries across all six agents. Thanks @RobertTLange for PR #5.
+- Added `--usage` accounting for one-shot runs, with normalized token counts and native or models.dev-backed cost summaries across all six agents.
 - Added Headless default models for omitted `--model` values: Codex uses `gpt-5.5`, and Claude uses `claude-opus-4-6`.
 - Added managed named tmux sessions, tmux session state reporting, and `headless send` for sending follow-up prompts to existing sessions.
-- Added Docker execution mode, Docker setup checks, local image builds, and packaged Docker image support. Thanks @RobertTLange for PR #3.
-- Added Modal CPU sandbox execution with workspace upload, sync-back, resource flags, env forwarding, and named Modal Secret support. Thanks @RobertTLange for PR #4.
+- Added Docker execution mode, Docker setup checks, local image builds, and packaged Docker image support.
+- Added Modal CPU sandbox execution with workspace upload, sync-back, resource flags, env forwarding, and named Modal Secret support.
 - Changed Codex command building to use the Headless default model when `--model` and `CODEX_MODEL` are unset.
 - Fixed Docker credential mounting, Docker image metadata, Modal credential seeding, Modal workspace upload scope, Modal sync-back conflict handling, and Modal archive extraction hardening.
 - Fixed default agent permission behavior so backend adapters default consistently to yolo/auto-approve mode.
@@ -59,7 +64,7 @@
 - Initial npm release of Headless CLI as `@roberttlange/headless`.
 - Added one CLI entrypoint for running Codex, Claude Code, Cursor, Gemini, OpenCode, and Pi in headless mode.
 - Normalized prompts, prompt files, stdin prompts, model overrides, working directories, dry-run command printing, JSON output, and adapter config inspection across supported agents.
-- Added tmux launch mode with detached interactive sessions, session listing, and agent-specific trust/prompt-submission handling. Thanks @RobertTLange for PR #1, adding the tmux launch workflow.
+- Added tmux launch mode with detached interactive sessions, session listing, and agent-specific trust/prompt-submission handling.
 - Added permission modes for read-only review and explicit yolo/auto-approve execution where supported by each agent.
 - Added `headless --check` for local setup validation and agent version reporting.
 - Added npm package metadata, release workflow, packaging checks, README usage docs, and TypeScript test coverage for CLI parsing, adapter command building, allow modes, output extraction, and setup checks.
