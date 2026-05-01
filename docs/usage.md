@@ -31,7 +31,7 @@ When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `clau
 
 By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only or planning mode where available. Pass `--allow yolo` to request full tool access explicitly.
 
-Pass `--reasoning-effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Gemini and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
+Pass `--reasoning-effort low|medium|high|xhigh` or `--effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Gemini and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
 
 ## Output Modes
 
@@ -179,7 +179,7 @@ Options:
 - `--prompt`, `-p`: prompt text.
 - `--prompt-file`: read prompt from a file.
 - `--model`, `--agent-model`: model override passed to the agent CLI.
-- `--reasoning-effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
+- `--reasoning-effort`, `--effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
 - `--allow`: permission mode, either `read-only` or `yolo`.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
