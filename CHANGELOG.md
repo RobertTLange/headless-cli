@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-05-01
+
 - Added API/OAuth credential signal reporting to `headless --check` for supported agent backends.
 - Added named native session aliases for headless and tmux modes, stored per agent in `~/.headless/sessions.json`.
 - Added role-aware coordinated runs with `--role orchestrator|explorer|worker|reviewer`, `--run`, `--node`, `--depends-on`, `--team`, and `--coordination session|tmux|oneshot`.
