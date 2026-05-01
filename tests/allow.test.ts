@@ -261,6 +261,16 @@ test("CLI print-command includes reasoning effort flags", async () => {
   assert.match(stdout.join(""), /-c 'model_reasoning_effort="high"'/);
 });
 
+test("CLI accepts --effort as an alias for --reasoning-effort", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["codex", "--effort", "high", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /-c 'model_reasoning_effort="high"'/);
+});
+
 test("CLI maps Cursor reasoning effort to model variants", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];

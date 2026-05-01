@@ -163,7 +163,7 @@ function usage(): string {
     "",
     "Options:",
     "  --model <name>        Agent model override.",
-    "  --reasoning-effort <level> Reasoning effort: low, medium, high, or xhigh.",
+    "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --role <role>         Role: orchestrator, explorer, worker, or reviewer.",
     "  --coordination <mode> Coordination: session, tmux, or oneshot.",
@@ -291,6 +291,7 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.model = takeValue(args, arg);
         break;
       case "--reasoning-effort":
+      case "--effort":
         parsed.reasoningEffort = parseReasoningEffort(takeValue(args, arg));
         break;
       case "--allow":
