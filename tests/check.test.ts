@@ -125,14 +125,34 @@ test("CLI --check reports agent model and effort from headless config", async ()
 
     const stdout: string[] = [];
     const code = await runCli(["--check"], {
-      env: { HOME: home, PATH: join(dir, "bin"), CODEX_MODEL: "gpt-env" },
+      env: { AWS_PROFILE: "dev", HOME: home, PATH: join(dir, "bin"), CODEX_MODEL: "gpt-env" },
       stdout: (text) => stdout.push(text),
     });
 
     assert.equal(code, 0);
     const output = stdout.join("");
     assert.match(output, /^\| codex\s+\| ✗\s+\| -\s+\| -\s+\| gpt-env\s+\| high\s+\|$/m);
-    assert.match(output, /^\| pi\s+\| ✗\s+\| -\s+\| -\s+\| bedrock\/claude-sonnet\s+\| xhigh\s+\|$/m);
+    assert.match(output, /^\| pi\s+\| ✗\s+\| api\s+\| -\s+\| bedrock\/claude-sonnet\s+\| xhigh\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check does not report Cursor implicit effort for configured custom models", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(join(home, ".headless", "config.toml"), ["[agents.cursor]", 'model = "gpt-custom"', ""].join("\n"));
+
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { HOME: home, PATH: join(dir, "bin") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^\| cursor\s+\| ✗\s+\| -\s+\| -\s+\| gpt-custom\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

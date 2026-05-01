@@ -118,8 +118,8 @@ const oauthPathsByAgent: Record<AgentName, string[]> = {
   pi: [".pi/agent/auth.json"],
 };
 
-function detectAuth(agent: AgentName, env: Env): AuthLabel {
-  const hasApi = hasApiAuth(agent, env);
+function detectAuth(agent: AgentName, env: Env, defaults: AgentDefaults): AuthLabel {
+  const hasApi = hasApiAuth(agent, env, defaults);
   const hasOauth =
     oauthEnvNamesByAgent[agent].some((name) => Boolean(env[name])) ||
     oauthPathsByAgent[agent].some((relPath) => homePathExists(env, relPath));
@@ -130,15 +130,15 @@ function detectAuth(agent: AgentName, env: Env): AuthLabel {
   return "-";
 }
 
-function hasApiAuth(agent: AgentName, env: Env): boolean {
+function hasApiAuth(agent: AgentName, env: Env, defaults: AgentDefaults): boolean {
   if (apiEnvNamesByAgent[agent].some((name) => Boolean(env[name]))) {
     return true;
   }
-  return agent === "pi" && piUsesAwsProvider(env) && awsCredentialEnvNames.some((name) => Boolean(env[name]));
+  return agent === "pi" && piUsesAwsProvider(env, defaults.model) && awsCredentialEnvNames.some((name) => Boolean(env[name]));
 }
 
-function piUsesAwsProvider(env: Env): boolean {
-  const model = env.PI_CODING_AGENT_MODEL;
+function piUsesAwsProvider(env: Env, modelSpec: string | undefined): boolean {
+  const model = modelSpec ?? env.PI_CODING_AGENT_MODEL;
   const slashIndex = model?.indexOf("/") ?? -1;
   const provider = slashIndex > 0 ? model?.slice(0, slashIndex) : env.PI_CODING_AGENT_PROVIDER;
   const normalized = provider?.toLowerCase();
@@ -246,7 +246,7 @@ export async function checkAgents(env: Env, config: HeadlessConfig = loadHeadles
         agent,
         command,
         available: executable !== undefined,
-        auth: detectAuth(agent, env),
+        auth: detectAuth(agent, env, defaults),
         version: executable ? await captureVersion(executable, env) : "-",
         model: defaults.model ?? "-",
         reasoningEffort: defaults.reasoningEffort ?? "-",
@@ -258,9 +258,10 @@ export async function checkAgents(env: Env, config: HeadlessConfig = loadHeadles
 function effectiveAgentDefaults(agent: AgentName, env: Env, config: HeadlessConfig): AgentDefaults {
   const resolved = resolveAgentDefaults(agent, {}, env, config);
   const builtin = BUILTIN_AGENT_DEFAULTS[agent];
+  const usesBuiltinModel = resolved.model === undefined;
   return {
     model: resolved.model ?? builtin.model,
-    reasoningEffort: resolved.reasoningEffort ?? builtin.reasoningEffort,
+    reasoningEffort: resolved.reasoningEffort ?? (usesBuiltinModel ? builtin.reasoningEffort : undefined),
   };
 }
 
