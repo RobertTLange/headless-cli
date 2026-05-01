@@ -1372,6 +1372,88 @@ test("CLI prints final assistant message by default", async () => {
   }
 });
 
+test("CLI shows a waiting spinner on stderr for interactive captured runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => {",
+          "  console.log(JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "}, 180);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: { ...process.env, NO_COLOR: undefined, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+      stderrIsTTY: true,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    const output = stderr.join("");
+    assert.match(
+      output,
+      /\[\x1b\[36mpi\x1b\[0m-\x1b\[35mopenai-codex\/gpt-5\.5\x1b\[0m-\x1b\[33mdefault\x1b\[0m\] [a-z ]+ (?:\.{0,3})/,
+    );
+    assert.match(
+      output,
+      /\[\x1b\[36mpi\x1b\[0m-\x1b\[35mopenai-codex\/gpt-5\.5\x1b\[0m-\x1b\[33mdefault\x1b\[0m\] [a-z ]+ (?=\r|\x1b|$)/,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI does not show a waiting spinner for non-interactive captured runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => {",
+          "  console.log(JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } }));",
+          "}, 180);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+      stderrIsTTY: false,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    assert.equal(stderr.join(""), "");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI does not pass inherited stdin to agent when prompt is an argument", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -1440,6 +1522,47 @@ test("CLI --json prints raw trace output", async () => {
 
     assert.equal(code, 0);
     assert.equal(stdout.join(""), trace);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json does not show a waiting spinner on stderr", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const trace = `${JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+    })}\n`;
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "pi");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => {",
+          `  process.stdout.write(${JSON.stringify(trace)});`,
+          "}, 180);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(["pi", "--prompt", "hello", "--json"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+      stderrIsTTY: true,
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), trace);
+    assert.equal(stderr.join(""), "");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

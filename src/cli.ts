@@ -21,6 +21,7 @@ import {
   buildInteractiveAgentCommand,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OPENCODE_MODEL,
+  DEFAULT_PI_MODEL,
   cursorModel,
   piModelSpec,
   getAgentConfig,
@@ -139,6 +140,7 @@ interface CliDeps {
   env?: Env;
   stdin?: string;
   stdinIsTTY?: boolean;
+  stderrIsTTY?: boolean;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
 }
@@ -803,6 +805,128 @@ interface ExecuteCommandOptions {
   stdout: (text: string) => void;
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
+}
+
+interface WaitingSpinner {
+  clear(): void;
+  start(): void;
+  stop(): void;
+}
+
+const waitingSpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const waitingSpinnerDotCounts = [0, 1, 2, 3, 2, 1];
+const waitingSpinnerDotFrameHold = 2;
+const waitingSpinnerVerbs = [
+  "token churning",
+  "context folding",
+  "plan shaping",
+  "trace reading",
+  "diff scanning",
+  "tool waiting",
+  "prompt weaving",
+  "state tracking",
+  "answer drafting",
+  "branch thinking",
+  "signal parsing",
+  "patch sizing",
+  "run watching",
+  "log tasting",
+  "type checking",
+  "edge finding",
+  "intent mapping",
+  "output polishing",
+  "reasoning",
+  "model working",
+];
+
+function randomWaitingSpinnerVerb(): string {
+  return waitingSpinnerVerbs[Math.floor(Math.random() * waitingSpinnerVerbs.length)] ?? waitingSpinnerVerbs[0];
+}
+
+function createWaitingSpinner(label: string, write: (text: string) => void): WaitingSpinner {
+  const verb = randomWaitingSpinnerVerb();
+  let frameIndex = 0;
+  let dotIndex = 0;
+  let dotFrameIndex = 0;
+  let timer: NodeJS.Timeout | undefined;
+  let active = false;
+
+  const clear = () => {
+    write("\r\u001b[2K");
+  };
+  const render = () => {
+    const frame = waitingSpinnerFrames[frameIndex] ?? waitingSpinnerFrames[0];
+    const dots = ".".repeat(waitingSpinnerDotCounts[dotIndex] ?? 1);
+    write(`\r\u001b[2K${frame} ${label} ${verb} ${dots}`);
+    frameIndex = (frameIndex + 1) % waitingSpinnerFrames.length;
+    dotFrameIndex = (dotFrameIndex + 1) % waitingSpinnerDotFrameHold;
+    if (dotFrameIndex === 0) {
+      dotIndex = (dotIndex + 1) % waitingSpinnerDotCounts.length;
+    }
+  };
+
+  return {
+    clear,
+    start() {
+      if (active) {
+        return;
+      }
+      active = true;
+      render();
+      timer = setInterval(render, 120);
+    },
+    stop() {
+      if (!active) {
+        return;
+      }
+      active = false;
+      if (timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+      clear();
+    },
+  };
+}
+
+function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: Env): string {
+  if (agent === "codex") {
+    return defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5";
+  }
+  if (agent === "claude") {
+    return defaults.model ?? "claude-opus-4-6";
+  }
+  if (agent === "cursor") {
+    return cursorModel(defaults);
+  }
+  if (agent === "gemini") {
+    return defaults.model ?? DEFAULT_GEMINI_MODEL;
+  }
+  if (agent === "opencode") {
+    return defaults.model ?? DEFAULT_OPENCODE_MODEL;
+  }
+  if (agent === "pi") {
+    return defaults.model ?? env.PI_CODING_AGENT_MODEL ?? DEFAULT_PI_MODEL;
+  }
+  return defaults.model ?? "default";
+}
+
+function paintWaitingSpinnerPart(text: string, colorCode: string, enabled: boolean): string {
+  return enabled ? `\u001b[${colorCode}m${text}\u001b[0m` : text;
+}
+
+function waitingSpinnerLabel(agent: AgentName, defaults: InvocationDefaults, env: Env, color: boolean): string {
+  const model = spinnerModelLabel(agent, defaults, env);
+  const reasoning = defaults.reasoningEffort ?? "default";
+  return [
+    "[",
+    paintWaitingSpinnerPart(agent, "36", color),
+    "-",
+    paintWaitingSpinnerPart(model, "35", color),
+    "-",
+    paintWaitingSpinnerPart(reasoning, "33", color),
+    "]",
+  ].join("");
 }
 
 interface SessionPlan {
@@ -1598,6 +1722,7 @@ async function executeStoredNode(
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
+  const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env = deps.env ?? process.env;
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
 
@@ -2128,7 +2253,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           write: stderr,
         })
       : undefined;
+    const waitingSpinner =
+      stdoutHandling === "capture" && stderrIsTTY && !statusReporter
+        ? createWaitingSpinner(waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined), stderr)
+        : undefined;
+    const displayStderr = (text: string) => {
+      waitingSpinner?.clear();
+      stderr(text);
+    };
     statusReporter?.start();
+    waitingSpinner?.start();
     let result: ExecuteResult | undefined;
     try {
       if (parsed.runId && parsed.role && nodeId) {
@@ -2153,7 +2287,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               commandStderr?.(text);
               const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
               if (filtered) {
-                stderr(filtered);
+                displayStderr(filtered);
               }
             },
             stdout: (text) => {
@@ -2164,7 +2298,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
             workDir: cwd ?? process.cwd(),
           })
-        : await executeCommand(parsed.agent, command, cwd, env, stderr, {
+        : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
             stdout,
             stdoutHandling,
             stdoutLog: commandStdoutLog,
@@ -2182,6 +2316,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
       }
     } finally {
+      waitingSpinner?.stop();
       statusReporter?.stop();
     }
     if (!result) {
