@@ -135,8 +135,8 @@ test("CLI list includes named headless tmux sessions", async () => {
       stdout.join(""),
       [
         "NAME                        AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
-        "headless-codex-work         codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  tmux attach-session -t headless-codex-work",
-        "headless-opencode-review.1  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-review.1",
+        "headless-codex-work         codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  env -u TMUX tmux attach-session -t headless-codex-work",
+        "headless-opencode-review.1  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  env -u TMUX tmux attach-session -t headless-opencode-review.1",
         "",
       ].join("\n"),
     );
@@ -171,7 +171,7 @@ test("CLI attach prints a single session attach command", async () => {
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "tmux attach-session -t headless-codex-work\n");
+  assert.equal(stdout.join(""), "env -u TMUX tmux attach-session -t headless-codex-work\n");
 });
 
 test("CLI attach attaches the only active headless tmux session", async () => {
@@ -267,7 +267,7 @@ test("CLI attach --all prints tiled aggregator commands", async () => {
     assert.match(stdout.join(""), /\ntmux split-window -t headless-attach-\d+ /);
     assert.match(stdout.join(""), /\ntmux select-layout -t headless-attach-\d+ tiled/);
     assert.match(stdout.join(""), /\ntmux set-hook -t headless-attach-\d+ client-detached 'kill-session -t headless-attach-\d+'/);
-    assert.match(stdout.join(""), /\ntmux attach-session -t headless-attach-\d+\n$/);
+    assert.match(stdout.join(""), /\nenv -u TMUX tmux attach-session -t headless-attach-\d+\n$/);
     assert.match(stdout.join(""), /env -u TMUX tmux attach-session -t headless-codex-work/);
     assert.match(stdout.join(""), /env -u TMUX tmux attach-session -t headless-opencode-review/);
   } finally {
@@ -296,7 +296,7 @@ test("CLI attach --all attaches directly when only one session exists", async ()
     });
 
     assert.equal(code, 0);
-    assert.equal(stdout.join(""), "tmux attach-session -t headless-codex-work\n");
+    assert.equal(stdout.join(""), "env -u TMUX tmux attach-session -t headless-codex-work\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

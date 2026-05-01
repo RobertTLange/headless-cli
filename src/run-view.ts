@@ -1,5 +1,6 @@
 import type { RunEvent, RunNode, RunRecord } from "./runs.js";
 import type { RunStatus } from "./roles.js";
+import { quoteCommand } from "./shell.js";
 import { cell, renderTable, type TableCell, type TableColor } from "./table.js";
 
 export function renderRunList(runs: RunRecord[]): string {
@@ -138,13 +139,17 @@ function commandRows(runId: string, nodes: RunNode[]): string[][] {
   for (const node of nodes) {
     rows.push([node.nodeId, `headless run message ${runId} ${node.nodeId} --prompt "..."`]);
     if (node.tmuxSessionName) {
-      rows.push([node.nodeId, `tmux attach-session -t ${node.tmuxSessionName}`]);
+      rows.push([node.nodeId, tmuxAttachCommand(node.tmuxSessionName)]);
     }
     if (node.logs) {
       rows.push([node.nodeId, `tail -f ${node.logs.stdout}`]);
     }
   }
   return rows;
+}
+
+function tmuxAttachCommand(sessionName: string): string {
+  return quoteCommand({ command: "env", args: ["-u", "TMUX", "tmux", "attach-session", "-t", sessionName] });
 }
 
 function graphLineColor(line: string): TableColor | undefined {

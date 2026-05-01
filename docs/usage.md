@@ -71,7 +71,7 @@ Pass `--tmux` to create a detached interactive session named `headless-<agent>-<
 
 ```bash
 headless claude --prompt-file task.md --work-dir /path/to/project --tmux
-tmux attach-session -t headless-claude-12345
+env -u TMUX tmux attach-session -t headless-claude-12345
 headless codex --prompt "Fix the tests" --tmux --name work
 headless codex --prompt "Run focused tests" --tmux --session work
 ```

@@ -1462,7 +1462,7 @@ function renderHeadlessTmuxSessions(sessions: HeadlessTmuxSessionDetails[]): str
       session.state,
       session.createdAt,
       session.lastActivityAt,
-      `tmux attach-session -t ${session.name}`,
+      quoteCommand(buildTmuxAttachCommand(session.name).command),
     ]),
   );
 }
@@ -1491,7 +1491,7 @@ function buildTmuxRenameCommand(session: HeadlessTmuxSession, targetName: string
 function buildTmuxAttachCommand(sessionName: string): TmuxAttachCommand {
   return {
     sessionName,
-    command: { command: "tmux", args: ["attach-session", "-t", sessionName] },
+    command: { command: "env", args: ["-u", "TMUX", "tmux", "attach-session", "-t", sessionName] },
   };
 }
 
@@ -2461,7 +2461,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (code === 0) {
         stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
-        stdout(`attach: tmux attach-session -t ${tmuxCommands.sessionName}\n`);
+        stdout(`attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`);
       }
       return code;
     }

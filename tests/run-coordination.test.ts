@@ -432,6 +432,7 @@ test("run list, view, mark, and wait operate on local run state", async () => {
       status: "planned",
       dependsOn: ["orchestrator"],
       planned: true,
+      tmuxSessionName: "headless-codex-worker-1",
     });
     updateNodeStatus(env, "auth", "orchestrator", "idle", "ready", {
       turns: 3,
@@ -467,6 +468,7 @@ test("run list, view, mark, and wait operate on local run state", async () => {
     assert.doesNotMatch(view, /TURNS|DURATION|COST|TOKENS/);
     assert.match(view, /^\| orchestrator\s+\| orchestrator\s+\| codex\s+\| idle\s+\| .* \| .* \| ready\s+\|$/m);
     assert.match(view, /^\| worker-1\s+\| worker\s+\| codex\s+\| planned\s+\| .* \| .* \| -\s+\|$/m);
+    assert.match(view, /env -u TMUX tmux attach-session -t headless-codex-worker-1/);
 
     stdout.length = 0;
     assert.equal(

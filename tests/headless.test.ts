@@ -2392,8 +2392,8 @@ test("CLI --list lists active headless tmux sessions", async () => {
       stdout.join(""),
       [
         "NAME                   AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
-        "headless-codex-123     codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  tmux attach-session -t headless-codex-123",
-        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-456",
+        "headless-codex-123     codex     running  2023-11-14T22:13:20.000Z  2100-01-01T00:00:00.000Z  env -u TMUX tmux attach-session -t headless-codex-123",
+        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  env -u TMUX tmux attach-session -t headless-opencode-456",
         "",
       ].join("\n"),
     );
@@ -2431,7 +2431,7 @@ test("CLI agent --list filters active headless tmux sessions by agent", async ()
       stdout.join(""),
       [
         "NAME                   AGENT     STATE    CREATED                   LAST_ACTIVITY             ATTACH",
-        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  tmux attach-session -t headless-opencode-456",
+        "headless-opencode-456  opencode  waiting  2023-11-14T22:13:20.000Z  2023-11-14T22:13:20.000Z  env -u TMUX tmux attach-session -t headless-opencode-456",
         "",
       ].join("\n"),
     );
