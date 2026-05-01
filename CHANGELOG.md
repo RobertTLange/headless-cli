@@ -11,7 +11,7 @@
 - Added configurable role defaults in `~/.headless/config.toml`, including role-specific model, reasoning effort, allow mode, and base instruction prompts.
 - Added `--effort` as a shorter alias for `--reasoning-effort`.
 - Added `headless --version` and `headless -v` to print the packaged CLI version.
-- Added an interactive wait spinner that shows the active agent, model, reasoning effort, and elapsed time while captured runs are in progress.
+- Added an interactive wait spinner that shows the active agent, model, and reasoning effort while captured runs are in progress.
 - Added a multi-agent role and run coordination spec in `docs/spec.md`.
 - Added a local integration suite plus a tracked pre-push hook that builds the local CLI before running integration coverage.
 - Added expanded Docker and Modal integration coverage for Codex `--json`, `--debug`, and `--usage` modes.
