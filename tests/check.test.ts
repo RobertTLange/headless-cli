@@ -64,13 +64,13 @@ test("CLI --check prints installed status and numeric versions for all agents", 
     const output = stdout.join("");
     assert.equal(code, 0);
     assert.match(output, /^\+[-+]+\+$/m);
-    assert.match(output, /^\| Agent\s+\| Status\s+\| Auth\s+\| Version\s+\| Binary\s+\|$/m);
-    assert.match(output, /^\| codex\s+\| ✓\s+\| -\s+\| 1\.2\.3\s+\| codex\s+\|$/m);
-    assert.match(output, /^\| gemini\s+\| ✓\s+\| -\s+\| 0\.39\.1\s+\| gemini\s+\|$/m);
-    assert.match(output, /^\| opencode\s+\| ✓\s+\| -\s+\| 1\.4\.10\s+\| opencode\s+\|$/m);
-    assert.match(output, /^\| pi\s+\| ✓\s+\| -\s+\| 4\.5\.6\s+\| pi-agent\s+\|$/m);
-    assert.match(output, /^\| claude\s+\| ✗\s+\| -\s+\| -\s+\| claude\s+\|$/m);
-    assert.match(output, /^\| cursor\s+\| ✗\s+\| -\s+\| -\s+\| agent\s+\|$/m);
+    assert.match(output, /^\| Agent\s+\| S\s+\| Auth\s+\| Version\s+\| Model\s+\| Effort\s+\|$/m);
+    assert.match(output, /^\| codex\s+\| ✓\s+\| -\s+\| 1\.2\.3\s+\| gpt-5\.5\s+\| -\s+\|$/m);
+    assert.match(output, /^\| gemini\s+\| ✓\s+\| -\s+\| 0\.39\.1\s+\| gemini-3\.1-pro-preview\s+\| -\s+\|$/m);
+    assert.match(output, /^\| opencode\s+\| ✓\s+\| -\s+\| 1\.4\.10\s+\| openai\/gpt-5\.4\s+\| -\s+\|$/m);
+    assert.match(output, /^\| pi\s+\| ✓\s+\| -\s+\| 4\.5\.6\s+\| openai-codex\/gpt-5\.5\s+\| -\s+\|$/m);
+    assert.match(output, /^\| claude\s+\| ✗\s+\| -\s+\| -\s+\| claude-opus-4-6\s+\| -\s+\|$/m);
+    assert.match(output, /^\| cursor\s+\| ✗\s+\| -\s+\| -\s+\| gpt-5\.5\s+\| medium\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -98,7 +98,41 @@ test("CLI --check uses cursor env binary and strips hash suffixes", async () => 
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| cursor\s+\| ✓\s+\| -\s+\| 2026\.04\.17\s+\| cursor-agent\s+\|$/m);
+    assert.match(stdout.join(""), /^\| cursor\s+\| ✓\s+\| -\s+\| 2026\.04\.17\s+\| gpt-5\.5\s+\| medium\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check reports agent model and effort from headless config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(
+      join(home, ".headless", "config.toml"),
+      [
+        "[agents.codex]",
+        'model = "gpt-config"',
+        'reasoning_effort = "high"',
+        "",
+        "[agents.pi]",
+        'model = "bedrock/claude-sonnet"',
+        'reasoning_effort = "xhigh"',
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { HOME: home, PATH: join(dir, "bin"), CODEX_MODEL: "gpt-env" },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const output = stdout.join("");
+    assert.match(output, /^\| codex\s+\| ✗\s+\| -\s+\| -\s+\| gpt-env\s+\| high\s+\|$/m);
+    assert.match(output, /^\| pi\s+\| ✗\s+\| -\s+\| -\s+\| bedrock\/claude-sonnet\s+\| xhigh\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -126,7 +160,7 @@ test("CLI --check keeps installed status when version probe fails", async () => 
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| cursor\s+\| ✓\s+\| -\s+\| unknown\s+\| cursor-agent\s+\|$/m);
+    assert.match(stdout.join(""), /^\| cursor\s+\| ✓\s+\| -\s+\| unknown\s+\| gpt-5\.5\s+\| medium\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -158,7 +192,7 @@ test("CLI --check retries transient empty version output", async () => {
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| cursor\s+\| ✓\s+\| -\s+\| 9\.8\.7\s+\| cursor-agent\s+\|$/m);
+    assert.match(stdout.join(""), /^\| cursor\s+\| ✓\s+\| -\s+\| 9\.8\.7\s+\| gpt-5\.5\s+\| medium\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -204,9 +238,9 @@ test("CLI --check reports API auth from environment variables", async () => {
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| api\s+\| -\s+\| codex\s+\|$/m);
-    assert.match(stdout.join(""), /^\| opencode\s+\| ✗\s+\| api\s+\| -\s+\| opencode\s+\|$/m);
-    assert.match(stdout.join(""), /^\| pi\s+\| ✗\s+\| api\s+\| -\s+\| pi\s+\|$/m);
+    assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| api\s+\| -\s+\| gpt-5\.5\s+\| -\s+\|$/m);
+    assert.match(stdout.join(""), /^\| opencode\s+\| ✗\s+\| api\s+\| -\s+\| openai\/gpt-5\.4\s+\| -\s+\|$/m);
+    assert.match(stdout.join(""), /^\| pi\s+\| ✗\s+\| api\s+\| -\s+\| openai-codex\/gpt-5\.5\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -226,7 +260,7 @@ test("CLI --check reports OAuth auth from local seed files", async () => {
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| oauth\s+\| -\s+\| codex\s+\|$/m);
+    assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| oauth\s+\| -\s+\| gpt-5\.5\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -246,7 +280,7 @@ test("CLI --check reports combined API and OAuth auth", async () => {
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| api\+oauth\s+\| -\s+\| codex\s+\|$/m);
+    assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| api\+oauth\s+\| -\s+\| gpt-5\.5\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -267,7 +301,7 @@ test("CLI --check reports Pi API auth from AWS credentials for Bedrock provider"
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| pi\s+\| ✗\s+\| api\s+\| -\s+\| pi\s+\|$/m);
+    assert.match(stdout.join(""), /^\| pi\s+\| ✗\s+\| api\s+\| -\s+\| opus\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -283,7 +317,7 @@ test("CLI --check does not report Pi AWS auth for the default OpenAI provider", 
     });
 
     assert.equal(code, 0);
-    assert.match(stdout.join(""), /^\| pi\s+\| ✗\s+\| -\s+\| -\s+\| pi\s+\|$/m);
+    assert.match(stdout.join(""), /^\| pi\s+\| ✗\s+\| -\s+\| -\s+\| openai-codex\/gpt-5\.5\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

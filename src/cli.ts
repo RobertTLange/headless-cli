@@ -205,7 +205,7 @@ function usage(): string {
     "  run wait <run>      Wait until no nodes are busy.",
     "  docker doctor       Check Docker setup and image availability.",
     "  docker build        Build the local Docker image tag headless-local:dev.",
-    "  --check              Check installed agent binaries, versions, and local API/OAuth credentials.",
+    "  --check              Check agents, versions, auth, configured models/effort, and Docker.",
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it.",
     "  --show-config        Print harness config paths and auth seed paths.",
@@ -1907,7 +1907,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --check");
       }
-      stdout(renderAgentChecks(await checkAgents(env)));
+      try {
+        stdout(renderAgentChecks(await checkAgents(env)));
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
       stdout(renderDockerCheck(await checkDocker(env, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE)));
       return 0;
     }
