@@ -12,6 +12,7 @@
   <img alt="Node.js 22+" src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-ESM-3178C6?logo=typescript&logoColor=white" />
   <img alt="npm package" src="https://img.shields.io/badge/npm-%40roberttlange%2Fheadless-CB3837?logo=npm&logoColor=white" />
+  <a href="https://roberttlange.com/blog/05-headless"><img alt="Blog post" src="https://img.shields.io/badge/blog-headless-111111" /></a>
 </p>
 
 Headless normalizes the small differences between coding-agent CLIs: prompts, models, reasoning effort, working directories, output modes, sessions, and environment checks use one interface while each backend keeps its native execution flags.
