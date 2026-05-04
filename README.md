@@ -121,3 +121,7 @@ Projects that shaped parts of Headless' CLI and session-management ergonomics:
 
 - [mngr](https://github.com/imbue-ai/mngr): a tmux-based manager for running and monitoring multiple coding-agent sessions.
 - [llm](https://github.com/simonw/llm): Simon Willison's CLI and Python library for running prompts, models, plugins, and local/remote LLM workflows.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

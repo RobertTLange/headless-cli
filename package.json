@@ -2,6 +2,7 @@
   "name": "@roberttlange/headless",
   "version": "0.3.0",
   "description": "One CLI entrypoint for running coding agents in headless mode.",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "headless": "dist/cli.js"
