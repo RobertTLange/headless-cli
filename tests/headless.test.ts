@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
+import { acpClientCapabilities } from "../src/acp.ts";
 import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
@@ -82,6 +83,12 @@ test("builds ACP adapter command with read-only permission mode", () => {
     args: ["acp-client", "--", "atlas", "alta", "agent", "run"],
     env: { HEADLESS_ACP_ALLOW: "read-only" },
     stdinText: "hello",
+  });
+});
+
+test("ACP client advertises read-only filesystem capability", () => {
+  assert.deepEqual(acpClientCapabilities, {
+    fs: { readTextFile: true, writeTextFile: false },
   });
 });
 

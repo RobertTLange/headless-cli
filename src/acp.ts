@@ -182,6 +182,10 @@ function contentText(value: unknown): string {
   return asString(record.text);
 }
 
+export const acpClientCapabilities = {
+  fs: { readTextFile: true, writeTextFile: false },
+};
+
 class HeadlessAcpClient {
   private assistantText = "";
 
@@ -224,7 +228,7 @@ class HeadlessAcpClient {
   }
 
   async writeTextFile(): Promise<acp.WriteTextFileResponse> {
-    return {};
+    throw new Error("ACP client file writes are not supported");
   }
 }
 
@@ -257,7 +261,7 @@ export async function runAcpClient(options: RunAcpClientOptions): Promise<number
   const connection = new acp.ClientSideConnection(() => client, stream);
 
   try {
-    await connection.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } });
+    await connection.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: acpClientCapabilities });
     const session = await connection.newSession({ cwd: options.cwd ?? process.cwd(), mcpServers: [] });
     options.stdout(acpOutputRecord("session", { sessionId: session.sessionId }));
     const result = await connection.prompt({ sessionId: session.sessionId, prompt: [{ type: "text", text: options.prompt }] });
