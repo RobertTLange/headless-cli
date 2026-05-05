@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## TBD
+
+- Added the bundled `headless-swarm` Codex skill for coordinating visible macOS Ghostty/tmux Headless agent swarms.
+- Changed npm package contents to include bundled skills.
+- Changed Headless tmux session listing to mark sessions waiting after 15 seconds of inactivity by default.
+- Added README instructions for installing the bundled Codex skill with `npx`.
 
 ## 0.3.0 - 2026-05-01
 

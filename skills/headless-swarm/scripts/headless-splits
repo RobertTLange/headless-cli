@@ -1,0 +1,516 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+usage() {
+  cat <<'EOF'
+Usage:
+  headless-splits start [options] <node>...
+  headless-splits send [options] <node>
+  headless-splits send-all [options] <node>...
+  headless-splits status [options]
+  headless-splits capture [options] <node>
+  headless-splits capture-all [options]
+  headless-splits wait [options]
+  headless-splits cleanup [options]
+
+Options:
+  --agent <name>        Headless agent name. Default: codex
+  --work-dir <path>     Work directory for start. Default: current directory
+  --prompt <text>       Prompt text for start/send/send-all
+  --prompt-file <path>  Read prompt text from file
+  --timeout <seconds>   Timeout for wait until tracked sessions are idle. Default: 90
+  --interval <seconds>  Poll interval for wait. Default: 5
+  --kill-sessions       With cleanup, also kill tracked Headless sessions
+  --help                Show this help
+
+Examples:
+  headless-splits start --agent codex --work-dir "$PWD" --prompt "Investigate failures" worker-1 worker-2
+  headless-splits start --work-dir "$PWD" --prompt "Use your assigned role." codex:code claude:review gemini:docs
+  headless-splits send worker-1 --agent codex --prompt "Report only root cause."
+  headless-splits capture worker-1 --agent codex
+  headless-splits wait --timeout 120
+  headless-splits capture-all
+EOF
+}
+
+die() {
+  printf '%s\n' "headless-splits: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+need_headless() {
+  headless_bin=$(command -v headless 2>/dev/null || true)
+  [ -n "$headless_bin" ] || die "missing required command: headless"
+}
+
+need_tmux() {
+  tmux_bin=$(command -v tmux 2>/dev/null || true)
+  [ -n "$tmux_bin" ] || die "missing required command: tmux"
+}
+
+swarm_state_dir() {
+  if [ -n "${HEADLESS_SWARM_STATE_DIR:-}" ]; then
+    printf '%s' "$HEADLESS_SWARM_STATE_DIR"
+  elif [ -n "${XDG_STATE_HOME:-}" ]; then
+    printf '%s/headless-swarm' "$XDG_STATE_HOME"
+  elif [ -n "${HOME:-}" ]; then
+    printf '%s/.local/state/headless-swarm' "$HOME"
+  else
+    die "HOME is required for swarm layout state"
+  fi
+}
+
+current_ghostty_tab_id() {
+  osascript <<'APPLESCRIPT'
+tell application "Ghostty"
+  get id of selected tab of front window
+end tell
+APPLESCRIPT
+}
+
+aggregator_name_for_tab() {
+  printf 'headless-swarm-%s' "$1"
+}
+
+session_name_for() {
+  printf 'headless-%s-%s' "$1" "$2"
+}
+
+validate_agent() {
+  case "$1" in
+    claude|codex|cursor|gemini|opencode|pi) ;;
+    *) die "unsupported agent: $1" ;;
+  esac
+}
+
+validate_node() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_.-]*)
+      die "invalid node name '$1'; use only letters, digits, dot, underscore, or hyphen"
+      ;;
+  esac
+}
+
+parse_start_spec() {
+  case "$1" in
+    *:*)
+      node_agent=${1%%:*}
+      node=${1#*:}
+      ;;
+    *)
+      node_agent=$agent
+      node=$1
+      ;;
+  esac
+  validate_agent "$node_agent"
+  validate_node "$node"
+  if [ "$node" = "$node_agent" ]; then
+    session_alias=main
+  else
+    session_alias=$node
+  fi
+}
+
+read_prompt() {
+  if [ -n "$prompt_file" ]; then
+    [ -r "$prompt_file" ] || die "cannot read prompt file: $prompt_file"
+    cat "$prompt_file"
+    return
+  fi
+  printf '%s' "$prompt"
+}
+
+require_prompt() {
+  if [ -z "$prompt" ] && [ -z "$prompt_file" ]; then
+    die "$command requires --prompt or --prompt-file"
+  fi
+}
+
+require_macos_ghostty() {
+  [ "$(uname -s)" = "Darwin" ] || die "Ghostty split automation is macOS-only"
+  need_cmd osascript
+  osascript -e 'tell application "Ghostty" to get version' >/dev/null 2>&1 ||
+    die "cannot control Ghostty with AppleScript; open Ghostty and approve macOS Automation permission"
+}
+
+layout_and_attach() {
+  dir=$1
+  aggregator_session=$2
+  tmux_path=$3
+  existing_state=$4
+
+  osascript "$script_dir/layout-ghostty.applescript" "$dir" "$aggregator_session" "$tmux_path" "$existing_state"
+}
+
+state_sessions() {
+  if [ -n "$existing_state" ]; then
+    printf '%s\n' "$existing_state" | awk -F '\t' '$1 == "session" && $2 != "" { print $2 }'
+  fi
+}
+
+append_unique_sessions() {
+  awk 'NF && !seen[$0]++'
+}
+
+write_swarm_state() {
+  layout=$1
+  sessions=$2
+  tmp_file=$state_file.tmp.$$
+  {
+    if [ -n "$layout" ]; then
+      printf '%s\n' "$layout" | awk -F '\t' '($1 == "pane" || $1 == "swarm-pane") && $2 != "" { print }'
+    fi
+    printf '%s\n' "$sessions" | while IFS= read -r session; do
+      [ -n "$session" ] && printf 'session\t%s\n' "$session"
+    done
+  } >"$tmp_file"
+  mv "$tmp_file" "$state_file"
+}
+
+load_tab_state() {
+  state_dir=$(swarm_state_dir)
+  mkdir -p "$state_dir"
+  tab_id=$(current_ghostty_tab_id | sed 's/[^A-Za-z0-9_.-]/_/g')
+  state_file=$state_dir/$tab_id.tsv
+  existing_state=
+  if [ -r "$state_file" ]; then
+    existing_state=$(cat "$state_file")
+  fi
+  aggregator=$(aggregator_name_for_tab "$tab_id")
+}
+
+filter_live_sessions() {
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    if "$tmux_bin" has-session -t "$session" 2>/dev/null; then
+      printf '%s\n' "$session"
+    else
+      printf '%s\n' "dropping stale session from swarm state: $session" >&2
+    fi
+  done | append_unique_sessions
+}
+
+create_aggregator() {
+  "$script_dir/create-aggregator" "$tmux_bin" "$1" "$2"
+}
+
+start_node() {
+  node_agent=$1
+  node=$2
+  session_alias=$3
+  session=$(session_name_for "$node_agent" "$session_alias")
+  base_prompt=$(read_prompt)
+  node_prompt=$(cat <<EOF
+You are node $node in a visual Headless swarm.
+
+Orchestrator routing:
+- Your durable session is $session.
+- The orchestrator will send follow-up messages through headless send.
+- Leave your final feedback visible in this pane.
+
+Task:
+$base_prompt
+EOF
+)
+
+  "$headless_bin" "$node_agent" --tmux --session "$session_alias" --work-dir "$work_dir" --prompt "$node_prompt" >/dev/null
+  printf '%s' "$session"
+}
+
+start_nodes_parallel() {
+  tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/headless-splits.XXXXXX") || die "could not create temporary directory"
+  plan_file=$tmp_dir/plan
+  for raw_node in $nodes; do
+    parse_start_spec "$raw_node"
+    session=$(session_name_for "$node_agent" "$session_alias")
+    printf '%s\t%s\t%s\t%s\n' "$node_agent" "$node" "$session_alias" "$session" >>"$plan_file"
+  done
+  duplicate=$(awk -F '\t' 'seen[$4]++ { print $4; exit }' "$plan_file")
+  if [ -n "$duplicate" ]; then
+    rm -rf "$tmp_dir"
+    die "duplicate node specs resolve to the same tmux session: $duplicate"
+  fi
+
+  jobs=
+  index=0
+  while IFS='	' read -r node_agent node session_alias session; do
+    index=$((index + 1))
+    printf '%s\n' "starting $session" >&2
+    ( start_node "$node_agent" "$node" "$session_alias" >"$tmp_dir/session.$index" ) 2>"$tmp_dir/stderr.$index" &
+    jobs="${jobs}${jobs:+ }$!:$index"
+  done <"$plan_file"
+
+  failed=false
+  new_sessions=
+  for job in $jobs; do
+    pid=${job%%:*}
+    index=${job#*:}
+    if ! wait "$pid"; then
+      failed=true
+    fi
+    [ ! -s "$tmp_dir/stderr.$index" ] || cat "$tmp_dir/stderr.$index" >&2
+    if [ -s "$tmp_dir/session.$index" ]; then
+      session=$(cat "$tmp_dir/session.$index")
+      new_sessions="${new_sessions}${new_sessions:+
+}$session"
+    fi
+  done
+  rm -rf "$tmp_dir"
+  [ "$failed" = false ] || die "one or more Headless sessions failed to start"
+}
+
+send_node() {
+  parse_start_spec "$1"
+  session=$(session_name_for "$node_agent" "$session_alias")
+  "$headless_bin" send "$session" --prompt "$(read_prompt)"
+}
+
+capture_node() {
+  parse_start_spec "$1"
+  session=$(session_name_for "$node_agent" "$session_alias")
+  need_tmux
+  capture_session "$session"
+}
+
+capture_session() {
+  session=$1
+  pane_id=$("$tmux_bin" list-panes -s -t "$session" -F '#{pane_active}	#{pane_id}' 2>/dev/null | awk '$1 == 1 { print $2; exit }')
+  if [ -z "$pane_id" ]; then
+    pane_id=$("$tmux_bin" list-panes -s -t "$session" -F '#{pane_id}' 2>/dev/null | sed -n '1p')
+  fi
+  [ -n "$pane_id" ] || die "could not find a tmux pane for $session; try: headless attach $session"
+  "$tmux_bin" capture-pane -p -t "$pane_id" -S -2000 2>/dev/null ||
+    die "could not capture $session; try: headless attach $session"
+}
+
+tracked_sessions_or_die() {
+  load_tab_state
+  tracked_sessions=$(state_sessions | append_unique_sessions)
+  [ -n "$tracked_sessions" ] || die "no tracked swarm sessions for the current Ghostty tab"
+}
+
+status_nodes() {
+  if [ -n "${tracked_sessions:-}" ]; then
+    list=$("$headless_bin" --list 2>/dev/null || true)
+    header=$(printf '%s\n' "$list" | sed -n '1p')
+    printed_header=false
+    printf '%s\n' "$tracked_sessions" | while IFS= read -r session; do
+      line=$(printf '%s\n' "$list" | awk -v s="$session" '$1 == s { print; found = 1 } END { if (!found) exit 1 }') || true
+      if [ -n "$line" ]; then
+        if [ "$printed_header" = false ]; then
+          printf '%s\n' "$header"
+          printed_header=true
+        fi
+        printf '%s\n' "$line"
+      else
+        printf '%s\tmissing\tunknown\t-\t-\t-\n' "$session"
+      fi
+    done
+  elif "$headless_bin" --list 2>/dev/null | grep "headless-$agent-" >/dev/null 2>&1; then
+    "$headless_bin" --list | grep "headless-$agent-"
+  else
+    printf '%s\n' "No active headless tmux sessions for agent: $agent"
+  fi
+}
+
+session_state() {
+  "$headless_bin" --list 2>/dev/null | awk -v s="$1" '$1 == s { print $3; found = 1 } END { if (!found) exit 1 }'
+}
+
+wait_tracked_sessions() {
+  end_time=$(($(date +%s) + timeout))
+  while :; do
+    pending=
+    missing=
+    dead=
+    for session in $tracked_sessions; do
+      state=$(session_state "$session" || true)
+      case "$state" in
+        waiting|completed|done|exited) ;;
+        dead) dead="${dead}${dead:+ }$session" ;;
+        '') missing="${missing}${missing:+ }$session" ;;
+        *) pending="${pending}${pending:+ }$session:$state" ;;
+      esac
+    done
+    if [ -n "$dead" ]; then
+      printf '%s\n' "dead sessions: $dead" >&2
+      return 1
+    fi
+    [ -z "$pending" ] && [ -z "$missing" ] && return 0
+    if [ "$(date +%s)" -ge "$end_time" ]; then
+      [ -z "$pending" ] || printf '%s\n' "still pending: $pending" >&2
+      [ -z "$missing" ] || printf '%s\n' "missing from headless list: $missing" >&2
+      return 1
+    fi
+    sleep "$interval"
+  done
+}
+
+command=${1:-}
+[ -n "$command" ] || { usage; exit 2; }
+case "$command" in
+  --help|-h|help)
+    usage
+    exit 0
+    ;;
+esac
+shift
+
+agent=codex
+headless_bin=
+work_dir=$PWD
+prompt=
+prompt_file=
+nodes=
+timeout=90
+interval=5
+kill_sessions=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --agent)
+      [ "$#" -ge 2 ] || die "--agent requires a value"
+      agent=$2
+      shift 2
+      ;;
+    --work-dir|-C)
+      [ "$#" -ge 2 ] || die "--work-dir requires a value"
+      work_dir=$2
+      shift 2
+      ;;
+    --prompt)
+      [ "$#" -ge 2 ] || die "--prompt requires a value"
+      prompt=$2
+      shift 2
+      ;;
+    --prompt-file)
+      [ "$#" -ge 2 ] || die "--prompt-file requires a value"
+      prompt_file=$2
+      shift 2
+      ;;
+    --timeout)
+      [ "$#" -ge 2 ] || die "--timeout requires a value"
+      timeout=$2
+      shift 2
+      ;;
+    --interval)
+      [ "$#" -ge 2 ] || die "--interval requires a value"
+      interval=$2
+      shift 2
+      ;;
+    --kill-sessions)
+      kill_sessions=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      die "unknown option: $1"
+      ;;
+    *)
+      nodes="${nodes}${nodes:+
+}$1"
+      shift
+      ;;
+  esac
+done
+
+validate_agent "$agent"
+
+case "$timeout" in ''|*[!0-9]*) die "invalid --timeout: $timeout" ;; esac
+case "$interval" in ''|*[!0-9]*) die "invalid --interval: $interval" ;; esac
+
+case "$command" in
+  start)
+    require_prompt
+    [ -d "$work_dir" ] || die "work directory does not exist: $work_dir"
+    [ -n "$nodes" ] || die "start requires at least one node"
+    need_headless
+    need_tmux
+    require_macos_ghostty
+    load_tab_state
+    start_nodes_parallel
+    combined_sessions=$(
+      {
+        state_sessions
+        printf '%s\n' "$new_sessions"
+      } | filter_live_sessions
+    )
+    write_swarm_state "$existing_state" "$combined_sessions"
+    create_aggregator "$aggregator" "$combined_sessions"
+    layout_state=$(layout_and_attach "$work_dir" "$aggregator" "$tmux_bin" "$existing_state")
+    write_swarm_state "$layout_state" "$combined_sessions"
+    ;;
+  send)
+    require_prompt
+    [ "$(printf '%s\n' "$nodes" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" ] || die "send requires exactly one node"
+    need_headless
+    send_node "$nodes"
+    ;;
+  send-all)
+    require_prompt
+    [ -n "$nodes" ] || die "send-all requires at least one node"
+    need_headless
+    printf '%s\n' "$nodes" | while IFS= read -r node; do
+      send_node "$node"
+    done
+    ;;
+  status)
+    [ -z "$nodes" ] || die "status does not accept node arguments"
+    need_headless
+    tracked_sessions=
+    if current_ghostty_tab_id >/dev/null 2>&1; then
+      load_tab_state
+      tracked_sessions=$(state_sessions | append_unique_sessions)
+    fi
+    status_nodes
+    ;;
+  capture)
+    [ "$(printf '%s\n' "$nodes" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" ] || die "capture requires exactly one node"
+    capture_node "$nodes"
+    ;;
+  capture-all)
+    [ -z "$nodes" ] || die "capture-all does not accept node arguments"
+    need_tmux
+    tracked_sessions_or_die
+    for session in $tracked_sessions; do
+      printf '\n===== %s =====\n' "$session"
+      capture_session "$session"
+    done
+    ;;
+  wait)
+    [ -z "$nodes" ] || die "wait does not accept node arguments"
+    need_headless
+    tracked_sessions_or_die
+    wait_tracked_sessions
+    ;;
+  cleanup)
+    [ -z "$nodes" ] || die "cleanup does not accept node arguments"
+    need_tmux
+    tracked_sessions=
+    load_tab_state
+    if [ -n "$existing_state" ]; then
+      tracked_sessions=$(state_sessions | append_unique_sessions)
+    fi
+    if "$tmux_bin" has-session -t "$aggregator" 2>/dev/null; then
+      "$tmux_bin" kill-session -t "$aggregator"
+    fi
+    if [ "$kill_sessions" = true ]; then
+      for session in $tracked_sessions; do
+        "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
+      done
+    fi
+    rm -f "$state_file"
+    ;;
+  *)
+    die "unknown command: $command"
+    ;;
+esac

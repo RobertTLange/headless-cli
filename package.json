@@ -18,7 +18,8 @@
   "files": [
     "Dockerfile",
     "config.toml.example",
-    "dist"
+    "dist",
+    "skills"
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
