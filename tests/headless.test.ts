@@ -116,6 +116,33 @@ test("builds ACP adapter command from registry npx distribution", () => {
   });
 });
 
+test("rejects ACP registry binary archive distributions without local install support", () => {
+  const registry = {
+    agents: [
+      {
+        id: "example-binary",
+        distribution: {
+          binary: {
+            "darwin-aarch64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "darwin-x86_64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "linux-aarch64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "linux-x86_64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "windows-x86_64": { archive: "https://example.com/example.zip", cmd: "example-acp.exe" },
+          },
+        },
+      },
+    ],
+  };
+
+  assert.throws(
+    () => buildAgentCommand("acp", { prompt: "hello" }, {
+      HEADLESS_ACP_AGENT: "example-binary",
+      HEADLESS_ACP_REGISTRY_JSON: JSON.stringify(registry),
+    }),
+    /binary archive distributions are not supported/,
+  );
+});
+
 test("builds reasoning effort flags for supported agents", () => {
   assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", reasoningEffort: "high" }, {}).args, [
     "--dangerously-bypass-approvals-and-sandbox",

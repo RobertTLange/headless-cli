@@ -108,6 +108,9 @@ function commandFromDistribution(agent: JsonRecord): AcpDistributionCommand | un
   const binary = asRecord(distribution.binary);
   const platformBinary = asRecord(binary[platformBinaryKey()]);
   const command = asString(platformBinary.cmd).trim();
+  if (command && asString(platformBinary.archive).trim()) {
+    throw new Error("ACP registry binary archive distributions are not supported yet; use --acp-command with an installed ACP server");
+  }
   if (command) {
     return { command, args: asStringArray(platformBinary.args) };
   }
