@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added ACP (`agentclientprotocol`) harness support via `@agentclientprotocol/sdk`, including registry-backed `--acp-agent` resolution, custom `--acp-command` launches such as `atlas alta agent run`, ACP registry overrides, setup checks, and README/usage examples.
+- Thanks to Andy MacDonald (@andymac4182) for contributing the ACP harness.
 
 ## 0.3.0 - 2026-05-01
 
