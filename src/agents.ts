@@ -8,9 +8,10 @@ import type {
   Env,
   ReasoningEffort,
 } from "./types.js";
+import { commandFromCustom, resolveAcpCommand } from "./acp.js";
 import { BUILTIN_AGENT_DEFAULTS } from "./config.js";
 
-const agentOrder: AgentName[] = ["claude", "codex", "cursor", "gemini", "opencode", "pi"];
+const agentOrder: AgentName[] = ["acp", "claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const defaultClaudeModel = BUILTIN_AGENT_DEFAULTS.claude.model;
 const defaultCodexModel = BUILTIN_AGENT_DEFAULTS.codex.model;
 export const DEFAULT_CURSOR_MODEL = BUILTIN_AGENT_DEFAULTS.cursor.model ?? "gpt-5.5";
@@ -122,6 +123,23 @@ function opencodeEnv(allow: AllowMode | undefined): Env | undefined {
 
 function commandWithOptionalEnv(command: string, args: string[], env: Env | undefined): BuiltCommand {
   return env ? { command, args, env } : { command, args };
+}
+
+function buildAcp(options: BuildOptions, env: Env): BuiltCommand {
+  const acpCommand = resolveAcpCommand(env);
+  const commandEnv = { ...(acpCommand.env ?? {}) };
+  const headlessCommand = commandFromCustom(env.HEADLESS_BIN || "headless");
+  const command = headlessCommand.command;
+  const args = [...headlessCommand.args, "acp-client", "--", acpCommand.command, ...acpCommand.args];
+  if (Object.keys(commandEnv).length > 0) {
+    return { command, args, env: commandEnv, stdinText: options.prompt };
+  }
+  return { command, args, stdinText: options.prompt };
+}
+
+function buildInteractiveAcp(_options: BuildOptions, env: Env): BuiltCommand {
+  const acpCommand = resolveAcpCommand(env);
+  return { command: acpCommand.command, args: acpCommand.args, env: acpCommand.env };
 }
 
 function buildClaude(options: BuildOptions): BuiltCommand {
@@ -348,6 +366,15 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 const harnesses: Record<AgentName, AgentHarness> = {
+  acp: {
+    name: "acp",
+    promptFileMode: "argument",
+    configRelDir: ".config/acp",
+    workspaceConfigRelDir: ".acp",
+    seedPaths: [".config/acp"],
+    buildCommand: buildAcp,
+    buildInteractiveCommand: buildInteractiveAcp,
+  },
   claude: {
     name: "claude",
     promptFileMode: "stdin",

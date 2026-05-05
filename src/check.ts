@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
+import { commandFromCustom, resolveAcpCommand } from "./acp.js";
 import { listAgents } from "./agents.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
@@ -40,6 +41,13 @@ interface DockerCheck {
 type AuthLabel = "-" | "api" | "oauth" | "api+oauth";
 
 export function commandForAgent(agent: AgentName, env: Env): string {
+  if (agent === "acp") {
+    try {
+      return resolveAcpCommand(env).command;
+    } catch {
+      return commandFromCustom(env.HEADLESS_ACP_COMMAND || "headless-acp").command;
+    }
+  }
   if (agent === "cursor") {
     return env.CURSOR_CLI_BIN || "agent";
   }
@@ -92,6 +100,7 @@ const commonProviderApiEnvNames = [
 const awsCredentialEnvNames = ["AWS_ACCESS_KEY_ID", "AWS_PROFILE"];
 
 const apiEnvNamesByAgent: Record<AgentName, string[]> = {
+  acp: commonProviderApiEnvNames,
   claude: ["ANTHROPIC_API_KEY"],
   codex: ["CODEX_API_KEY", "OPENAI_API_KEY"],
   cursor: ["CURSOR_API_KEY"],
@@ -101,6 +110,7 @@ const apiEnvNamesByAgent: Record<AgentName, string[]> = {
 };
 
 const oauthEnvNamesByAgent: Record<AgentName, string[]> = {
+  acp: [],
   claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
   codex: [],
   cursor: [],
@@ -110,6 +120,7 @@ const oauthEnvNamesByAgent: Record<AgentName, string[]> = {
 };
 
 const oauthPathsByAgent: Record<AgentName, string[]> = {
+  acp: [".config/acp"],
   claude: [".claude/.credentials.json", ".claude/auth.json"],
   codex: [".codex/auth.json"],
   cursor: [".cursor/cli-config.json"],

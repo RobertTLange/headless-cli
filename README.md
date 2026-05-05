@@ -5,7 +5,7 @@
 <h1 align="center">Headless CLI</h1>
 
 <p align="center">
-  One CLI entrypoint for running Claude, Codex, Cursor, Gemini, Pi, and OpenCode in headless mode.
+  One CLI entrypoint for running Claude, Codex, Cursor, Gemini, Pi, OpenCode, and ACP-compatible agents in headless mode.
 </p>
 
 <p align="center">
@@ -52,6 +52,10 @@ printf "Review this diff" | headless pi --model claude-opus
 # Preview the native backend command.
 headless gemini --prompt "Summarize the codebase" --print-command
 
+# Run an ACP-compatible agent from the registry or a custom ACP server command.
+headless acp --acp-agent auggie --prompt "Inspect this repository"
+headless acp --acp-command "atlas alta agent run" --prompt "Fix the failing tests"
+
 # Stream native JSON, debug traces, or append normalized usage.
 headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --debug
@@ -71,7 +75,7 @@ headless attach --all
 headless --check
 ```
 
-When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
+When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
 ## Multi-Agent Orchestration
 
@@ -96,6 +100,7 @@ Roles include `orchestrator`, `explorer`, `worker`, and `reviewer`. Team specs a
 | [Gemini CLI](https://geminicli.com/docs/cli/cli-reference/) | `npm install -g @google/gemini-cli` | `gemini` |
 | [OpenCode](https://opencode.ai/docs/cli/) | `curl -fsSL https://opencode.ai/install \| bash` or `npm install -g opencode-ai` | `opencode` |
 | [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md) | `npm install -g @mariozechner/pi-coding-agent` | `pi`, or set `PI_CODING_AGENT_BIN` |
+| [ACP](https://agentclientprotocol.com/) | Use `--acp-agent <id>` to resolve from the ACP registry, or `--acp-command <cmd>` for a custom ACP server | `headless acp-client ...` adapter |
 
 Install the agent CLIs you want Headless to drive.
 

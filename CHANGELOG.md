@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added ACP (`agentclientprotocol`) harness support via `@agentclientprotocol/sdk`, including registry-backed `--acp-agent` resolution, custom `--acp-command` launches such as `atlas alta agent run`, ACP registry overrides, setup checks, and README/usage examples.
+
 ## 0.3.0 - 2026-05-01
 
 - Added API/OAuth credential signal reporting to `headless --check` for supported agent backends.
