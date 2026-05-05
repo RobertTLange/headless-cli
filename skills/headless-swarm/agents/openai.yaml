@@ -1,0 +1,4 @@
+interface:
+  display_name: "Headless Swarm"
+  short_description: "Parallel Ghostty swarms for Headless"
+  default_prompt: "Use $headless-swarm to launch several Headless subagents in parallel, show them in a Ghostty tmux grid, and coordinate them from this pane."

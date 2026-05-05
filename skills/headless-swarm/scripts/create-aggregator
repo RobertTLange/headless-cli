@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+tmux_bin=$1
+aggregator=$2
+sessions=$3
+
+floor_sqrt() {
+  value=$1
+  result=1
+  while [ $(((result + 1) * (result + 1))) -le "$value" ]; do
+    result=$((result + 1))
+  done
+  printf '%s' "$result"
+}
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+session_count=$(printf '%s\n' "$sessions" | sed '/^$/d' | wc -l | tr -d ' ')
+[ "$session_count" -gt 0 ] || {
+  printf '%s\n' "create-aggregator: cannot create empty swarm aggregator" >&2
+  exit 1
+}
+row_count=$(floor_sqrt "$session_count")
+column_count=$(((session_count + row_count - 1) / row_count))
+first_session=$(printf '%s\n' "$sessions" | sed '/^$/d; q')
+
+if "$tmux_bin" has-session -t "$aggregator" 2>/dev/null; then
+  "$tmux_bin" kill-session -t "$aggregator"
+fi
+
+"$tmux_bin" new-session -d -x 240 -y 80 -s "$aggregator" \
+  "/usr/bin/env -u TMUX $(shell_quote "$tmux_bin") attach-session -t $(shell_quote "$first_session")"
+
+printf '%s\n' "$sessions" | sed -n "2,${column_count}p" | while IFS= read -r session; do
+  [ -n "$session" ] || continue
+  "$tmux_bin" split-window -h -t "$aggregator" \
+    "/usr/bin/env -u TMUX $(shell_quote "$tmux_bin") attach-session -t $(shell_quote "$session")"
+  "$tmux_bin" select-layout -t "$aggregator" even-horizontal >/dev/null
+done
+
+pane_ids=$("$tmux_bin" list-panes -t "$aggregator" -F '#{pane_left}	#{pane_id}' | sort -n | cut -f2)
+column_index=1
+printf '%s\n' "$pane_ids" | while IFS= read -r pane_id; do
+  row_index=2
+  while [ "$row_index" -le "$row_count" ]; do
+    session_position=$(((row_index - 1) * column_count + column_index))
+    if [ "$session_position" -le "$session_count" ]; then
+      session=$(printf '%s\n' "$sessions" | sed -n "${session_position}p")
+      "$tmux_bin" split-window -v -t "$pane_id" \
+        "/usr/bin/env -u TMUX $(shell_quote "$tmux_bin") attach-session -t $(shell_quote "$session")"
+    fi
+    row_index=$((row_index + 1))
+  done
+  column_index=$((column_index + 1))
+done
