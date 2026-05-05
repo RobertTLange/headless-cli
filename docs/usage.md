@@ -16,6 +16,7 @@ printf "Review this diff" | headless pi --model claude-opus
 
 | Agent | Command shape |
 | --- | --- |
+| `acp` | `headless acp-client -- <acp-server-command>`, selected with `--acp-agent` or `--acp-command` |
 | `claude` | `claude -p ... --output-format stream-json --verbose --dangerously-skip-permissions` |
 | `codex` | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ...` |
 | `cursor` | `agent -p --trust --force --output-format stream-json --model gpt-5.5-medium ...` |
@@ -23,9 +24,35 @@ printf "Review this diff" | headless pi --model claude-opus
 | `opencode` | `opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions ...` |
 | `pi` | `pi --no-session --mode json --provider openai-codex --model gpt-5.5 --tools read,bash,edit,write ...` |
 
-When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`.
+When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
 When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`.
+
+## ACP Agents
+
+ACP support uses [Agent Client Protocol](https://agentclientprotocol.com/) to run any compatible ACP server behind the normal Headless prompt/output flow. Unlike built-in concrete agents, `acp` requires an explicit backend via `--acp-agent`, `--acp-command`, or their environment equivalents.
+
+Resolve an agent from the public ACP registry by id or name:
+
+```bash
+headless acp --acp-agent auggie --prompt "Inspect this repository"
+```
+
+Headless fetches `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` when `--acp-agent` is used. Override the source with a URL or local registry file:
+
+```bash
+headless acp --acp-agent example-acp --acp-registry https://example.com/registry.json --prompt "Summarize this repo"
+headless acp --acp-agent example-acp --acp-registry-file ./registry.json --prompt "Run the focused tests"
+```
+
+Use a custom ACP server command when the command is not in the registry or when you want full control over the launch command:
+
+```bash
+headless acp --acp-command "atlas alta agent run" --prompt "Fix the failing tests"
+printf "Review this diff" | headless acp --acp-command "atlas alta agent run"
+```
+
+Environment equivalents are also supported: `HEADLESS_ACP_AGENT`, `HEADLESS_ACP_COMMAND`, `HEADLESS_ACP_REGISTRY_URL`, `HEADLESS_ACP_REGISTRY_FILE`, and `HEADLESS_ACP_REGISTRY_JSON`.
 
 ## Permissions and Reasoning
 
@@ -140,7 +167,7 @@ mkdir -p ~/.headless
 cp config.toml.example ~/.headless/config.toml
 ```
 
-Supported sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`. Supported keys are `model` and `reasoning_effort`.
+Supported sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`. Supported keys are `model` and `reasoning_effort`. ACP backend selection is controlled by `--acp-agent`, `--acp-command`, and the ACP environment variables rather than model defaults.
 
 Precedence:
 
@@ -186,6 +213,10 @@ Options:
 - `--model`, `--agent-model`: model override passed to the agent CLI.
 - `--reasoning-effort`, `--effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
 - `--allow`: permission mode, either `read-only` or `yolo`.
+- `--acp-agent`: with `acp`, resolve an ACP server from the registry by id or name.
+- `--acp-command`: with `acp`, run a custom ACP server command such as `atlas alta agent run`.
+- `--acp-registry`: with `--acp-agent`, use a custom ACP registry URL.
+- `--acp-registry-file`: with `--acp-agent`, read registry JSON from a local file.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
 - `--modal`: run the agent in a Modal CPU sandbox for one-shot headless execution.
@@ -213,6 +244,11 @@ See [orchestration.md](orchestration.md) for `--role`, `--run`, `--node`, `--tea
 - `PI_CODING_AGENT_PROVIDER`: Pi provider override used when the Pi model value does not include `provider/model`.
 - `PI_CODING_AGENT_MODEL`: Pi model override when `--model` is omitted. Accepts `provider/model` or a bare model paired with `PI_CODING_AGENT_PROVIDER`.
 - `PI_CODING_AGENT_MODELS`: passed to Pi as `--models`.
+- `HEADLESS_ACP_AGENT`: ACP registry id or name to resolve when running `headless acp`.
+- `HEADLESS_ACP_COMMAND`: custom ACP server command, for example `atlas alta agent run`.
+- `HEADLESS_ACP_REGISTRY_URL`: ACP registry URL override.
+- `HEADLESS_ACP_REGISTRY_FILE`: local ACP registry JSON file.
+- `HEADLESS_ACP_REGISTRY_JSON`: inline ACP registry JSON, mainly useful for tests or wrappers.
 - `HEADLESS_RUN_DIR`: concrete directory for the active run store, mainly used by Docker run coordination.
 
 Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.

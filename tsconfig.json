@@ -6,6 +6,7 @@
     "moduleResolution": "NodeNext",
     "outDir": "dist",
     "rootDir": "src",
+    "skipLibCheck": true,
     "strict": true,
     "target": "ES2022"
   },

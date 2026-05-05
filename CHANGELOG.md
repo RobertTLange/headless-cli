@@ -7,6 +7,9 @@
 - Changed Headless tmux session listing to mark sessions waiting after 15 seconds of inactivity by default.
 - Added README instructions for installing the bundled Codex skill with `npx`.
 
+- Added ACP (`agentclientprotocol`) harness support via `@agentclientprotocol/sdk`, including registry-backed `--acp-agent` resolution, custom `--acp-command` launches such as `atlas alta agent run`, ACP registry overrides, setup checks, and README/usage examples.
+- Thanks to Andy MacDonald (@andymac4182) for contributing the ACP harness.
+
 ## 0.3.0 - 2026-05-01
 
 - Added API/OAuth credential signal reporting to `headless --check` for supported agent backends.

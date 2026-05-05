@@ -27,6 +27,7 @@ export interface HeadlessConfig {
 }
 
 export const BUILTIN_AGENT_DEFAULTS: Record<AgentName, AgentDefaults> = {
+  acp: {},
   claude: { model: "claude-opus-4-6" },
   codex: { model: "gpt-5.5" },
   cursor: { model: "gpt-5.5", reasoningEffort: "medium" },
@@ -165,6 +166,7 @@ export function parseHeadlessConfig(content: string): HeadlessConfig {
 
 function parseAgentName(value: string, lineNumber: number): AgentName {
   if (
+    value === "acp" ||
     value === "claude" ||
     value === "codex" ||
     value === "cursor" ||

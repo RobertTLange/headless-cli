@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
+import { acpClientCapabilities } from "../src/acp.ts";
 import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
@@ -25,7 +26,7 @@ async function waitFor(assertion: () => boolean): Promise<void> {
 }
 
 test("lists all supported agents", () => {
-  assert.deepEqual(listAgents(), ["claude", "codex", "cursor", "gemini", "opencode", "pi"]);
+  assert.deepEqual(listAgents(), ["acp", "claude", "codex", "cursor", "gemini", "opencode", "pi"]);
 });
 
 test("default Docker image reference is accepted by Docker", () => {
@@ -56,6 +57,90 @@ test("builds codex command using CODEX_MODEL override", () => {
 
   assert.deepEqual(command.args.slice(2, 4), ["--model", "gpt-next"]);
   assert.equal(command.stdinText, "hello");
+});
+
+test("builds ACP adapter command from custom command", () => {
+  const command = buildAgentCommand("acp", { prompt: "hello" }, {
+    HEADLESS_BIN: "headless-dev",
+    HEADLESS_ACP_COMMAND: "atlas alta agent run",
+  });
+
+  assert.deepEqual(command, {
+    command: "headless-dev",
+    args: ["acp-client", "--", "atlas", "alta", "agent", "run"],
+    stdinText: "hello",
+  });
+});
+
+test("builds ACP adapter command with read-only permission mode", () => {
+  const command = buildAgentCommand("acp", { prompt: "hello", allow: "read-only" }, {
+    HEADLESS_BIN: "headless-dev",
+    HEADLESS_ACP_COMMAND: "atlas alta agent run",
+  });
+
+  assert.deepEqual(command, {
+    command: "headless-dev",
+    args: ["acp-client", "--", "atlas", "alta", "agent", "run"],
+    env: { HEADLESS_ACP_ALLOW: "read-only" },
+    stdinText: "hello",
+  });
+});
+
+test("ACP client advertises read-only filesystem capability", () => {
+  assert.deepEqual(acpClientCapabilities, {
+    fs: { readTextFile: true, writeTextFile: false },
+  });
+});
+
+test("builds ACP adapter command from registry npx distribution", () => {
+  const registry = {
+    agents: [
+      {
+        id: "example-acp",
+        name: "Example ACP",
+        distribution: { npx: { package: "example-acp@1.2.3", args: ["--acp"], env: { EXAMPLE_AUTO_UPDATE: "0" } } },
+      },
+    ],
+  };
+  const command = buildAgentCommand("acp", { prompt: "hello" }, {
+    HEADLESS_BIN: "headless-dev",
+    HEADLESS_ACP_AGENT: "example-acp",
+    HEADLESS_ACP_REGISTRY_JSON: JSON.stringify(registry),
+  });
+
+  assert.deepEqual(command, {
+    command: "headless-dev",
+    args: ["acp-client", "--", process.platform === "win32" ? "npx.cmd" : "npx", "-y", "example-acp@1.2.3", "--acp"],
+    env: { EXAMPLE_AUTO_UPDATE: "0" },
+    stdinText: "hello",
+  });
+});
+
+test("rejects ACP registry binary archive distributions without local install support", () => {
+  const registry = {
+    agents: [
+      {
+        id: "example-binary",
+        distribution: {
+          binary: {
+            "darwin-aarch64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "darwin-x86_64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "linux-aarch64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "linux-x86_64": { archive: "https://example.com/example.tar.gz", cmd: "./example-acp" },
+            "windows-x86_64": { archive: "https://example.com/example.zip", cmd: "example-acp.exe" },
+          },
+        },
+      },
+    ],
+  };
+
+  assert.throws(
+    () => buildAgentCommand("acp", { prompt: "hello" }, {
+      HEADLESS_ACP_AGENT: "example-binary",
+      HEADLESS_ACP_REGISTRY_JSON: JSON.stringify(registry),
+    }),
+    /binary archive distributions are not supported/,
+  );
 });
 
 test("builds reasoning effort flags for supported agents", () => {
@@ -1408,6 +1493,32 @@ test("CLI reports when no installed agent can be auto-selected", async () => {
 
   assert.equal(code, 2);
   assert.match(stderr.join(""), /no supported agent found/);
+});
+
+test("CLI rejects ACP without a registry agent or custom command", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["acp", "--prompt", "hello"], {
+    env: { ...process.env, HEADLESS_ACP_AGENT: undefined, HEADLESS_ACP_COMMAND: undefined },
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /acp requires --acp-agent, --acp-command/);
+});
+
+test("CLI aggregates chunked ACP stdio output", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["acp", "--prompt", "hello acp"], {
+    env: {
+      ...process.env,
+      HEADLESS_BIN: `${process.execPath} --import tsx ${join(repoRoot, "src", "cli.ts")}`,
+      HEADLESS_ACP_COMMAND: `${process.execPath} --import tsx ${join(repoRoot, "src", "cli.ts")} acp-stdio`,
+    },
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stdout.join(""), "hello acp\n");
 });
 
 test("CLI prints final assistant message by default", async () => {

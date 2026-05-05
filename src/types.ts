@@ -1,4 +1,4 @@
-export type AgentName = "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi";
+export type AgentName = "acp" | "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi";
 
 export type PromptFileMode = "argument" | "stdin";
 

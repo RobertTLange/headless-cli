@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
+import { runAcpClient, runAcpStdioAgent } from "./acp.js";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,6 +118,10 @@ interface ParsedArgs {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   allow?: AllowMode;
+  acpAgent?: string;
+  acpCommand?: string;
+  acpRegistryFile?: string;
+  acpRegistryUrl?: string;
   workDir?: string;
   tmuxName?: string;
   sessionAlias?: string;
@@ -182,6 +187,10 @@ function usage(): string {
     "  --model <name>        Agent model override.",
     "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
+    "  --acp-agent <id>      With acp, resolve an ACP server from the registry by id or name.",
+    "  --acp-command <cmd>   With acp, run a custom ACP server command, e.g. 'atlas alta agent run'.",
+    "  --acp-registry <url>  With --acp-agent, use a custom ACP registry URL.",
+    "  --acp-registry-file <path> With --acp-agent, read registry JSON from a local file.",
     "  --role <role>         Role: orchestrator, explorer, worker, or reviewer.",
     "  --coordination <mode> Coordination: session, tmux, or oneshot.",
     "  --run <run>           Register this invocation in a local run.",
@@ -319,6 +328,18 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--allow":
         parsed.allow = parseAllowMode(takeValue(args, arg));
+        break;
+      case "--acp-agent":
+        parsed.acpAgent = takeValue(args, arg);
+        break;
+      case "--acp-command":
+        parsed.acpCommand = takeValue(args, arg);
+        break;
+      case "--acp-registry":
+        parsed.acpRegistryUrl = takeValue(args, arg);
+        break;
+      case "--acp-registry-file":
+        parsed.acpRegistryFile = takeValue(args, arg);
         break;
       case "--role":
         parsed.role = parseRole(takeValue(args, arg));
@@ -1892,11 +1913,38 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
-  const env = deps.env ?? process.env;
+  const env: Env = { ...(deps.env ?? process.env) };
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
+
+  if (argv[0] === "acp-stdio") {
+    await runAcpStdioAgent();
+    return 0;
+  }
+  if (argv[0] === "acp-client") {
+    const separator = argv.indexOf("--", 1);
+    const commandParts = separator >= 0 ? argv.slice(separator + 1) : argv.slice(1);
+    const command = commandParts[0];
+    if (!command) {
+      stderr("headless: ACP adapter missing server command\n");
+      return 2;
+    }
+    const prompt = deps.stdin ?? (await readStdin());
+    return await runAcpClient({
+      agentCommand: { command, args: commandParts.slice(1) },
+      prompt,
+      env,
+      allow: env.HEADLESS_ACP_ALLOW === "read-only" ? "read-only" : undefined,
+      stdout,
+      stderr,
+    });
+  }
 
   try {
     const parsed = parseArgs(argv);
+    if (parsed.acpAgent) env.HEADLESS_ACP_AGENT = parsed.acpAgent;
+    if (parsed.acpCommand) env.HEADLESS_ACP_COMMAND = parsed.acpCommand;
+    if (parsed.acpRegistryFile) env.HEADLESS_ACP_REGISTRY_FILE = parsed.acpRegistryFile;
+    if (parsed.acpRegistryUrl) env.HEADLESS_ACP_REGISTRY_URL = parsed.acpRegistryUrl;
 
     if (parsed.help) {
       stdout(usage());
@@ -2660,7 +2708,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         // Preserve the original CLI error.
       }
     }
-    if (error instanceof CliError) {
+    if (error instanceof CliError || error instanceof Error) {
       stderr(`headless: ${error.message}\n`);
       return 2;
     }
