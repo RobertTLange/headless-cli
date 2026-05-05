@@ -34,6 +34,14 @@ headless codex --prompt "Hello world"
 
 Requires Node.js 22+.
 
+To install the bundled Codex skill for visual Headless swarms, use `npx` to copy a tagged release into Codex's skill directory:
+
+```bash
+mkdir -p ~/.codex/skills
+HEADLESS_REF=v0.4.0
+npx -y degit@2.8.4 "RobertTLange/headless-cli/skills/headless-swarm#$HEADLESS_REF" ~/.codex/skills/headless-swarm
+```
+
 ## Core Usage
 
 ```bash
