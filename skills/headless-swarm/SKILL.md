@@ -1,17 +1,28 @@
 ---
 name: headless-swarm
-description: Create and control a visual macOS Ghostty split layout of durable Headless tmux agent sessions. Use when an orchestrator agent needs to split the current Ghostty tab into visible subagent panes, send follow-up messages to subagents, capture their visible feedback, or coordinate multi-agent Headless work from one main pane.
+description: Create and control a visual macOS Ghostty split layout of durable Headless tmux agent sessions. Use when an orchestrator agent needs to launch visible subagent panes for Codex, Claude, Gemini, Pi, Cursor, or OpenCode, send follow-up messages, capture feedback, or coordinate multi-agent Headless work from one main pane.
 ---
 
 # Headless Swarm
 
-Use this skill to coordinate several `headless` subagents from a main orchestrator pane while keeping each subagent visible in Ghostty.
+Use this skill to coordinate several `headless` subagents from a main orchestrator pane while keeping each subagent visible in Ghostty. The orchestrator can be any agent that can run shell commands; the subagents can be any backend supported by Headless.
 
-Resolve the bundled helper first; do not assume the current repository has a root-level `scripts/` directory:
+Resolve the bundled helper from a trusted installed skill directory. Do not run a helper from the current repository unless the user explicitly installed or selected that copy.
 
 ```bash
-HELPER="$HOME/.codex/skills/headless-swarm/scripts/headless-splits"
-[ -x "$HELPER" ] || { echo "Install headless-swarm into ~/.codex/skills first" >&2; exit 1; }
+for dir in \
+  "${HEADLESS_SWARM_SKILL_DIR:-}" \
+  "$HOME/.agents/skills/headless-swarm" \
+  "$HOME/.codex/skills/headless-swarm" \
+  "$HOME/.claude/skills/headless-swarm" \
+  "$HOME/.pi/skills/headless-swarm" \
+  "$HOME/.gemini/skills/headless-swarm" \
+  "$HOME/.opencode/skills/headless-swarm" \
+do
+  [ -n "$dir" ] && [ -x "$dir/scripts/headless-splits" ] && SKILL_DIR="$dir" && break
+done
+[ -n "${SKILL_DIR:-}" ] || { echo "Install headless-swarm or set HEADLESS_SWARM_SKILL_DIR" >&2; exit 1; }
+HELPER="$SKILL_DIR/scripts/headless-splits"
 "$HELPER" --help
 ```
 
@@ -24,10 +35,9 @@ HELPER="$HOME/.codex/skills/headless-swarm/scripts/headless-splits"
 5. Clean up with `cleanup --kill-sessions` when the swarm is no longer needed.
 
 ```bash
-"$HELPER" start --agent codex --work-dir "$PWD" --prompt "Investigate the failing tests. Report findings only." worker-1 worker-2 reviewer
 "$HELPER" start --work-dir "$PWD" --prompt "Use your assigned role. Report findings only." codex:code claude:review gemini:docs pi:ux
-"$HELPER" send worker-1 --agent codex --prompt "Focus on src/sessions.ts and report the likely root cause."
-"$HELPER" send-all worker-1 worker-2 --agent codex --prompt "Stop after findings. Do not edit files."
+"$HELPER" send claude:review --prompt "Focus on regressions and security risks."
+"$HELPER" send-all codex:code gemini:docs --prompt "Stop after findings. Do not edit files."
 "$HELPER" status
 "$HELPER" wait --timeout 120
 "$HELPER" capture-all
@@ -36,9 +46,9 @@ HELPER="$HOME/.codex/skills/headless-swarm/scripts/headless-splits"
 ## Behavior
 
 - Prefer the helper over raw AppleScript, raw `tmux send-keys`, or direct agent CLI calls.
-- Use Headless named tmux sessions as durable endpoints: node `worker-1` with agent `codex` maps to `headless-codex-worker-1`.
+- Use Headless named tmux sessions as durable endpoints: node `review` with agent `claude` maps to `headless-claude-review`.
 - `start` launches all requested Headless sessions in parallel, then rebuilds the visible tmux aggregator once.
-- For mixed-agent starts, prefix nodes as `agent:node`, for example `codex:code claude:review gemini:docs`. Unprefixed nodes use `--agent`.
+- For mixed-agent starts, prefix nodes as `agent:node`, for example `codex:code claude:review gemini:docs pi:ux`. Unprefixed nodes use `--agent`.
 - If the node equals the agent, for example `claude:claude`, the tmux name is normalized to `headless-claude-main` instead of `headless-claude-claude`.
 - Keep the focused orchestrator pane as a full-height left control pane. Subagents appear in one right-side Ghostty pane running a tmux aggregator.
 - Size the nested tmux grid explicitly: 4 agents become 2 x 2, and 8 agents become 2 x 4.
@@ -57,8 +67,8 @@ Give each node a narrow assignment and tell it whether edits are allowed. The he
 For prompts longer than a short sentence, prefer `--prompt-file`:
 
 ```bash
-"$HELPER" start --agent codex --work-dir "$PWD" --prompt-file /tmp/swarm-task.md worker-1 reviewer
-"$HELPER" send reviewer --agent codex --prompt-file /tmp/review-followup.md
+"$HELPER" start --work-dir "$PWD" --prompt-file /tmp/swarm-task.md codex:worker claude:reviewer
+"$HELPER" send claude:reviewer --prompt-file /tmp/review-followup.md
 ```
 
 ## Recovery
@@ -72,7 +82,7 @@ osascript -e 'tell application "Ghostty" to get version'
 If a visible split closes, reattach manually:
 
 ```bash
-headless attach headless-codex-worker-1
+headless attach headless-claude-review
 ```
 
 If a node is not responding, check status and capture:
@@ -80,5 +90,5 @@ If a node is not responding, check status and capture:
 ```bash
 "$HELPER" status
 "$HELPER" wait --timeout 120
-"$HELPER" capture worker-1 --agent codex
+"$HELPER" capture claude:review
 ```
