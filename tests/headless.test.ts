@@ -2503,6 +2503,38 @@ test("CLI --list honors HEADLESS_LIST_WAITING_AFTER_MS", async () => {
   }
 });
 
+test("CLI --list defaults tmux sessions to waiting after 15 seconds of inactivity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const activity = Math.floor(Date.now() / 1000) - 16;",
+          "process.stdout.write(`headless-codex-quiet\\t1700000000\\t${activity}\\t0\\n`);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^headless-codex-quiet\s+codex\s+waiting\s+/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --list uses tmux window activity for last activity", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

@@ -1409,7 +1409,7 @@ function parseEpochSeconds(value: string): number | undefined {
 
 function parseWaitingAfterMs(env: Env): number {
   const parsed = Number.parseInt(env.HEADLESS_LIST_WAITING_AFTER_MS ?? "", 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30_000;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 15_000;
 }
 
 function inferHeadlessTmuxSessionState(
