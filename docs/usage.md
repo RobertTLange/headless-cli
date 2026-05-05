@@ -76,7 +76,7 @@ headless codex --prompt "Fix the tests" --tmux --name work
 headless codex --prompt "Run focused tests" --tmux --session work
 ```
 
-Use `headless --list` to list active tmux sessions created by Headless. Use `headless send <session-name> --prompt "..."` for follow-up messages and `headless rename <session-name> <new-name>` to rename managed sessions.
+Use `headless --list` to list active tmux sessions created by Headless. Sessions are marked `waiting` after 15 seconds without tmux window activity; override this with `HEADLESS_LIST_WAITING_AFTER_MS`. Use `headless send <session-name> --prompt "..."` for follow-up messages and `headless rename <session-name> <new-name>` to rename managed sessions.
 
 ```bash
 headless --list
