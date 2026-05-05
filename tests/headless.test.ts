@@ -71,6 +71,20 @@ test("builds ACP adapter command from custom command", () => {
   });
 });
 
+test("builds ACP adapter command with read-only permission mode", () => {
+  const command = buildAgentCommand("acp", { prompt: "hello", allow: "read-only" }, {
+    HEADLESS_BIN: "headless-dev",
+    HEADLESS_ACP_COMMAND: "atlas alta agent run",
+  });
+
+  assert.deepEqual(command, {
+    command: "headless-dev",
+    args: ["acp-client", "--", "atlas", "alta", "agent", "run"],
+    env: { HEADLESS_ACP_ALLOW: "read-only" },
+    stdinText: "hello",
+  });
+});
+
 test("builds ACP adapter command from registry npx distribution", () => {
   const registry = {
     agents: [

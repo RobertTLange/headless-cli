@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 
 import * as acp from "@agentclientprotocol/sdk";
-import type { BuiltCommand, Env } from "./types.js";
+import type { AllowMode, BuiltCommand, Env } from "./types.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -24,6 +24,7 @@ export interface RunAcpClientOptions {
   prompt: string;
   cwd?: string;
   env: Env;
+  allow?: AllowMode;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -184,13 +185,19 @@ function contentText(value: unknown): string {
 class HeadlessAcpClient {
   private assistantText = "";
 
-  constructor(private readonly stdout: (text: string) => void) {}
+  constructor(
+    private readonly stdout: (text: string) => void,
+    private readonly allow: AllowMode | undefined,
+  ) {}
 
   finalAssistantText(): string {
     return this.assistantText.trim();
   }
 
   async requestPermission(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {
+    if (this.allow === "read-only") {
+      return { outcome: { outcome: "cancelled" } };
+    }
     const option = params.options.find((candidate) => candidate.kind === "allow_once") ?? params.options[0];
     return option
       ? { outcome: { outcome: "selected", optionId: option.optionId } }
@@ -246,7 +253,7 @@ export async function runAcpClient(options: RunAcpClientOptions): Promise<number
     Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
     Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
   );
-  const client = new HeadlessAcpClient(options.stdout);
+  const client = new HeadlessAcpClient(options.stdout, options.allow);
   const connection = new acp.ClientSideConnection(() => client, stream);
 
   try {

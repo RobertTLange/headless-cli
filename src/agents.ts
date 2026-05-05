@@ -128,6 +128,9 @@ function commandWithOptionalEnv(command: string, args: string[], env: Env | unde
 function buildAcp(options: BuildOptions, env: Env): BuiltCommand {
   const acpCommand = resolveAcpCommand(env);
   const commandEnv = { ...(acpCommand.env ?? {}) };
+  if (options.allow) {
+    commandEnv.HEADLESS_ACP_ALLOW = options.allow;
+  }
   const headlessCommand = commandFromCustom(env.HEADLESS_BIN || "headless");
   const command = headlessCommand.command;
   const args = [...headlessCommand.args, "acp-client", "--", acpCommand.command, ...acpCommand.args];

@@ -1933,6 +1933,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       agentCommand: { command, args: commandParts.slice(1) },
       prompt,
       env,
+      allow: env.HEADLESS_ACP_ALLOW === "read-only" ? "read-only" : undefined,
       stdout,
       stderr,
     });
