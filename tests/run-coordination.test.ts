@@ -393,7 +393,9 @@ test("orchestrator run rejects read-only mode because it must update run state",
 test("run launch setup failures mark registered nodes failed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
-    const env = { ...process.env, HOME: join(dir, "home"), PATH: dirname(process.execPath) };
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    const env = { ...process.env, HOME: join(dir, "home"), PATH: binDir };
     const stderr: string[] = [];
 
     const code = await runCli(
