@@ -8,6 +8,8 @@ import type {
   Env,
   ReasoningEffort,
 } from "./types.js";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 import { commandFromCustom, resolveAcpCommand } from "./acp.js";
 import { BUILTIN_AGENT_DEFAULTS } from "./config.js";
 
@@ -145,7 +147,40 @@ function buildInteractiveAcp(_options: BuildOptions, env: Env): BuiltCommand {
   return { command: acpCommand.command, args: acpCommand.args, env: acpCommand.env };
 }
 
-function buildClaude(options: BuildOptions): BuiltCommand {
+function executableExists(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function pathExecutable(command: string, env: Env): string | undefined {
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, command);
+    if (executableExists(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function claudeCommand(env: Env): string {
+  if (env.CLAUDE_CODE_BIN) return env.CLAUDE_CODE_BIN;
+  if (env.CLAUDE_BIN) return env.CLAUDE_BIN;
+
+  const homeLocalClaude = env.HOME ? join(env.HOME, ".local", "bin", "claude") : undefined;
+  if (!homeLocalClaude || !executableExists(homeLocalClaude)) return "claude";
+
+  const firstPathClaude = pathExecutable("claude", env);
+  if (!firstPathClaude || firstPathClaude === homeLocalClaude || firstPathClaude === "/usr/local/bin/claude") {
+    return homeLocalClaude;
+  }
+
+  return "claude";
+}
+
+function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
   const args = withModel([], options.model ?? defaultClaudeModel);
   args.push("-p");
   if (options.sessionMode === "resume" && options.sessionId) {
@@ -158,13 +193,13 @@ function buildClaude(options: BuildOptions): BuiltCommand {
     args.push("--output-format", "stream-json", "--verbose");
     args.push(...withClaudeEffort([], options.reasoningEffort));
     args.push(...withClaudeAllow([], options.allow));
-    return { command: "claude", args, stdinFile: options.promptFile };
+    return { command: claudeCommand(env), args, stdinFile: options.promptFile };
   }
 
   args.push(options.prompt, "--output-format", "stream-json", "--verbose");
   args.push(...withClaudeEffort([], options.reasoningEffort));
   args.push(...withClaudeAllow([], options.allow));
-  return { command: "claude", args };
+  return { command: claudeCommand(env), args };
 }
 
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
@@ -385,12 +420,12 @@ const harnesses: Record<AgentName, AgentHarness> = {
     workspaceConfigRelDir: ".claude",
     seedPaths: [".claude.json", ".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
     buildCommand: buildClaude,
-    buildInteractiveCommand: (options) => {
+    buildInteractiveCommand: (options, env) => {
       const args = withModel([], options.model ?? defaultClaudeModel);
       args.push(...withClaudeEffort([], options.reasoningEffort));
       args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);
-      return { command: "claude", args };
+      return { command: claudeCommand(env), args };
     },
   },
   codex: {

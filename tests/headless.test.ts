@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -378,6 +378,60 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
       "hello",
     ],
   });
+});
+
+test("prefers an executable user-local Claude binary", () => {
+  const home = mkdtempSync(join(tmpdir(), "headless-claude-home-"));
+  const binDir = join(home, ".local", "bin");
+  const claudeBin = join(binDir, "claude");
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(claudeBin, "#!/bin/sh\n");
+  chmodSync(claudeBin, 0o755);
+
+  try {
+    assert.equal(buildAgentCommand("claude", { prompt: "hello" }, { HOME: home }).command, claudeBin);
+    assert.equal(buildInteractiveAgentCommand("claude", { prompt: "hello" }, { HOME: home }).command, claudeBin);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("preserves explicit PATH precedence for Claude shims", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-claude-path-"));
+  const home = join(dir, "home");
+  const binDir = join(dir, "bin");
+  const homeBinDir = join(home, ".local", "bin");
+  const claudeShim = join(binDir, "claude");
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(homeBinDir, { recursive: true });
+  writeFileSync(claudeShim, "#!/bin/sh\n");
+  writeFileSync(join(homeBinDir, "claude"), "#!/bin/sh\n");
+  chmodSync(claudeShim, 0o755);
+  chmodSync(join(homeBinDir, "claude"), 0o755);
+
+  try {
+    assert.equal(
+      buildAgentCommand("claude", { prompt: "hello" }, { HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` }).command,
+      "claude",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allows explicit Claude binary overrides", () => {
+  assert.equal(
+    buildAgentCommand("claude", { prompt: "hello" }, { CLAUDE_CODE_BIN: "/custom/claude-code" }).command,
+    "/custom/claude-code",
+  );
+  assert.equal(
+    buildAgentCommand("claude", { prompt: "hello" }, { CLAUDE_BIN: "/custom/claude" }).command,
+    "/custom/claude",
+  );
+  assert.equal(
+    buildInteractiveAgentCommand("claude", { prompt: "hello" }, { CLAUDE_CODE_BIN: "/custom/claude-code" }).command,
+    "/custom/claude-code",
+  );
 });
 
 test("builds native session commands for supported agents", () => {

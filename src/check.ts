@@ -3,7 +3,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 import { commandFromCustom, resolveAcpCommand } from "./acp.js";
-import { listAgents } from "./agents.js";
+import { claudeCommand, listAgents } from "./agents.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
   loadHeadlessConfig,
@@ -50,6 +50,9 @@ export function commandForAgent(agent: AgentName, env: Env): string {
   }
   if (agent === "cursor") {
     return env.CURSOR_CLI_BIN || "agent";
+  }
+  if (agent === "claude") {
+    return claudeCommand(env);
   }
   if (agent === "pi") {
     return env.PI_CODING_AGENT_BIN || "pi";
