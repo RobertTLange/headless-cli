@@ -59,6 +59,7 @@ printf "Review this diff" | headless pi --model claude-opus
 
 # Preview the native backend command.
 headless gemini --prompt "Summarize the codebase" --print-command
+headless --prompt "identity" --print-command --json
 
 # Run an ACP-compatible agent from the registry or a custom ACP server command.
 headless acp --acp-agent auggie --prompt "Inspect this repository"

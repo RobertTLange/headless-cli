@@ -74,6 +74,12 @@ headless codex --prompt "Fix the failing tests"
 headless pi --prompt "Summarize this repo" --json
 ```
 
+When combined with `--print-command`, `--json` prints a single structured object for wrappers that need the selected agent identity without parsing shell text.
+
+```bash
+headless --prompt "identity" --print-command --json
+```
+
 `--debug` streams the native JSON trace and appends the extracted final assistant message. It cannot be combined with `--json` or `--tmux`.
 
 ```bash
@@ -229,7 +235,7 @@ Options:
 - `headless attach`: attach to the most recently active Headless tmux session; add `--all` to tile all active sessions.
 - `--check`: check supported agent binaries, versions, Docker status, and local API/OAuth credential signals.
 - `--list`: list active tmux sessions created by Headless, including state and timestamps.
-- `--print-command`: print the shell command without executing it.
+- `--print-command`: print the shell command without executing it. Combine with `--json` for selected-agent metadata.
 - `--show-config`: print the selected agent's effective model, reasoning effort, config paths, and auth seed paths.
 - `--help`: show usage.
 

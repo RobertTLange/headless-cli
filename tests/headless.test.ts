@@ -1455,6 +1455,65 @@ test("CLI auto-selects the preferred installed agent when omitted", async () => 
   }
 });
 
+test("CLI --print-command --json reports selected identity for npx callers", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      for (const name of ["claude", "codex", "pi"]) {
+        const binary = join(binDir, name);
+        await writeFile(binary, "#!/usr/bin/env node\n");
+        await chmod(binary, 0o755);
+      }
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--prompt", "hello", "--print-command", "--json"], {
+      env: { PATH: binDir },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const payload = JSON.parse(stdout.join(""));
+    assert.equal(payload.agent, "codex");
+    assert.equal(payload.model, "gpt-5.5");
+    assert.equal(payload.reasoningEffort, undefined);
+    assert.match(payload.command, /^printf %s hello \| codex --dangerously-bypass-approvals-and-sandbox exec/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --print-command --json includes configured effort and env-backed model", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(binary, "#!/usr/bin/env node\n");
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--prompt", "hello", "--reasoning-effort", "high", "--print-command", "--json"], {
+      env: { PATH: binDir, CODEX_MODEL: "gpt-5.4" },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const payload = JSON.parse(stdout.join(""));
+    assert.equal(payload.agent, "codex");
+    assert.equal(payload.model, "gpt-5.4");
+    assert.equal(payload.reasoningEffort, "high");
+    assert.match(payload.command, /--model gpt-5\.4/);
+    assert.match(payload.command, /model_reasoning_effort/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI auto-selection follows fallback order and env-backed binaries", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

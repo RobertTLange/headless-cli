@@ -233,7 +233,7 @@ function usage(): string {
     "  docker build        Build the local Docker image tag headless-local:dev.",
     "  --check              Check agents, versions, auth, configured models/effort, and Docker.",
     "  --list               List active headless tmux sessions.",
-    "  --print-command      Print the command without executing it.",
+    "  --print-command      Print the command without executing it. Combine with --json for identity metadata.",
     "  --show-config        Print harness config paths and auth seed paths.",
     "  -v, --version        Print the Headless CLI version.",
     "  -h, --help           Show this help.",
@@ -1019,6 +1019,22 @@ function waitingSpinnerLabel(agent: AgentName, defaults: InvocationDefaults, env
     paintWaitingSpinnerPart(reasoning, "33", color),
     "]",
   ].join("");
+}
+
+function renderPrintCommandJson(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+  command: BuiltCommand,
+): string {
+  const usage = usageContext(agent, defaults, env);
+  return `${JSON.stringify({
+    agent,
+    provider: usage.provider,
+    model: usage.model,
+    reasoningEffort: defaults.reasoningEffort,
+    command: quoteCommand(command),
+  })}\n`;
 }
 
 interface SessionPlan {
@@ -2568,7 +2584,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             workDir: cwd ?? process.cwd(),
           })
         : command;
-      stdout(`${quoteCommand(printableCommand)}\n`);
+      stdout(parsed.json ? renderPrintCommandJson(parsed.agent, configuredDefaults, env, printableCommand) : `${quoteCommand(printableCommand)}\n`);
       return 0;
     }
     if (parsed.docker && !commandExists("docker", env)) {

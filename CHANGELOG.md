@@ -6,6 +6,7 @@
 - Changed npm package contents to include bundled skills.
 - Changed Headless tmux session listing to mark sessions waiting after 15 seconds of inactivity by default.
 - Added README instructions for installing the bundled Codex skill with `npx`.
+- Added `--print-command --json` for npx callers that need structured selected-agent, model, and reasoning-effort metadata.
 
 - Added ACP (`agentclientprotocol`) harness support via `@agentclientprotocol/sdk`, including registry-backed `--acp-agent` resolution, custom `--acp-command` launches such as `atlas alta agent run`, ACP registry overrides, setup checks, and README/usage examples.
 - Thanks to Andy MacDonald (@andymac4182) for contributing the ACP harness.
