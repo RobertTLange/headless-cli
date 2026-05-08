@@ -272,6 +272,7 @@ test("CLI --check reports OAuth auth from local seed files", async () => {
     const home = join(dir, "home");
     mkdirSync(join(home, ".codex"), { recursive: true });
     writeFileSync(join(home, ".codex", "auth.json"), "{}\n");
+    writeFileSync(join(home, ".claude.json"), "{}\n");
 
     const stdout: string[] = [];
     const code = await runCli(["--check"], {
@@ -280,7 +281,28 @@ test("CLI --check reports OAuth auth from local seed files", async () => {
     });
 
     assert.equal(code, 0);
+    assert.match(stdout.join(""), /^\| claude\s+\| ✗\s+\| oauth\s+\| -\s+\| claude-opus-4-6\s+\| -\s+\|$/m);
     assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| oauth\s+\| -\s+\| gpt-5\.5\s+\| -\s+\|$/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --check reports combined Claude API and OAuth auth", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, ".claude.json"), "{}\n");
+
+    const stdout: string[] = [];
+    const code = await runCli(["--check"], {
+      env: { ANTHROPIC_API_KEY: "sk-test", HOME: home, PATH: join(dir, "bin") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^\| claude\s+\| ✗\s+\| api\+oauth\s+\| -\s+\| claude-opus-4-6\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -156,6 +156,15 @@ function executableExists(path: string): boolean {
   }
 }
 
+function fileExists(path: string): boolean {
+  try {
+    accessSync(path, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function pathExecutable(command: string, env: Env): string | undefined {
   for (const dir of (env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
@@ -180,6 +189,28 @@ export function claudeCommand(env: Env): string {
   return "claude";
 }
 
+export function claudeOauthExists(env: Env): boolean {
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) return true;
+  if (env.CLAUDE_CONFIG_DIR) {
+    return fileExists(join(env.CLAUDE_CONFIG_DIR, ".credentials.json")) || fileExists(join(env.CLAUDE_CONFIG_DIR, "auth.json"));
+  }
+  if (!env.HOME) return false;
+  return (
+    fileExists(join(env.HOME, ".claude.json")) ||
+    fileExists(join(env.HOME, ".claude", ".credentials.json")) ||
+    fileExists(join(env.HOME, ".claude", "auth.json"))
+  );
+}
+
+function claudeEnv(env: Env): Env | undefined {
+  if (env.HEADLESS_CLAUDE_AUTH === "api") return undefined;
+  return env.ANTHROPIC_API_KEY !== undefined && claudeOauthExists(env) ? { ANTHROPIC_API_KEY: undefined } : undefined;
+}
+
+function buildClaudeCommand(args: string[], env: Env, extra?: Pick<BuiltCommand, "stdinFile">): BuiltCommand {
+  return { ...commandWithOptionalEnv(claudeCommand(env), args, claudeEnv(env)), ...extra };
+}
+
 function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
   const args = withModel([], options.model ?? defaultClaudeModel);
   args.push("-p");
@@ -193,13 +224,13 @@ function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
     args.push("--output-format", "stream-json", "--verbose");
     args.push(...withClaudeEffort([], options.reasoningEffort));
     args.push(...withClaudeAllow([], options.allow));
-    return { command: claudeCommand(env), args, stdinFile: options.promptFile };
+    return buildClaudeCommand(args, env, { stdinFile: options.promptFile });
   }
 
   args.push(options.prompt, "--output-format", "stream-json", "--verbose");
   args.push(...withClaudeEffort([], options.reasoningEffort));
   args.push(...withClaudeAllow([], options.allow));
-  return { command: claudeCommand(env), args };
+  return buildClaudeCommand(args, env);
 }
 
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
@@ -425,7 +456,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
       args.push(...withClaudeEffort([], options.reasoningEffort));
       args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);
-      return { command: claudeCommand(env), args };
+      return buildClaudeCommand(args, env);
     },
   },
   codex: {

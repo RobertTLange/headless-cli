@@ -434,6 +434,42 @@ test("allows explicit Claude binary overrides", () => {
   );
 });
 
+test("removes inherited Anthropic API key when Claude OAuth is available", () => {
+  const home = mkdtempSync(join(tmpdir(), "headless-claude-oauth-"));
+  writeFileSync(join(home, ".claude.json"), "{}\n");
+
+  try {
+    assert.deepEqual(
+      buildAgentCommand("claude", { prompt: "hello" }, { ANTHROPIC_API_KEY: "sk-low-balance", HOME: home }).env,
+      { ANTHROPIC_API_KEY: undefined },
+    );
+    assert.deepEqual(
+      buildInteractiveAgentCommand("claude", { prompt: "hello" }, { ANTHROPIC_API_KEY: "sk-low-balance", HOME: home }).env,
+      { ANTHROPIC_API_KEY: undefined },
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("keeps inherited Anthropic API key when Claude API auth is explicit", () => {
+  const home = mkdtempSync(join(tmpdir(), "headless-claude-api-"));
+  writeFileSync(join(home, ".claude.json"), "{}\n");
+
+  try {
+    assert.equal(
+      buildAgentCommand(
+        "claude",
+        { prompt: "hello" },
+        { ANTHROPIC_API_KEY: "sk-api", HEADLESS_CLAUDE_AUTH: "api", HOME: home },
+      ).env,
+      undefined,
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("builds native session commands for supported agents", () => {
   assert.deepEqual(
     buildAgentCommand("claude", {
@@ -1910,6 +1946,50 @@ test("CLI --json streams raw trace output for every provider", async () => {
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
+  }
+});
+
+test("CLI Claude execution prefers OAuth over inherited Anthropic API key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "env.json");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, ".claude.json"), "{}\n");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "claude");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.writeFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify({ anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null }));",
+          "console.log(JSON.stringify({ type: 'result', subtype: 'success', result: 'final answer' }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["claude", "--prompt", "hello"], {
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: "sk-low-balance",
+        HEADLESS_CAPTURE: captureFile,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "final answer\n");
+    assert.deepEqual(JSON.parse(readFileSync(captureFile, "utf8")), { anthropicApiKey: null });
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
   }
 });
 

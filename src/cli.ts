@@ -797,7 +797,16 @@ interface ExecuteResult {
 }
 
 function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
-  return command.env ? { ...baseEnv, ...command.env } : baseEnv;
+  if (!command.env) return baseEnv;
+  const merged = { ...baseEnv };
+  for (const [key, value] of Object.entries(command.env)) {
+    if (value === undefined) {
+      delete merged[key];
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }
 
 function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env): { provider?: string; model?: string } {

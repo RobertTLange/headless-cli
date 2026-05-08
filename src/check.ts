@@ -3,7 +3,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 import { commandFromCustom, resolveAcpCommand } from "./acp.js";
-import { claudeCommand, listAgents } from "./agents.js";
+import { claudeCommand, claudeOauthExists, listAgents } from "./agents.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
   loadHeadlessConfig,
@@ -135,7 +135,7 @@ const oauthPathsByAgent: Record<AgentName, string[]> = {
 function detectAuth(agent: AgentName, env: Env, defaults: AgentDefaults): AuthLabel {
   const hasApi = hasApiAuth(agent, env, defaults);
   const hasOauth =
-    oauthEnvNamesByAgent[agent].some((name) => Boolean(env[name])) ||
+    (agent === "claude" ? claudeOauthExists(env) : oauthEnvNamesByAgent[agent].some((name) => Boolean(env[name]))) ||
     oauthPathsByAgent[agent].some((relPath) => homePathExists(env, relPath));
 
   if (hasApi && hasOauth) return "api+oauth";
