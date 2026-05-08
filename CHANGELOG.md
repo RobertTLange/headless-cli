@@ -8,6 +8,7 @@
 - Added README instructions for installing the bundled Codex skill with `npx`.
 - Added `--print-command --json` for npx callers that need structured selected-agent, model, and reasoning-effort metadata.
 - Fixed Claude runs to prefer existing Claude Code OAuth login over an inherited `ANTHROPIC_API_KEY`, while allowing explicit API-key auth with `HEADLESS_CLAUDE_AUTH=api`.
+- Fixed Claude `--allow read-only` to keep normal answer mode instead of forcing Claude Code plan mode.
 
 - Added ACP (`agentclientprotocol`) harness support via `@agentclientprotocol/sdk`, including registry-backed `--acp-agent` resolution, custom `--acp-command` launches such as `atlas alta agent run`, ACP registry overrides, setup checks, and README/usage examples.
 - Thanks to Andy MacDonald (@andymac4182) for contributing the ACP harness.

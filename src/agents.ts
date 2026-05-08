@@ -43,7 +43,7 @@ function withClaudeEffort(args: string[], effort: ReasoningEffort | undefined): 
 
 function withClaudeAllow(args: string[], allow: AllowMode | undefined): string[] {
   if (allow === "read-only") {
-    return [...args, "--permission-mode", "plan", "--allowedTools", claudeReadOnlyTools];
+    return [...args, "--allowedTools", claudeReadOnlyTools];
   }
   return allow === "yolo" || allow === undefined ? [...args, "--dangerously-skip-permissions"] : args;
 }

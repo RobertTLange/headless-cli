@@ -44,8 +44,6 @@ test("builds read-only commands for supported agents", () => {
       "--output-format",
       "stream-json",
       "--verbose",
-      "--permission-mode",
-      "plan",
       "--allowedTools",
       "Read,Grep,Glob,LS,WebFetch,WebSearch",
     ],
@@ -186,8 +184,6 @@ test("builds read-only interactive commands for tmux mode", () => {
     args: [
       "--model",
       "claude-opus-4-6",
-      "--permission-mode",
-      "plan",
       "--allowedTools",
       "Read,Grep,Glob,LS,WebFetch,WebSearch",
       "hello",
