@@ -2,6 +2,8 @@
 
 ## TBD
 
+- Added `[general]` settings in `~/.headless/config.toml` for default timeout, default agent, coordination mode, run status interval, and tmux waiting threshold.
+- Added `--timeout <s>` for one-shot local, Docker, and Modal runs, with `--modal-timeout` still taking precedence for Modal.
 - Added the bundled `headless-swarm` Codex skill for coordinating visible macOS Ghostty/tmux Headless agent swarms.
 - Changed npm package contents to include bundled skills.
 - Changed Headless tmux session listing to mark sessions waiting after 15 seconds of inactivity by default.

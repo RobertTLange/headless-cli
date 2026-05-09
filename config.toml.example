@@ -2,6 +2,13 @@
 # CLI flags override these values. If this file is missing or unreadable,
 # Headless falls back to its built-in defaults.
 
+[general]
+timeout_seconds = 14400
+default_agent = "codex"
+coordination = "session"
+run_status_interval_ms = 5000
+list_waiting_after_ms = 15000
+
 [agents.claude]
 model = "claude-opus-4-6"
 # reasoning_effort = "xhigh"

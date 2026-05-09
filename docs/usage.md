@@ -166,18 +166,18 @@ Modal mode is only for one-shot headless execution. It cannot be combined with `
 
 ## User Defaults
 
-Headless reads optional model and reasoning defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults.
+Headless reads optional general, agent, and role defaults from `~/.headless/config.toml`. If the file is missing or unreadable, it silently falls back to built-in defaults.
 
 ```bash
 mkdir -p ~/.headless
 cp config.toml.example ~/.headless/config.toml
 ```
 
-Supported sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`. Supported keys are `model` and `reasoning_effort`. ACP backend selection is controlled by `--acp-agent`, `--acp-command`, and the ACP environment variables rather than model defaults.
+Supported general keys under `[general]` are `timeout_seconds`, `default_agent`, `coordination`, `run_status_interval_ms`, and `list_waiting_after_ms`. Supported agent sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`; supported agent keys are `model` and `reasoning_effort`. ACP backend selection is controlled by `--acp-agent`, `--acp-command`, and the ACP environment variables rather than model defaults.
 
 Precedence:
 
-1. CLI flags, such as `--model` and `--reasoning-effort`.
+1. CLI flags, such as `--model`, `--reasoning-effort`, and `--timeout`.
 2. Existing provider environment model overrides for Codex and Pi, such as `CODEX_MODEL` and `PI_CODING_AGENT_MODEL`.
 3. `~/.headless/config.toml`.
 4. Built-in defaults.
@@ -185,6 +185,13 @@ Precedence:
 Example:
 
 ```toml
+[general]
+timeout_seconds = 14400
+default_agent = "codex"
+coordination = "session"
+run_status_interval_ms = 5000
+list_waiting_after_ms = 15000
+
 [agents.opencode]
 model = "openai/gpt-5.5"
 reasoning_effort = "high"
@@ -226,6 +233,7 @@ Options:
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
 - `--modal`: run the agent in a Modal CPU sandbox for one-shot headless execution.
+- `--timeout <s>`: stop one-shot local, Docker, or Modal execution after the given number of seconds.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--usage`: append normalized token usage and cost JSON after the final message.
