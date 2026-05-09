@@ -35,6 +35,7 @@ import {
   BUILTIN_AGENT_DEFAULTS,
   loadHeadlessConfig,
   resolveInvocationDefaults,
+  type GeneralDefaults,
   type HeadlessConfig,
   type InvocationDefaults,
 } from "./config.js";
@@ -139,6 +140,7 @@ interface ParsedArgs {
   modalMemoryMiB?: number;
   modalSecrets: string[];
   modalTimeoutSeconds?: number;
+  timeoutSeconds?: number;
   json: boolean;
   debug: boolean;
   usage: boolean;
@@ -214,6 +216,7 @@ function usage(): string {
     "  --modal-secret <nm>  Inject a named Modal Secret. Repeatable.",
     "  --modal-env <env>    Pass env into Modal as NAME or NAME=value. Repeatable.",
     "  --modal-include-git Include .git metadata in Modal uploads.",
+    "  --timeout <s>        One-shot command timeout in seconds.",
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
     "  --usage              Print final message plus normalized token and cost JSON.",
@@ -404,6 +407,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--modal-timeout":
         parsed.modalTimeoutSeconds = parsePositiveInteger(takeValue(args, arg), arg);
+        break;
+      case "--timeout":
+        parsed.timeoutSeconds = parsePositiveInteger(takeValue(args, arg), arg);
         break;
       case "--name":
         parsed.tmuxName = takeValue(args, arg);
@@ -782,7 +788,10 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
 
 const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "cursor"];
 
-function selectDefaultAgent(env: Env): AgentName {
+function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): AgentName {
+  if (preferredAgent && commandExists(commandForAgent(preferredAgent, env), env)) {
+    return preferredAgent;
+  }
   for (const agent of autoAgentPreference) {
     if (commandExists(commandForAgent(agent, env), env)) {
       return agent;
@@ -902,6 +911,7 @@ interface ExecuteCommandOptions {
   stdout: (text: string) => void;
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
+  timeoutSeconds?: number;
 }
 
 interface WaitingSpinner {
@@ -1286,12 +1296,34 @@ async function executeCommand(
   try {
     return await new Promise<ExecuteResult>((resolve) => {
       let capturedStdout = "";
+      let settled = false;
+      let timeout: NodeJS.Timeout | undefined;
+      const finish = (result: ExecuteResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        resolve(result);
+      };
       const child = spawn(command.command, command.args, {
         cwd,
         env: commandEnv(env, command) as NodeJS.ProcessEnv,
         stdio,
       });
 
+      if (options.timeoutSeconds !== undefined) {
+        timeout = setTimeout(() => {
+          const message = `headless: command timed out after ${options.timeoutSeconds}s\n`;
+          options.stderr?.(message);
+          stderr(message);
+          child.kill("SIGTERM");
+          setTimeout(() => child.kill("SIGKILL"), 1000).unref();
+          finish({ code: 124, stdout: capturedStdout });
+        }, options.timeoutSeconds * 1000);
+      }
       if (command.stdinText !== undefined) {
         child.stdin?.end(command.stdinText);
       }
@@ -1317,14 +1349,14 @@ async function executeCommand(
         const message = `${error.message}\n`;
         options.stderr?.(message);
         stderr(message);
-        resolve({ code: 127, stdout: capturedStdout });
+        finish({ code: 127, stdout: capturedStdout });
       });
       child.on("close", (code, signal) => {
         if (signal) {
-          resolve({ code: 1, stdout: capturedStdout });
+          finish({ code: 1, stdout: capturedStdout });
           return;
         }
-        resolve({ code: code ?? 1, stdout: capturedStdout });
+        finish({ code: code ?? 1, stdout: capturedStdout });
       });
     });
   } finally {
@@ -1453,9 +1485,16 @@ function parseEpochSeconds(value: string): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function parseWaitingAfterMs(env: Env): number {
+function parseWaitingAfterMs(env: Env, configuredWaitingAfterMs: number | undefined): number {
   const parsed = Number.parseInt(env.HEADLESS_LIST_WAITING_AFTER_MS ?? "", 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 15_000;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : (configuredWaitingAfterMs ?? 15_000);
+}
+
+function resolveRunStatusIntervalMs(env: Env, general: GeneralDefaults): number {
+  if (env.HEADLESS_RUN_STATUS_INTERVAL_MS !== undefined) {
+    return parseRunStatusIntervalMs(env.HEADLESS_RUN_STATUS_INTERVAL_MS);
+  }
+  return general.runStatusIntervalMs ?? parseRunStatusIntervalMs(undefined);
 }
 
 function inferHeadlessTmuxSessionState(
@@ -1593,13 +1632,18 @@ function resolveDefaultAttachSessionName(sessions: HeadlessTmuxSessionDetails[])
   ).name;
 }
 
-async function listHeadlessTmuxSessions(agent: AgentName | undefined, env: Env): Promise<string> {
-  return renderHeadlessTmuxSessions(await listHeadlessTmuxSessionDetails(agent, env));
+async function listHeadlessTmuxSessions(
+  agent: AgentName | undefined,
+  env: Env,
+  configuredWaitingAfterMs: number | undefined,
+): Promise<string> {
+  return renderHeadlessTmuxSessions(await listHeadlessTmuxSessionDetails(agent, env, configuredWaitingAfterMs));
 }
 
 async function listHeadlessTmuxSessionDetails(
   agent: AgentName | undefined,
   env: Env,
+  configuredWaitingAfterMs?: number,
 ): Promise<HeadlessTmuxSessionDetails[]> {
   const result = await captureSimpleCommand(
     {
@@ -1617,7 +1661,7 @@ async function listHeadlessTmuxSessionDetails(
     throw new CliError(result.stderr.trim() || "could not list tmux sessions");
   }
 
-  const waitingAfterMs = parseWaitingAfterMs(env);
+  const waitingAfterMs = parseWaitingAfterMs(env, configuredWaitingAfterMs);
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -1827,7 +1871,7 @@ async function executeTmuxAttachAllCommands(
   return await executeInteractiveCommand(finalCommand, undefined, env, stderr);
 }
 
-function effectiveCoordination(parsed: ParsedArgs): CoordinationMode {
+function effectiveCoordination(parsed: ParsedArgs, configuredCoordination: CoordinationMode | undefined): CoordinationMode {
   if (parsed.coordination) {
     return parsed.coordination;
   }
@@ -1837,7 +1881,7 @@ function effectiveCoordination(parsed: ParsedArgs): CoordinationMode {
   if ((parsed.docker || parsed.modal) && parsed.role) {
     return "oneshot";
   }
-  return "session";
+  return configuredCoordination ?? "session";
 }
 
 function withRunEnvironment(command: BuiltCommand, runId: string | undefined, nodeId: string | undefined): BuiltCommand {
@@ -1927,6 +1971,7 @@ async function executeStoredNode(
     stdoutHandling,
     stdoutLog: runStdoutLogger(env, node.runId, node.nodeId),
     stderr: runStderrLogger(env, node.runId, node.nodeId),
+    timeoutSeconds: config.general.timeoutSeconds,
   });
   if (result.code === 0 && sessionPlan) {
     await persistSessionPlan(node.agent, sessionPlan, result.stdout, node.workDir, env);
@@ -1979,7 +2024,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       stdout(`${packageVersion()}\n`);
       return 0;
     }
+    let config: HeadlessConfig;
+    try {
+      config = loadHeadlessConfig(env);
+    } catch (error) {
+      throw new CliError(error instanceof Error ? error.message : String(error));
+    }
     if (parsed.runCommand) {
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with run commands");
+      }
       try {
         return await handleRunCommandImpl(
           {
@@ -2031,7 +2085,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         parsed.usage ||
         parsed.list ||
         parsed.check ||
-        parsed.showConfig
+        parsed.showConfig ||
+        parsed.timeoutSeconds !== undefined
       ) {
         throw new CliError(`unsupported option for docker ${parsed.dockerCommand}`);
       }
@@ -2125,6 +2180,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.showConfig) {
         throw new CliError("--show-config cannot be used with attach");
       }
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with attach");
+      }
       if (hasDockerOptions(parsed)) {
         throw new CliError("--docker-* options cannot be used with attach");
       }
@@ -2187,6 +2245,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with rename");
       }
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with rename");
+      }
 
       const session = validateHeadlessTmuxSession(parsed.renameSession);
       if (!parsed.renameName) {
@@ -2230,6 +2291,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with send");
       }
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with send");
+      }
 
       const sessionName = validateHeadlessTmuxSessionName(parsed.sendSession);
       const prompt = await resolvePrompt(parsed, deps, { forceText: true, requireAgent: false });
@@ -2249,6 +2313,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
     if (parsed.check) {
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with --check");
+      }
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --check");
       }
@@ -2267,10 +2334,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--modal cannot be used with --list");
     }
     if (parsed.list) {
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with --list");
+      }
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --list");
       }
-      stdout(await listHeadlessTmuxSessions(parsed.agent, env));
+      stdout(await listHeadlessTmuxSessions(parsed.agent, env, config.general.listWaitingAfterMs));
       return 0;
     }
     if (
@@ -2286,9 +2356,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--docker cannot be used with --modal");
     }
     if (!parsed.agent) {
-      parsed.agent = parsed.docker || parsed.modal ? autoAgentPreference[0] : selectDefaultAgent(env);
+      parsed.agent = parsed.docker || parsed.modal
+        ? (config.general.defaultAgent ?? autoAgentPreference[0])
+        : selectDefaultAgent(env, config.general.defaultAgent);
     }
-    if (parsed.coordination === "tmux") {
+    if (
+      parsed.coordination === "tmux" ||
+      (!parsed.coordination && config.general.coordination === "tmux" && !parsed.docker && !parsed.modal)
+    ) {
       parsed.tmux = true;
     }
     if (parsed.tmux && parsed.docker) {
@@ -2299,6 +2374,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
+    }
+    if (parsed.tmux && parsed.timeoutSeconds !== undefined) {
+      throw new CliError("--timeout cannot be used with --tmux");
     }
     if (parsed.usage && parsed.json) {
       throw new CliError("--usage cannot be used with --json");
@@ -2325,7 +2403,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--session cannot be used with --modal");
     }
     validateSessionAlias(parsed.sessionAlias);
-    const coordination = effectiveCoordination(parsed);
+    const coordination = effectiveCoordination(parsed, config.general.coordination);
     const nodeId = nodeIdForRole(parsed.role, parsed.nodeId);
     if (parsed.runId !== undefined && parsed.role === undefined) {
       throw new CliError("--run requires --role");
@@ -2340,8 +2418,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--team requires --role orchestrator");
     }
     if (parsed.showConfig) {
+      if (parsed.timeoutSeconds !== undefined) {
+        throw new CliError("--timeout cannot be used with --show-config");
+      }
       try {
-        const config = loadHeadlessConfig(env);
         const defaults = resolveDisplayedDefaults(
           parsed.agent,
           parsed.role,
@@ -2356,10 +2436,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
 
-    let config: HeadlessConfig;
     let configuredDefaults: InvocationDefaults;
     try {
-      config = loadHeadlessConfig(env);
       configuredDefaults = resolveInvocationDefaults(
         parsed.agent,
         parsed.role,
@@ -2370,6 +2448,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     } catch (error) {
       throw new CliError(error instanceof Error ? error.message : String(error));
     }
+    const commandTimeoutSeconds = parsed.timeoutSeconds ?? config.general.timeoutSeconds;
+    const modalTimeoutSeconds = parsed.modalTimeoutSeconds ?? commandTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS;
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
@@ -2589,7 +2669,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             imageSecret: parsed.modalImageSecret,
             memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
             modalSecrets: parsed.modalSecrets,
-            timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
+            timeoutSeconds: modalTimeoutSeconds,
             workDir: cwd ?? process.cwd(),
           })
         : command;
@@ -2613,7 +2693,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const statusReporter = shouldStreamRunStatus(parsed) && parsed.runId
       ? createRunStatusReporter({
           env,
-          intervalMs: parseRunStatusIntervalMs(env.HEADLESS_RUN_STATUS_INTERVAL_MS),
+          intervalMs: resolveRunStatusIntervalMs(env, config.general),
           runId: parsed.runId,
           write: stderr,
         })
@@ -2660,7 +2740,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               stdout(text);
             },
             stdoutHandling,
-            timeoutSeconds: parsed.modalTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS,
+            timeoutSeconds: modalTimeoutSeconds,
             workDir: cwd ?? process.cwd(),
           })
         : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
@@ -2668,6 +2748,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             stdoutHandling,
             stdoutLog: commandStdoutLog,
             stderr: commandStderr,
+            timeoutSeconds: commandTimeoutSeconds,
           });
       if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
         appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);

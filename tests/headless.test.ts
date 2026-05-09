@@ -931,6 +931,34 @@ test("config parser accepts role sections and validates role fields", () => {
   );
 });
 
+test("config parser accepts general settings and validates general fields", () => {
+  assert.deepEqual(
+    parseHeadlessConfig(
+      [
+        "[general]",
+        "timeout_seconds = 120",
+        'default_agent = "pi"',
+        'coordination = "tmux"',
+        "run_status_interval_ms = 2500",
+        "list_waiting_after_ms = 30000",
+        "",
+      ].join("\n"),
+    ).general,
+    {
+      timeoutSeconds: 120,
+      defaultAgent: "pi",
+      coordination: "tmux",
+      runStatusIntervalMs: 2500,
+      listWaitingAfterMs: 30000,
+    },
+  );
+
+  assert.throws(() => parseHeadlessConfig("[general]\nunknown = 1\n"), /unsupported headless general config key/);
+  assert.throws(() => parseHeadlessConfig("[general]\ntimeout_seconds = 0\n"), /must be a positive integer/);
+  assert.throws(() => parseHeadlessConfig("[general]\ndefault_agent = \"acp\"\n"), /unsupported headless default_agent/);
+  assert.throws(() => parseHeadlessConfig("[general]\ncoordination = \"swarm\"\n"), /unsupported headless config coordination/);
+});
+
 test("CLI applies configured role defaults and replaces the built-in role prompt", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -962,6 +990,66 @@ test("CLI applies configured role defaults and replaces the built-in role prompt
     assert.match(output, /Configured explorer prompt/);
     assert.match(output, /User prompt:/);
     assert.doesNotMatch(output, /Stay read-only/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI applies general default_agent from ~/.headless/config.toml", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    mkdirSync(binDir);
+    await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+      for (const name of ["codex", "pi"]) {
+        const binary = join(binDir, name);
+        await writeFile(binary, "#!/usr/bin/env node\n");
+        await chmod(binary, 0o755);
+      }
+    });
+    writeFileSync(join(home, ".headless", "config.toml"), ["[general]", 'default_agent = "pi"', ""].join("\n"));
+
+    const stdout: string[] = [];
+    const code = await runCli(["--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^pi --no-session --mode json /);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI exits 124 when a one-shot command exceeds --timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+      const binary = join(binDir, "opencode");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "setTimeout(() => process.stdout.write('{\"type\":\"message\",\"text\":\"late\"}\\n'), 5000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const stderr: string[] = [];
+    const code = await runCli(["opencode", "--prompt", "hello", "--timeout", "1"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => stderr.push(text),
+    });
+
+    assert.equal(code, 124);
+    assert.match(stderr.join(""), /timed out after 1s/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1350,6 +1438,54 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
     assert.match(output, /--image-secret ghcr --secret provider-secret -- codex/);
     assert.match(output, /exec --model gpt-5\.5 -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI applies --timeout to Modal unless --modal-timeout is set", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const projectDir = join(dir, "project");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    mkdirSync(projectDir);
+    writeFileSync(join(home, ".headless", "config.toml"), ["[general]", "timeout_seconds = 77", ""].join("\n"));
+
+    const stdout: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--prompt", "hello", "--work-dir", projectDir, "--modal", "--timeout", "55", "--print-command"], {
+        env: { ...process.env, HOME: home },
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.match(stdout.join(""), /--timeout 55 /);
+
+    stdout.length = 0;
+    assert.equal(
+      await runCli(
+        [
+          "codex",
+          "--prompt",
+          "hello",
+          "--work-dir",
+          projectDir,
+          "--modal",
+          "--timeout",
+          "55",
+          "--modal-timeout",
+          "44",
+          "--print-command",
+        ],
+        {
+          env: { ...process.env, HOME: home },
+          stdout: (text) => stdout.push(text),
+        },
+      ),
+      0,
+    );
+    assert.match(stdout.join(""), /--timeout 44 /);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2290,6 +2426,16 @@ test("CLI help lists usage output option", async () => {
   assert.match(stdout.join(""), /--usage/);
 });
 
+test("CLI help lists timeout option", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["--help"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /--timeout <s>/);
+});
+
 test("CLI help explains what Headless accomplishes", async () => {
   const stdout: string[] = [];
   const code = await runCli(["--help"], {
@@ -2802,6 +2948,41 @@ test("CLI --list honors HEADLESS_LIST_WAITING_AFTER_MS", async () => {
 
     assert.equal(code, 0);
     assert.match(stdout.join(""), /^headless-codex-quiet\s+codex\s+waiting\s+/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --list uses configured list_waiting_after_ms", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    writeFileSync(join(home, ".headless", "config.toml"), ["[general]", "list_waiting_after_ms = 1000", ""].join("\n"));
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const activity = Math.floor(Date.now() / 1000) - 2;",
+          "process.stdout.write(`headless-codex-configured\\t1700000000\\t${activity}\\t0\\n`);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^headless-codex-configured\s+codex\s+waiting\s+/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

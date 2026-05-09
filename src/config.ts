@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isRole, type Role } from "./roles.js";
+import { isCoordinationMode, isRole, type CoordinationMode, type Role } from "./roles.js";
 import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
 
 export interface AgentDefaults {
@@ -21,7 +21,16 @@ export interface InvocationDefaults extends AgentDefaults {
   baseInstructionPrompt?: string;
 }
 
+export interface GeneralDefaults {
+  timeoutSeconds?: number;
+  defaultAgent?: AgentName;
+  coordination?: CoordinationMode;
+  runStatusIntervalMs?: number;
+  listWaitingAfterMs?: number;
+}
+
 export interface HeadlessConfig {
+  general: GeneralDefaults;
   agents: Partial<Record<AgentName, AgentDefaults>>;
   roles: Partial<Record<Role, RoleDefaults>>;
 }
@@ -90,10 +99,10 @@ function envModelDefault(agent: AgentName, env: Env): string | undefined {
 }
 
 function emptyHeadlessConfig(): HeadlessConfig {
-  return { agents: {}, roles: {} };
+  return { general: {}, agents: {}, roles: {} };
 }
 
-type ConfigSection = { kind: "agent"; name: AgentName } | { kind: "role"; name: Role };
+type ConfigSection = { kind: "general" } | { kind: "agent"; name: AgentName } | { kind: "role"; name: Role };
 
 export function parseHeadlessConfig(content: string): HeadlessConfig {
   const config = emptyHeadlessConfig();
@@ -104,6 +113,11 @@ export function parseHeadlessConfig(content: string): HeadlessConfig {
     const rawLine = lines[index] ?? "";
     const line = stripTomlComment(rawLine).trim();
     if (!line) continue;
+
+    if (line === "[general]") {
+      currentSection = { kind: "general" };
+      continue;
+    }
 
     const section = line.match(/^\[(agents|roles)\.([A-Za-z0-9_-]+)\]$/);
     if (section) {
@@ -127,11 +141,19 @@ export function parseHeadlessConfig(content: string): HeadlessConfig {
       throw new Error(`invalid headless config at line ${index + 1}: ${rawLine}`);
     }
     if (!currentSection) {
-      throw new Error(`headless config key must be inside [agents.<name>] or [roles.<name>] at line ${index + 1}`);
+      throw new Error(
+        `headless config key must be inside [general], [agents.<name>], or [roles.<name>] at line ${index + 1}`,
+      );
     }
 
     const key = assignment[1] ?? "";
-    const parsedValue = parseTomlString(assignment[2] ?? "", index + 1, lines, index);
+    const rawValue = assignment[2] ?? "";
+    if (currentSection.kind === "general") {
+      parseGeneralConfigValue(config.general, key, rawValue, index + 1);
+      continue;
+    }
+
+    const parsedValue = parseTomlString(rawValue, index + 1, lines, index);
     index = parsedValue.nextIndex;
     if (currentSection.kind === "agent") {
       const defaults = config.agents[currentSection.name] ?? {};
@@ -162,6 +184,22 @@ export function parseHeadlessConfig(content: string): HeadlessConfig {
   }
 
   return config;
+}
+
+function parseGeneralConfigValue(defaults: GeneralDefaults, key: string, rawValue: string, lineNumber: number): void {
+  if (key === "timeout_seconds") {
+    defaults.timeoutSeconds = parseConfigPositiveInteger(rawValue, lineNumber, key);
+  } else if (key === "default_agent") {
+    defaults.defaultAgent = parseConfigDefaultAgent(parseSimpleTomlString(rawValue, lineNumber), lineNumber);
+  } else if (key === "coordination") {
+    defaults.coordination = parseConfigCoordination(parseSimpleTomlString(rawValue, lineNumber), lineNumber);
+  } else if (key === "run_status_interval_ms") {
+    defaults.runStatusIntervalMs = parseConfigPositiveInteger(rawValue, lineNumber, key);
+  } else if (key === "list_waiting_after_ms") {
+    defaults.listWaitingAfterMs = parseConfigPositiveInteger(rawValue, lineNumber, key);
+  } else {
+    throw new Error(`unsupported headless general config key at line ${lineNumber}: ${key}`);
+  }
 }
 
 function parseAgentName(value: string, lineNumber: number): AgentName {
@@ -198,6 +236,47 @@ function parseConfigAllow(value: string, lineNumber: number): AllowMode {
     return value;
   }
   throw new Error(`unsupported headless config allow at line ${lineNumber}: ${value}`);
+}
+
+function parseConfigDefaultAgent(value: string, lineNumber: number): AgentName {
+  if (
+    value === "claude" ||
+    value === "codex" ||
+    value === "cursor" ||
+    value === "gemini" ||
+    value === "opencode" ||
+    value === "pi"
+  ) {
+    return value;
+  }
+  throw new Error(`unsupported headless default_agent at line ${lineNumber}: ${value}`);
+}
+
+function parseConfigCoordination(value: string, lineNumber: number): CoordinationMode {
+  if (isCoordinationMode(value)) {
+    return value;
+  }
+  throw new Error(`unsupported headless config coordination at line ${lineNumber}: ${value}`);
+}
+
+function parseConfigPositiveInteger(value: string, lineNumber: number, key: string): number {
+  const trimmed = value.trim();
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0 || String(parsed) !== trimmed) {
+    throw new Error(`headless config ${key} must be a positive integer at line ${lineNumber}`);
+  }
+  return parsed;
+}
+
+function parseSimpleTomlString(value: string, lineNumber: number): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return JSON.parse(trimmed) as string;
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+  throw new Error(`headless config value must be a quoted string at line ${lineNumber}`);
 }
 
 function parseTomlString(
