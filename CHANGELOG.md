@@ -1,6 +1,6 @@
 # Changelog
 
-## TBD
+## 0.3.1 - 2026-05-12
 
 - Added `[general]` settings in `~/.headless/config.toml` for default timeout, default agent, coordination mode, run status interval, and tmux waiting threshold.
 - Added `--timeout <s>` for one-shot local, Docker, and Modal runs, with `--modal-timeout` still taking precedence for Modal.
