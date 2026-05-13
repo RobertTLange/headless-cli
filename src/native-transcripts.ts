@@ -90,33 +90,45 @@ export function resolveLatestNativeTranscript(
   env: Env,
   partial: Partial<NativeTranscript> = {},
 ): NativeTranscript | undefined {
+  return resolveLatestNativeTranscripts(agent, workDir, env, partial, 1)[0];
+}
+
+export function resolveLatestNativeTranscripts(
+  agent: AgentName,
+  workDir: string | undefined,
+  env: Env,
+  partial: Partial<NativeTranscript> = {},
+  limit = 20,
+): NativeTranscript[] {
   const workspace = realWorkspace(workDir);
-  if (!workspace) return undefined;
+  if (!workspace) return [];
   if (agent === "opencode") {
-    return latestOpenCodeTranscript(workspace, workDir, env, partial);
+    return latestOpenCodeTranscripts(workspace, workDir, env, partial, limit);
   }
 
-  const path =
+  const paths =
     agent === "claude"
-      ? latestFileInDirectory(claudeProjectRoot(workspace, env), partial)
+      ? latestFiles(claudeProjectRoot(workspace, env), partial)
       : agent === "codex"
-        ? latestWorkspaceFile(codexSessionsRoot(env), workspace, workDir, partial)
+        ? latestWorkspaceFiles(codexSessionsRoot(env), workspace, workDir, partial)
         : agent === "cursor"
-          ? latestFileInDirectory(cursorTranscriptsRoot(workspace, env), partial)
+          ? latestFiles(cursorTranscriptsRoot(workspace, env), partial)
           : agent === "gemini"
-            ? latestGeminiTranscript(workspace, env, partial)
+            ? latestGeminiTranscripts(workspace, env, partial)
             : agent === "pi"
-              ? latestFileInDirectory(piProjectRoot(workspace, env), partial)
-              : undefined;
-  if (!path) return undefined;
-  const nativeId = nativeIdFromPath(agent, path);
-  return {
+              ? latestFiles(piProjectRoot(workspace, env), partial)
+              : [];
+  return paths.slice(0, Math.max(0, limit)).map((path) => ({
     kind: "jsonl",
     path,
-    sessionId: nativeId,
+    sessionId: nativeIdFromPath(agent, path),
     ...partial,
     endOffset: statSync(path).size,
-  };
+  }));
+}
+
+export function nativeTranscriptKey(transcript: NativeTranscript): string {
+  return [transcript.kind, transcript.path, transcript.sessionId ?? "", transcript.startOffset ?? "", transcript.endOffset ?? ""].join("\t");
 }
 
 export function indexNativeAssistantCompletion(
@@ -257,25 +269,26 @@ function findFileContaining(root: string | undefined, text: string): string | un
   return undefined;
 }
 
-function latestGeminiTranscript(
+function latestGeminiTranscripts(
   workspace: string,
   env: Env,
   partial: Partial<NativeTranscript>,
-): string | undefined {
+): string[] {
   const root = env.GEMINI_HOME ?? (env.HOME ? join(env.HOME, ".gemini") : undefined);
-  if (!root) return undefined;
+  if (!root) return [];
   const projectSlot = geminiProjectSlot(root, workspace);
-  return projectSlot ? latestFileInDirectory(join(root, "tmp", projectSlot, "chats"), partial) : undefined;
+  return projectSlot ? latestFiles(join(root, "tmp", projectSlot, "chats"), partial) : [];
 }
 
-function latestOpenCodeTranscript(
+function latestOpenCodeTranscripts(
   workspace: string,
   workDir: string | undefined,
   env: Env,
   partial: Partial<NativeTranscript>,
-): NativeTranscript | undefined {
+  limit: number,
+): NativeTranscript[] {
   const path = opencodeDatabasePath(env);
-  if (!path || !existsSync(path)) return undefined;
+  if (!path || !existsSync(path)) return [];
   const directories = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
   const startedAtMs = partial.startedAt ? Date.parse(partial.startedAt) : Number.NaN;
   const whereDirectory = directories.map((directory) => `'${directory.replaceAll("'", "''")}'`).join(", ");
@@ -289,28 +302,24 @@ function latestOpenCodeTranscript(
         `where directory in (${whereDirectory})`,
         ...(Number.isFinite(startedAtMs) ? [`and time_updated >= ${Math.floor(startedAtMs)}`] : []),
         "order by time_updated desc",
-        "limit 1;",
+        `limit ${Math.max(0, limit)};`,
       ].join("\n"),
     ],
     { encoding: "utf8" },
   );
-  const sessionId = sqlite.status === 0 ? sqlite.stdout.trim() : "";
-  return sessionId ? { kind: "sqlite", path, sessionId, ...partial } : undefined;
+  const sessionIds = sqlite.status === 0 ? sqlite.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
+  return sessionIds.map((sessionId) => ({ kind: "sqlite", path, sessionId, ...partial }));
 }
 
-function latestWorkspaceFile(
+function latestWorkspaceFiles(
   root: string | undefined,
   workspace: string,
   workDir: string | undefined,
   partial: Partial<NativeTranscript>,
-): string | undefined {
+): string[] {
   const candidates = latestFiles(root, partial);
   const needles = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
-  return candidates.find((path) => fileHasWorkspaceCwd(path, needles));
-}
-
-function latestFileInDirectory(root: string | undefined, partial: Partial<NativeTranscript>): string | undefined {
-  return latestFiles(root, partial)[0];
+  return candidates.filter((path) => fileHasWorkspaceCwd(path, needles));
 }
 
 function latestFiles(root: string | undefined, partial: Partial<NativeTranscript>): string[] {

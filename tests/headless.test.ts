@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -2965,6 +2965,67 @@ test("CLI --list uses native transcript completion before tmux inactivity fallba
 
     assert.equal(code, 0);
     assert.match(stdout.join(""), /^headless-codex-complete\s+codex\s+idle\s+/m);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --list assigns same-workdir native transcripts to one tmux session each", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    const binDir = join(dir, "bin");
+    const nativeDir = join(home, ".codex", "sessions", "2026", "05", "13");
+    const olderPath = join(nativeDir, "rollout-alpha.jsonl");
+    const newerPath = join(nativeDir, "rollout-beta.jsonl");
+    mkdirSync(nativeDir, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(
+      olderPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:00:00.000Z", type: "session_meta", payload: { id: "alpha", cwd: workDir } }),
+        JSON.stringify({ timestamp: "2026-05-13T10:00:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      newerPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:01:00.000Z", type: "session_meta", payload: { id: "beta", cwd: workDir } }),
+        JSON.stringify({ timestamp: "2026-05-13T10:01:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+    const nowMs = Date.now();
+    const olderMtimeMs = nowMs + 1000;
+    const newerMtimeMs = nowMs + 2000;
+    utimesSync(olderPath, new Date(olderMtimeMs), new Date(olderMtimeMs));
+    utimesSync(newerPath, new Date(newerMtimeMs), new Date(newerMtimeMs));
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          `process.stdout.write('headless-codex-alpha\\t1770000000\\t1700000000\\t0\\t${workDir}\\nheadless-codex-beta\\t1770000001\\t1700000000\\t0\\t${workDir}\\n');`,
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["--list"], {
+      env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+    const output = stdout.join("");
+
+    assert.equal(code, 0);
+    assert.match(output, new RegExp(`^headless-codex-alpha\\s+codex\\s+idle\\s+.*${new Date(Math.floor(olderMtimeMs / 1000) * 1000).toISOString()}`, "m"));
+    assert.match(output, new RegExp(`^headless-codex-beta\\s+codex\\s+idle\\s+.*${new Date(Math.floor(newerMtimeMs / 1000) * 1000).toISOString()}`, "m"));
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

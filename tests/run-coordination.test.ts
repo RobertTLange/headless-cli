@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -654,6 +654,78 @@ test("run wait reconciles completed tmux nodes from native transcripts", async (
     assert.equal(stdout.join(""), "run idle: auth\n");
     assert.equal(run?.nodes["worker-1"].status, "idle");
     assert.equal(run?.nodes["worker-1"].lastMessage, "tmux final");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run view assigns same-workdir native transcripts to one tmux node each", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    mkdirSync(workDir, { recursive: true });
+    const env = { ...process.env, HOME: home };
+    for (const nodeId of ["worker-1", "worker-2"]) {
+      registerNode(env, {
+        runId: "auth",
+        nodeId,
+        role: "worker",
+        agent: "codex",
+        coordination: "tmux",
+        status: "busy",
+        planned: true,
+        workDir,
+        tmuxSessionName: `headless-codex-${nodeId}`,
+      });
+    }
+    const nativeDir = join(home, ".codex", "sessions", "2026", "05", "13");
+    const olderPath = join(nativeDir, "rollout-worker-1.jsonl");
+    const newerPath = join(nativeDir, "rollout-worker-2.jsonl");
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(
+      olderPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:00:00.000Z", type: "session_meta", payload: { id: "worker-1", cwd: workDir } }),
+        JSON.stringify({
+          timestamp: "2026-05-13T10:00:01.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "worker 1 final" }] },
+        }),
+        JSON.stringify({ timestamp: "2026-05-13T10:00:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      newerPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:01:00.000Z", type: "session_meta", payload: { id: "worker-2", cwd: workDir } }),
+        JSON.stringify({
+          timestamp: "2026-05-13T10:01:01.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "worker 2 final" }] },
+        }),
+        JSON.stringify({ timestamp: "2026-05-13T10:01:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+    const nowMs = Date.now();
+    utimesSync(olderPath, new Date(nowMs + 1000), new Date(nowMs + 1000));
+    utimesSync(newerPath, new Date(nowMs + 2000), new Date(nowMs + 2000));
+
+    assert.equal(
+      await runCli(["run", "view", "auth"], {
+        env,
+        stdout: () => undefined,
+      }),
+      0,
+    );
+
+    const run = readRun(env, "auth");
+    assert.equal(run?.nodes["worker-1"].status, "idle");
+    assert.equal(run?.nodes["worker-1"].lastMessage, "worker 1 final");
+    assert.equal(run?.nodes["worker-2"].status, "idle");
+    assert.equal(run?.nodes["worker-2"].lastMessage, "worker 2 final");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

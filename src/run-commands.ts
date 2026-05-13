@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { extractFinalMessage } from "./output.js";
-import { deriveNativeTranscriptActivity, resolveLatestNativeTranscript } from "./native-transcripts.js";
+import { deriveNativeTranscriptActivity, nativeTranscriptKey, resolveLatestNativeTranscripts } from "./native-transcripts.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { renderRunList, renderRunView } from "./run-view.js";
 import {
@@ -163,16 +163,28 @@ async function waitForRunIdle(env: Env, runId: string): Promise<void> {
 function reconcileTmuxRunNodes(env: Env, runId: string): void {
   const run = readRun(env, runId);
   if (!run) return;
-  for (const node of Object.values(run.nodes)) {
-    if (node.coordination !== "tmux") continue;
-    if (node.status !== "busy" && node.status !== "starting" && node.status !== "waiting") continue;
-    const transcript = resolveLatestNativeTranscript(node.agent, node.workDir, env, { startedAt: node.createdAt });
+  const claimedTranscripts = new Set<string>();
+  const nodes = Object.values(run.nodes)
+    .filter(shouldReconcileTmuxNode)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.updatedAt.localeCompare(left.updatedAt) || right.nodeId.localeCompare(left.nodeId));
+
+  for (const node of nodes) {
+    const transcript = resolveLatestNativeTranscripts(node.agent, node.workDir, env, { startedAt: node.createdAt }).find(
+      (candidate) => !claimedTranscripts.has(nativeTranscriptKey(candidate)),
+    );
+    if (!transcript) continue;
+    claimedTranscripts.add(nativeTranscriptKey(transcript));
     const activity = deriveNativeTranscriptActivity(node.agent, transcript);
     if (!activity) continue;
     const status = activity.status === "running" ? "busy" : activity.status === "waiting_input" ? "waiting" : "idle";
     if (status === node.status && (!activity.message || activity.message === node.lastMessage)) continue;
     updateNodeStatus(env, runId, node.nodeId, status, activity.message);
   }
+}
+
+function shouldReconcileTmuxNode(node: RunNode): boolean {
+  if (node.coordination !== "tmux") return false;
+  return node.status === "busy" || node.status === "starting" || node.status === "waiting";
 }
 
 function startAsyncRunMessage(
