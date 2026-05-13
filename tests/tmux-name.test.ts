@@ -118,7 +118,7 @@ test("CLI list includes named headless tmux sessions", async () => {
       binDir,
       [
         "#!/usr/bin/env node",
-        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}\\t#{pane_current_path}') process.exit(2);",
         "process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\nheadless-opencode-review.1\\t1700000000\\t1700000000\\t0\\nother\\t1700000000\\t1700000000\\t0\\n');",
         "",
       ].join("\n"),
@@ -186,7 +186,7 @@ test("CLI attach attaches the only active headless tmux session", async () => {
         "const fs = require('node:fs');",
         "const args = process.argv.slice(2);",
         "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
-        "if (args.join(' ') === 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') {",
+        "if (args.join(' ') === 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}\\t#{pane_current_path}') {",
         "  process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\nother\\t1700000000\\t1700000000\\t0\\n');",
         "}",
         "",
@@ -200,7 +200,7 @@ test("CLI attach attaches the only active headless tmux session", async () => {
 
     assert.equal(code, 0);
     assert.deepEqual(readTmuxCalls(captureFile), [
-      ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}"],
+      ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}\t#{pane_current_path}"],
       ["attach-session", "-t", "headless-codex-work"],
     ]);
   } finally {
@@ -220,7 +220,7 @@ test("CLI attach uses the most recently active headless tmux session by default"
         "const fs = require('node:fs');",
         "const args = process.argv.slice(2);",
         "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
-        "if (args.join(' ') === 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') {",
+        "if (args.join(' ') === 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}\\t#{pane_current_path}') {",
         "  process.stdout.write('headless-codex-work\\t1700000000\\t1700000000\\t0\\nheadless-opencode-review\\t1700000000\\t4102444800\\t0\\n');",
         "}",
         "",
@@ -234,7 +234,7 @@ test("CLI attach uses the most recently active headless tmux session by default"
 
     assert.equal(code, 0);
     assert.deepEqual(readTmuxCalls(captureFile), [
-      ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}"],
+      ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}\t#{pane_current_path}"],
       ["attach-session", "-t", "headless-opencode-review"],
     ]);
   } finally {
@@ -250,7 +250,7 @@ test("CLI attach --all prints tiled aggregator commands", async () => {
       binDir,
       [
         "#!/usr/bin/env node",
-        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}\\t#{pane_current_path}') process.exit(2);",
         "process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\nheadless-opencode-review\\t1700000000\\t1700000000\\t0\\n');",
         "",
       ].join("\n"),
@@ -283,7 +283,7 @@ test("CLI attach --all attaches directly when only one session exists", async ()
       binDir,
       [
         "#!/usr/bin/env node",
-        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}') process.exit(2);",
+        "if (process.argv.slice(2).join(' ') !== 'list-sessions -F #{session_name}\\t#{session_created}\\t#{window_activity}\\t#{pane_dead}\\t#{pane_current_path}') process.exit(2);",
         "process.stdout.write('headless-codex-work\\t1700000000\\t4102444800\\t0\\n');",
         "",
       ].join("\n"),

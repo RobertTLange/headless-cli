@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { extractFinalMessage } from "./output.js";
+import { deriveNativeTranscriptActivity, resolveLatestNativeTranscript } from "./native-transcripts.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { renderRunList, renderRunView } from "./run-view.js";
 import {
@@ -50,6 +51,7 @@ export async function handleRunCommand(input: RunCommandInput, handlers: RunComm
   }
   const runId = requireValue(input.runId, "run");
   if (input.command === "view") {
+    reconcileTmuxRunNodes(handlers.env, runId);
     const run = readRun(handlers.env, runId);
     if (!run) {
       throw new Error(`unknown run: ${runId}`);
@@ -98,6 +100,7 @@ async function handleRunMessage(
     const code = await handlers.sendTmux(sessionName, prompt.prompt, input.printCommand);
     if (code === 0 && !input.printCommand) {
       recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
+      updateNodeStatus(handlers.env, runId, nodeId, "busy");
       handlers.stdout(`sent: ${runId}/${nodeId}\n`);
     }
     return code;
@@ -142,6 +145,7 @@ async function waitForRunIdle(env: Env, runId: string): Promise<void> {
   const intervalMs = parseDelayMs(env.HEADLESS_RUN_WAIT_INTERVAL_MS, 1000);
   const currentNode = env.HEADLESS_RUN_NODE;
   while (true) {
+    reconcileTmuxRunNodes(env, runId);
     const run = readRun(env, runId);
     if (!run) {
       throw new Error(`unknown run: ${runId}`);
@@ -153,6 +157,21 @@ async function waitForRunIdle(env: Env, runId: string): Promise<void> {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+function reconcileTmuxRunNodes(env: Env, runId: string): void {
+  const run = readRun(env, runId);
+  if (!run) return;
+  for (const node of Object.values(run.nodes)) {
+    if (node.coordination !== "tmux") continue;
+    if (node.status !== "busy" && node.status !== "starting" && node.status !== "waiting") continue;
+    const transcript = resolveLatestNativeTranscript(node.agent, node.workDir, env, { startedAt: node.createdAt });
+    const activity = deriveNativeTranscriptActivity(node.agent, transcript);
+    if (!activity) continue;
+    const status = activity.status === "running" ? "busy" : activity.status === "waiting_input" ? "waiting" : "idle";
+    if (status === node.status && (!activity.message || activity.message === node.lastMessage)) continue;
+    updateNodeStatus(env, runId, node.nodeId, status, activity.message);
   }
 }
 
