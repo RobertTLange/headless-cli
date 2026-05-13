@@ -1571,17 +1571,56 @@ function assignTmuxNativeActivities(
         right.activitySeconds - left.activitySeconds ||
         right.name.localeCompare(left.name),
     );
+  const candidatesByScope = tmuxSessionTranscriptCandidatesByScope(eligibleSessions, env);
 
   for (const session of eligibleSessions) {
-    const transcript = resolveLatestNativeTranscripts(session.agent, session.workDir, env, {
-      startedAt: formatEpochSeconds(session.createdSeconds),
-    }).find((candidate) => !claimedTranscripts.has(nativeTranscriptKey(candidate)));
+    const transcript = (candidatesByScope.get(tmuxSessionTranscriptScope(session.agent, session.workDir)) ?? []).find(
+      (candidate) => !claimedTranscripts.has(nativeTranscriptKey(candidate)),
+    );
     if (!transcript) continue;
     claimedTranscripts.add(nativeTranscriptKey(transcript));
     const activity = deriveNativeTranscriptActivity(session.agent, transcript);
     if (activity) activities.set(session.name, activity);
   }
   return activities;
+}
+
+function tmuxSessionTranscriptCandidatesByScope(
+  sessions: ParsedHeadlessTmuxSessionDetails[],
+  env: Env,
+): Map<string, ReturnType<typeof resolveLatestNativeTranscripts>> {
+  const sessionsByScope = new Map<string, ParsedHeadlessTmuxSessionDetails[]>();
+  for (const session of sessions) {
+    const scope = tmuxSessionTranscriptScope(session.agent, session.workDir);
+    const scopedSessions = sessionsByScope.get(scope) ?? [];
+    scopedSessions.push(session);
+    sessionsByScope.set(scope, scopedSessions);
+  }
+
+  const candidatesByScope = new Map<string, ReturnType<typeof resolveLatestNativeTranscripts>>();
+  for (const [scope, scopedSessions] of sessionsByScope) {
+    const firstSession = scopedSessions[0];
+    if (!firstSession) continue;
+    const earliestCreatedSeconds = scopedSessions.reduce(
+      (earliest, session) => Math.min(earliest, session.createdSeconds),
+      scopedSessions[0]?.createdSeconds ?? 0,
+    );
+    candidatesByScope.set(
+      scope,
+      resolveLatestNativeTranscripts(
+        firstSession.agent,
+        firstSession.workDir,
+        env,
+        { startedAt: formatEpochSeconds(earliestCreatedSeconds) },
+        scopedSessions.length,
+      ),
+    );
+  }
+  return candidatesByScope;
+}
+
+function tmuxSessionTranscriptScope(agent: AgentName, workDir: string | undefined): string {
+  return `${agent}\t${workDir ?? ""}`;
 }
 
 function renderTable(headers: string[], rows: string[][]): string {

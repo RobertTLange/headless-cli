@@ -167,9 +167,10 @@ function reconcileTmuxRunNodes(env: Env, runId: string): void {
   const nodes = Object.values(run.nodes)
     .filter(shouldReconcileTmuxNode)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.updatedAt.localeCompare(left.updatedAt) || right.nodeId.localeCompare(left.nodeId));
+  const candidatesByScope = tmuxTranscriptCandidatesByScope(nodes, env);
 
   for (const node of nodes) {
-    const transcript = resolveLatestNativeTranscripts(node.agent, node.workDir, env, { startedAt: node.createdAt }).find(
+    const transcript = (candidatesByScope.get(tmuxTranscriptScope(node.agent, node.workDir)) ?? []).find(
       (candidate) => !claimedTranscripts.has(nativeTranscriptKey(candidate)),
     );
     if (!transcript) continue;
@@ -185,6 +186,32 @@ function reconcileTmuxRunNodes(env: Env, runId: string): void {
 function shouldReconcileTmuxNode(node: RunNode): boolean {
   if (node.coordination !== "tmux") return false;
   return node.status === "busy" || node.status === "starting" || node.status === "waiting";
+}
+
+function tmuxTranscriptCandidatesByScope(nodes: RunNode[], env: Env): Map<string, ReturnType<typeof resolveLatestNativeTranscripts>> {
+  const nodesByScope = new Map<string, RunNode[]>();
+  for (const node of nodes) {
+    const scope = tmuxTranscriptScope(node.agent, node.workDir);
+    const scopedNodes = nodesByScope.get(scope) ?? [];
+    scopedNodes.push(node);
+    nodesByScope.set(scope, scopedNodes);
+  }
+
+  const candidatesByScope = new Map<string, ReturnType<typeof resolveLatestNativeTranscripts>>();
+  for (const [scope, scopedNodes] of nodesByScope) {
+    const firstNode = scopedNodes[0];
+    if (!firstNode) continue;
+    const earliestCreatedAt = scopedNodes.reduce((earliest, node) => (node.createdAt < earliest ? node.createdAt : earliest), scopedNodes[0]?.createdAt ?? "");
+    candidatesByScope.set(
+      scope,
+      resolveLatestNativeTranscripts(firstNode.agent, firstNode.workDir, env, { startedAt: earliestCreatedAt }, scopedNodes.length),
+    );
+  }
+  return candidatesByScope;
+}
+
+function tmuxTranscriptScope(agent: AgentName, workDir: string | undefined): string {
+  return `${agent}\t${workDir ?? ""}`;
 }
 
 function startAsyncRunMessage(
