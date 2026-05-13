@@ -1,5 +1,12 @@
 # Changelog
 
+## TBD
+
+- Added native transcript activity detection for Codex, Claude, Cursor, Gemini, OpenCode, and Pi, including running, waiting-for-input, and idle/completed signals.
+- Changed tmux session listing to prefer native transcript state over tmux inactivity when available, so completed sessions can show `idle` and prompt-blocked sessions can show `waiting`.
+- Changed coordinated tmux runs so `headless run view` and `headless run wait` reconcile node status from native transcript activity, and `headless run message` marks tmux nodes busy after sending input.
+- Added a `waiting` run-node status for tmux nodes that are waiting on user input.
+
 ## 0.3.1 - 2026-05-12
 
 - Added `[general]` settings in `~/.headless/config.toml` for default timeout, default agent, coordination mode, run status interval, and tmux waiting threshold.
