@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -97,6 +97,9 @@ test("resolves the latest native transcript for a workspace", () => {
       otherPath,
       `${JSON.stringify({ type: "session_meta", payload: { id: "other-thread", cwd: realpathSync(otherWorkDir) } })}\n`,
     );
+    utimesSync(olderPath, new Date("2026-05-13T10:00:00.000Z"), new Date("2026-05-13T10:00:00.000Z"));
+    utimesSync(latestPath, new Date("2026-05-13T10:01:00.000Z"), new Date("2026-05-13T10:01:00.000Z"));
+    utimesSync(otherPath, new Date("2026-05-13T10:02:00.000Z"), new Date("2026-05-13T10:02:00.000Z"));
 
     assert.equal(resolveLatestNativeTranscript("codex", workDir, { HOME: home })?.path, latestPath);
   } finally {
