@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -601,6 +601,172 @@ test("run message routes tmux nodes through tmux buffers", async () => {
     const run = readRun(env, "auth");
     assert.equal(run?.events.filter((event) => event.type === "message_sent").length, 1);
     assert.equal(run?.events.find((event) => event.type === "message_sent")?.targetNodeId, "worker-1");
+    assert.equal(run?.nodes["worker-1"].lastMessage, "continue");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run wait reconciles completed tmux nodes from native transcripts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    mkdirSync(workDir, { recursive: true });
+    const env = { ...process.env, HOME: home };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "tmux",
+      status: "busy",
+      planned: true,
+      workDir,
+      tmuxSessionName: "headless-codex-worker-1",
+    });
+    const transcriptPath = join(home, ".codex", "sessions", "2026", "05", "13", "rollout-complete.jsonl");
+    mkdirSync(dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:00:00.000Z", type: "session_meta", payload: { id: "complete", cwd: workDir } }),
+        JSON.stringify({
+          timestamp: "2026-05-13T10:00:01.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "tmux final" }] },
+        }),
+        JSON.stringify({ timestamp: "2026-05-13T10:00:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+
+    const stdout: string[] = [];
+    assert.equal(
+      await runCli(["run", "wait", "auth"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+
+    const run = readRun(env, "auth");
+    assert.equal(stdout.join(""), "run idle: auth\n");
+    assert.equal(run?.nodes["worker-1"].status, "idle");
+    assert.equal(run?.nodes["worker-1"].lastMessage, "tmux final");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run view assigns same-workdir native transcripts to one tmux node each", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    mkdirSync(workDir, { recursive: true });
+    const env = { ...process.env, HOME: home };
+    for (const nodeId of ["worker-1", "worker-2"]) {
+      registerNode(env, {
+        runId: "auth",
+        nodeId,
+        role: "worker",
+        agent: "codex",
+        coordination: "tmux",
+        status: "busy",
+        planned: true,
+        workDir,
+        tmuxSessionName: `headless-codex-${nodeId}`,
+      });
+    }
+    const nativeDir = join(home, ".codex", "sessions", "2026", "05", "13");
+    const olderPath = join(nativeDir, "rollout-worker-1.jsonl");
+    const newerPath = join(nativeDir, "rollout-worker-2.jsonl");
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(
+      olderPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:00:00.000Z", type: "session_meta", payload: { id: "worker-1", cwd: workDir } }),
+        JSON.stringify({
+          timestamp: "2026-05-13T10:00:01.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "worker 1 final" }] },
+        }),
+        JSON.stringify({ timestamp: "2026-05-13T10:00:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      newerPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-13T10:01:00.000Z", type: "session_meta", payload: { id: "worker-2", cwd: workDir } }),
+        JSON.stringify({
+          timestamp: "2026-05-13T10:01:01.000Z",
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "worker 2 final" }] },
+        }),
+        JSON.stringify({ timestamp: "2026-05-13T10:01:02.000Z", type: "event_msg", payload: { type: "task_complete" } }),
+        "",
+      ].join("\n"),
+    );
+    const nowMs = Date.now();
+    utimesSync(olderPath, new Date(nowMs + 1000), new Date(nowMs + 1000));
+    utimesSync(newerPath, new Date(nowMs + 2000), new Date(nowMs + 2000));
+
+    assert.equal(
+      await runCli(["run", "view", "auth"], {
+        env,
+        stdout: () => undefined,
+      }),
+      0,
+    );
+
+    const run = readRun(env, "auth");
+    assert.equal(run?.nodes["worker-1"].status, "idle");
+    assert.equal(run?.nodes["worker-1"].lastMessage, "worker 1 final");
+    assert.equal(run?.nodes["worker-2"].status, "idle");
+    assert.equal(run?.nodes["worker-2"].lastMessage, "worker 2 final");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run message marks tmux nodes busy after sending input", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "tmux.jsonl");
+    await writeExecutable(
+      join(binDir, "tmux"),
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HEADLESS_TMUX_CAPTURE: captureFile, HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "tmux",
+      status: "idle",
+      planned: true,
+      tmuxSessionName: "headless-codex-worker-1",
+    });
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue"], {
+        env,
+        stdout: () => undefined,
+      }),
+      0,
+    );
+
+    const run = readRun(env, "auth");
+    assert.equal(run?.nodes["worker-1"].status, "busy");
     assert.equal(run?.nodes["worker-1"].lastMessage, "continue");
   } finally {
     rmSync(dir, { force: true, recursive: true });

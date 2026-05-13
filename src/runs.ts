@@ -58,6 +58,16 @@ export interface RunNodeMetrics {
   totalTokens?: number;
 }
 
+export interface NativeTranscript {
+  kind: "jsonl" | "sqlite";
+  path: string;
+  sessionId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  startOffset?: number;
+  endOffset?: number;
+}
+
 export interface RunEvent {
   type:
     | "run_started"

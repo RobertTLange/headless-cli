@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { extractFinalMessage } from "./output.js";
+import { deriveNativeTranscriptActivity, nativeTranscriptKey, resolveLatestNativeTranscripts } from "./native-transcripts.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { renderRunList, renderRunView } from "./run-view.js";
 import {
@@ -50,6 +51,7 @@ export async function handleRunCommand(input: RunCommandInput, handlers: RunComm
   }
   const runId = requireValue(input.runId, "run");
   if (input.command === "view") {
+    reconcileTmuxRunNodes(handlers.env, runId);
     const run = readRun(handlers.env, runId);
     if (!run) {
       throw new Error(`unknown run: ${runId}`);
@@ -98,6 +100,7 @@ async function handleRunMessage(
     const code = await handlers.sendTmux(sessionName, prompt.prompt, input.printCommand);
     if (code === 0 && !input.printCommand) {
       recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt.prompt);
+      updateNodeStatus(handlers.env, runId, nodeId, "busy");
       handlers.stdout(`sent: ${runId}/${nodeId}\n`);
     }
     return code;
@@ -142,6 +145,7 @@ async function waitForRunIdle(env: Env, runId: string): Promise<void> {
   const intervalMs = parseDelayMs(env.HEADLESS_RUN_WAIT_INTERVAL_MS, 1000);
   const currentNode = env.HEADLESS_RUN_NODE;
   while (true) {
+    reconcileTmuxRunNodes(env, runId);
     const run = readRun(env, runId);
     if (!run) {
       throw new Error(`unknown run: ${runId}`);
@@ -154,6 +158,60 @@ async function waitForRunIdle(env: Env, runId: string): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+function reconcileTmuxRunNodes(env: Env, runId: string): void {
+  const run = readRun(env, runId);
+  if (!run) return;
+  const claimedTranscripts = new Set<string>();
+  const nodes = Object.values(run.nodes)
+    .filter(shouldReconcileTmuxNode)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.updatedAt.localeCompare(left.updatedAt) || right.nodeId.localeCompare(left.nodeId));
+  const candidatesByScope = tmuxTranscriptCandidatesByScope(nodes, env);
+
+  for (const node of nodes) {
+    const transcript = (candidatesByScope.get(tmuxTranscriptScope(node.agent, node.workDir)) ?? []).find(
+      (candidate) => !claimedTranscripts.has(nativeTranscriptKey(candidate)),
+    );
+    if (!transcript) continue;
+    claimedTranscripts.add(nativeTranscriptKey(transcript));
+    const activity = deriveNativeTranscriptActivity(node.agent, transcript);
+    if (!activity) continue;
+    const status = activity.status === "running" ? "busy" : activity.status === "waiting_input" ? "waiting" : "idle";
+    if (status === node.status && (!activity.message || activity.message === node.lastMessage)) continue;
+    updateNodeStatus(env, runId, node.nodeId, status, activity.message);
+  }
+}
+
+function shouldReconcileTmuxNode(node: RunNode): boolean {
+  if (node.coordination !== "tmux") return false;
+  return node.status === "busy" || node.status === "starting" || node.status === "waiting";
+}
+
+function tmuxTranscriptCandidatesByScope(nodes: RunNode[], env: Env): Map<string, ReturnType<typeof resolveLatestNativeTranscripts>> {
+  const nodesByScope = new Map<string, RunNode[]>();
+  for (const node of nodes) {
+    const scope = tmuxTranscriptScope(node.agent, node.workDir);
+    const scopedNodes = nodesByScope.get(scope) ?? [];
+    scopedNodes.push(node);
+    nodesByScope.set(scope, scopedNodes);
+  }
+
+  const candidatesByScope = new Map<string, ReturnType<typeof resolveLatestNativeTranscripts>>();
+  for (const [scope, scopedNodes] of nodesByScope) {
+    const firstNode = scopedNodes[0];
+    if (!firstNode) continue;
+    const earliestCreatedAt = scopedNodes.reduce((earliest, node) => (node.createdAt < earliest ? node.createdAt : earliest), scopedNodes[0]?.createdAt ?? "");
+    candidatesByScope.set(
+      scope,
+      resolveLatestNativeTranscripts(firstNode.agent, firstNode.workDir, env, { startedAt: earliestCreatedAt }, scopedNodes.length),
+    );
+  }
+  return candidatesByScope;
+}
+
+function tmuxTranscriptScope(agent: AgentName, workDir: string | undefined): string {
+  return `${agent}\t${workDir ?? ""}`;
 }
 
 function startAsyncRunMessage(

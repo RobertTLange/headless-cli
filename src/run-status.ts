@@ -238,6 +238,7 @@ function visibleLength(text: string): number {
 function transitionLevel(status: string): LogLevel {
   if (status === "failed" || status === "unknown") return "error";
   if (status === "done" || status === "idle") return "ok";
+  if (status === "waiting") return "warn";
   if (status === "busy" || status === "starting") return "info";
   return "info";
 }
@@ -252,6 +253,7 @@ function statusColor(status: string): AnsiColor | undefined {
       return "green";
     case "busy":
     case "starting":
+    case "waiting":
       return "yellow";
     case "failed":
     case "unknown":

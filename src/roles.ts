@@ -4,7 +4,7 @@ import type { TeamNodeSpec } from "./teams.js";
 
 export const roles = ["orchestrator", "explorer", "worker", "reviewer"] as const;
 export const coordinationModes = ["session", "tmux", "oneshot"] as const;
-export const runStatuses = ["planned", "starting", "busy", "idle", "done", "failed", "unknown"] as const;
+export const runStatuses = ["planned", "starting", "busy", "waiting", "idle", "done", "failed", "unknown"] as const;
 
 export type Role = (typeof roles)[number];
 export type CoordinationMode = (typeof coordinationModes)[number];

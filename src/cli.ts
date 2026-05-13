@@ -62,6 +62,7 @@ import {
   fetchModelsDevPricing,
   priceUsageSummary,
 } from "./output.js";
+import { deriveNativeTranscriptActivity, nativeTranscriptKey, resolveLatestNativeTranscripts } from "./native-transcripts.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { createRunStatusReporter, parseRunStatusIntervalMs } from "./run-status.js";
@@ -896,12 +897,19 @@ interface HeadlessTmuxSession {
   agent: AgentName;
 }
 
-type HeadlessTmuxSessionState = "running" | "waiting" | "dead";
+type HeadlessTmuxSessionState = "running" | "waiting" | "idle" | "dead";
 
 interface HeadlessTmuxSessionDetails extends HeadlessTmuxSession {
   state: HeadlessTmuxSessionState;
   createdAt: string;
   lastActivityAt: string;
+}
+
+interface ParsedHeadlessTmuxSessionDetails extends HeadlessTmuxSession {
+  paneDead: string;
+  createdSeconds: number;
+  activitySeconds: number;
+  workDir?: string;
 }
 
 type StdoutHandling = "capture" | "stream" | "capture-and-stream";
@@ -1501,18 +1509,21 @@ function inferHeadlessTmuxSessionState(
   paneDead: string,
   lastActivitySeconds: number,
   waitingAfterMs: number,
+  nativeStatus?: "running" | "waiting_input" | "idle",
 ): HeadlessTmuxSessionState {
   if (paneDead === "1") {
     return "dead";
   }
+  if (nativeStatus === "idle") return "idle";
+  if (nativeStatus === "waiting_input") return "waiting";
+  if (nativeStatus === "running") return "running";
   return Date.now() - lastActivitySeconds * 1000 <= waitingAfterMs ? "running" : "waiting";
 }
 
-function parseHeadlessTmuxSessionDetails(
+function parseHeadlessTmuxSessionLine(
   line: string,
-  waitingAfterMs: number,
-): HeadlessTmuxSessionDetails | undefined {
-  const [name, createdRaw, activityRaw, paneDead = "0"] = line.split("\t");
+): ParsedHeadlessTmuxSessionDetails | undefined {
+  const [name, createdRaw, activityRaw, paneDead = "0", workDirRaw = ""] = line.split("\t");
   const session = parseHeadlessTmuxSession(name?.trim() ?? "");
   const createdSeconds = parseEpochSeconds(createdRaw ?? "");
   const activitySeconds = parseEpochSeconds(activityRaw ?? "");
@@ -1521,10 +1532,95 @@ function parseHeadlessTmuxSessionDetails(
   }
   return {
     ...session,
-    state: inferHeadlessTmuxSessionState(paneDead.trim(), activitySeconds, waitingAfterMs),
-    createdAt: formatEpochSeconds(createdSeconds),
-    lastActivityAt: formatEpochSeconds(activitySeconds),
+    paneDead: paneDead.trim(),
+    createdSeconds,
+    activitySeconds,
+    workDir: workDirRaw.trim() || undefined,
   };
+}
+
+function headlessTmuxSessionDetails(
+  session: ParsedHeadlessTmuxSessionDetails,
+  waitingAfterMs: number,
+  nativeActivity?: NonNullable<ReturnType<typeof deriveNativeTranscriptActivity>>,
+): HeadlessTmuxSessionDetails | undefined {
+  const createdAt = formatEpochSeconds(session.createdSeconds);
+  const lastActivitySecondsWithNative = nativeActivity?.updatedAtMs
+    ? Math.max(session.activitySeconds, Math.floor(nativeActivity.updatedAtMs / 1000))
+    : session.activitySeconds;
+  return {
+    name: session.name,
+    agent: session.agent,
+    state: inferHeadlessTmuxSessionState(session.paneDead, lastActivitySecondsWithNative, waitingAfterMs, nativeActivity?.status),
+    createdAt,
+    lastActivityAt: formatEpochSeconds(lastActivitySecondsWithNative),
+  };
+}
+
+function assignTmuxNativeActivities(
+  sessions: ParsedHeadlessTmuxSessionDetails[],
+  env: Env,
+): Map<string, NonNullable<ReturnType<typeof deriveNativeTranscriptActivity>>> {
+  const claimedTranscripts = new Set<string>();
+  const activities = new Map<string, NonNullable<ReturnType<typeof deriveNativeTranscriptActivity>>>();
+  const eligibleSessions = sessions
+    .filter((session) => session.paneDead !== "1" && Boolean(session.workDir))
+    .sort(
+      (left, right) =>
+        right.createdSeconds - left.createdSeconds ||
+        right.activitySeconds - left.activitySeconds ||
+        right.name.localeCompare(left.name),
+    );
+  const candidatesByScope = tmuxSessionTranscriptCandidatesByScope(eligibleSessions, env);
+
+  for (const session of eligibleSessions) {
+    const transcript = (candidatesByScope.get(tmuxSessionTranscriptScope(session.agent, session.workDir)) ?? []).find(
+      (candidate) => !claimedTranscripts.has(nativeTranscriptKey(candidate)),
+    );
+    if (!transcript) continue;
+    claimedTranscripts.add(nativeTranscriptKey(transcript));
+    const activity = deriveNativeTranscriptActivity(session.agent, transcript);
+    if (activity) activities.set(session.name, activity);
+  }
+  return activities;
+}
+
+function tmuxSessionTranscriptCandidatesByScope(
+  sessions: ParsedHeadlessTmuxSessionDetails[],
+  env: Env,
+): Map<string, ReturnType<typeof resolveLatestNativeTranscripts>> {
+  const sessionsByScope = new Map<string, ParsedHeadlessTmuxSessionDetails[]>();
+  for (const session of sessions) {
+    const scope = tmuxSessionTranscriptScope(session.agent, session.workDir);
+    const scopedSessions = sessionsByScope.get(scope) ?? [];
+    scopedSessions.push(session);
+    sessionsByScope.set(scope, scopedSessions);
+  }
+
+  const candidatesByScope = new Map<string, ReturnType<typeof resolveLatestNativeTranscripts>>();
+  for (const [scope, scopedSessions] of sessionsByScope) {
+    const firstSession = scopedSessions[0];
+    if (!firstSession) continue;
+    const earliestCreatedSeconds = scopedSessions.reduce(
+      (earliest, session) => Math.min(earliest, session.createdSeconds),
+      scopedSessions[0]?.createdSeconds ?? 0,
+    );
+    candidatesByScope.set(
+      scope,
+      resolveLatestNativeTranscripts(
+        firstSession.agent,
+        firstSession.workDir,
+        env,
+        { startedAt: formatEpochSeconds(earliestCreatedSeconds) },
+        scopedSessions.length,
+      ),
+    );
+  }
+  return candidatesByScope;
+}
+
+function tmuxSessionTranscriptScope(agent: AgentName, workDir: string | undefined): string {
+  return `${agent}\t${workDir ?? ""}`;
 }
 
 function renderTable(headers: string[], rows: string[][]): string {
@@ -1648,7 +1744,7 @@ async function listHeadlessTmuxSessionDetails(
   const result = await captureSimpleCommand(
     {
       command: "tmux",
-      args: ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}"],
+      args: ["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{window_activity}\t#{pane_dead}\t#{pane_current_path}"],
     },
     undefined,
     env,
@@ -1662,11 +1758,15 @@ async function listHeadlessTmuxSessionDetails(
   }
 
   const waitingAfterMs = parseWaitingAfterMs(env, configuredWaitingAfterMs);
-  return result.stdout
+  const sessions = result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => parseHeadlessTmuxSessionDetails(line, waitingAfterMs))
+    .map(parseHeadlessTmuxSessionLine)
+    .filter((session): session is ParsedHeadlessTmuxSessionDetails => Boolean(session));
+  const nativeActivities = assignTmuxNativeActivities(sessions, env);
+  return sessions
+    .map((session) => headlessTmuxSessionDetails(session, waitingAfterMs, nativeActivities.get(session.name)))
     .filter((session): session is HeadlessTmuxSessionDetails => Boolean(session))
     .filter((session) => agent === undefined || session.agent === agent);
 }

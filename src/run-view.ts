@@ -153,7 +153,7 @@ function tmuxAttachCommand(sessionName: string): string {
 }
 
 function graphLineColor(line: string): TableColor | undefined {
-  for (const status of ["failed", "busy", "starting", "done", "idle", "planned", "unknown"] as const) {
+  for (const status of ["failed", "busy", "starting", "waiting", "done", "idle", "planned", "unknown"] as const) {
     if (line.includes(`[${status} `)) {
       return statusColor(status);
     }
@@ -167,6 +167,7 @@ function statusColor(status: RunStatus): TableColor | undefined {
       return "green";
     case "busy":
     case "starting":
+    case "waiting":
       return "yellow";
     case "failed":
     case "unknown":
