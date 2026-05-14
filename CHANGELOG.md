@@ -2,6 +2,7 @@
 
 ## TBD
 
+- Added `--tmux --wait` to wait for native transcript completion and print the final assistant message, plus `--delete` to kill the tmux session after capture; OpenCode wait mode now uses prompt-bearing interactive runs so sessions persist unless `--delete` is set.
 - Added native transcript activity detection for Codex, Claude, Cursor, Gemini, OpenCode, and Pi, including running, waiting-for-input, and idle/completed signals.
 - Changed tmux session listing to prefer native transcript state over tmux inactivity when available, so completed sessions can show `idle` and prompt-blocked sessions can show `waiting`.
 - Changed coordinated tmux runs so `headless run view` and `headless run wait` reconcile node status from native transcript activity, and `headless run message` marks tmux nodes busy after sending input.
