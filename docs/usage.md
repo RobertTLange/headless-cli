@@ -100,11 +100,12 @@ Pass `--session <name>` to start or resume a named native session. Headless stor
 headless codex --prompt "Continue the fix" --session bughunt
 ```
 
-Pass `--tmux` to create a detached interactive session named `headless-<agent>-<pid>`, start the selected agent with the prompt as its initial message, print an attach command, and exit. Pass `--name <name>` for a stable managed session name. Pass `--session <name>` for start-or-send behavior: if `headless-<agent>-<name>` is active, Headless sends the prompt there; otherwise it starts that named session.
+Pass `--tmux` to create a detached interactive session named `headless-<agent>-<pid>`, start the selected agent with the prompt as its initial message, print an attach command, and exit. Pass `--wait` with `--tmux` to wait until the agent's native transcript reports completion, then print the final assistant message. Add `--delete` to kill the tmux session after that final message is captured. Pass `--name <name>` for a stable managed session name. Pass `--session <name>` for start-or-send behavior: if `headless-<agent>-<name>` is active, Headless sends the prompt there; otherwise it starts that named session.
 
 ```bash
 headless claude --prompt-file task.md --work-dir /path/to/project --tmux
 env -u TMUX tmux attach-session -t headless-claude-12345
+headless codex --prompt "Fix the tests" --tmux --wait --delete
 headless codex --prompt "Fix the tests" --tmux --name work
 headless codex --prompt "Run focused tests" --tmux --session work
 ```
@@ -233,11 +234,13 @@ Options:
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker for one-shot headless execution.
 - `--modal`: run the agent in a Modal CPU sandbox for one-shot headless execution.
-- `--timeout <s>`: stop one-shot local, Docker, or Modal execution after the given number of seconds.
+- `--timeout <s>`: stop one-shot local, Docker, Modal, or `--tmux --wait` execution after the given number of seconds.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--usage`: append normalized token usage and cost JSON after the final message.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
+- `--wait`: with `--tmux`, wait for native transcript completion and print the final message.
+- `--delete`: with `--tmux --wait`, kill the tmux session after completion.
 - `--name`: use a stable managed session name with `--tmux`.
 - `--session`: start or resume a named Headless session. Uses `~/.headless/sessions.json`; in tmux mode starts or sends to `headless-<agent>-<name>`.
 - `headless attach`: attach to the most recently active Headless tmux session; add `--all` to tile all active sessions.

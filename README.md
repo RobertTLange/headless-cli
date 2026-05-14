@@ -78,6 +78,7 @@ headless codex --prompt "Continue the fix" --session bughunt
 
 # Launch an interactive tmux session.
 headless codex --prompt "Fix the failing tests" --tmux
+headless codex --prompt "Fix the failing tests" --tmux --wait --delete
 headless attach --all
 
 # Validate local setup.
