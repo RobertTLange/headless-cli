@@ -378,6 +378,25 @@ function buildInteractiveOpencode(options: BuildOptions): BuiltCommand {
   return commandWithOptionalEnv("opencode", args, opencodeEnv(options.allow));
 }
 
+export function buildInteractiveOpencodeRun(options: BuildOptions): BuiltCommand {
+  const args = ["run", "--interactive"];
+  const model = options.model ?? DEFAULT_OPENCODE_MODEL;
+
+  args.push("--model", model);
+  if (options.reasoningEffort) {
+    args.push("--variant", options.reasoningEffort);
+  }
+  if (options.allow === "yolo" || options.allow === undefined) {
+    args.push("--dangerously-skip-permissions");
+  }
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--session", options.sessionId);
+  }
+  args.push(options.prompt);
+
+  return commandWithOptionalEnv("opencode", args, opencodeEnv(options.allow));
+}
+
 function buildPi(options: BuildOptions, env: Env): BuiltCommand {
   const command = env.PI_CODING_AGENT_BIN || "pi";
   const args = options.sessionMode ? ["--mode", "json"] : ["--no-session", "--mode", "json"];
