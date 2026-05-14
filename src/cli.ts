@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildAgentCommand,
+  buildInteractiveOpencodeRun,
   buildInteractiveAgentCommand,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OPENCODE_MODEL,
@@ -62,7 +63,13 @@ import {
   fetchModelsDevPricing,
   priceUsageSummary,
 } from "./output.js";
-import { deriveNativeTranscriptActivity, nativeTranscriptKey, resolveLatestNativeTranscripts } from "./native-transcripts.js";
+import {
+  deriveNativeTranscriptActivity,
+  indexNativeAssistantCompletion,
+  nativeTranscriptIncludesText,
+  nativeTranscriptKey,
+  resolveLatestNativeTranscripts,
+} from "./native-transcripts.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { createRunStatusReporter, parseRunStatusIntervalMs } from "./run-status.js";
@@ -145,6 +152,8 @@ interface ParsedArgs {
   json: boolean;
   debug: boolean;
   usage: boolean;
+  wait: boolean;
+  delete: boolean;
   printCommand: boolean;
   showConfig: boolean;
   check: boolean;
@@ -222,6 +231,8 @@ function usage(): string {
     "  --debug              Stream raw trace and print extracted final message.",
     "  --usage              Print final message plus normalized token and cost JSON.",
     "  --tmux               Launch an interactive agent in a tmux session.",
+    "  --wait               With --tmux, wait for native transcript completion and print the final message.",
+    "  --delete             With --tmux --wait, kill the tmux session after completion.",
     "  --name <name>        Use a managed tmux session name with --tmux.",
     "  --session <name>     Start or resume a named Headless session.",
     "  attach [session]     Attach to one or all active headless tmux sessions.",
@@ -266,6 +277,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     debug: false,
     usage: false,
+    wait: false,
+    delete: false,
     printCommand: false,
     showConfig: false,
     check: false,
@@ -426,6 +439,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--usage":
         parsed.usage = true;
+        break;
+      case "--wait":
+        parsed.wait = true;
+        break;
+      case "--delete":
+        parsed.delete = true;
         break;
       case "--tmux":
         parsed.tmux = true;
@@ -890,6 +909,12 @@ interface TmuxAttachAllCommands {
 interface TmuxPostLaunchCommand {
   command: BuiltCommand;
   delayMs: number;
+}
+
+interface TmuxWaitSnapshot {
+  marker: string;
+  startedAt: string;
+  transcripts: Map<string, number | undefined>;
 }
 
 interface HeadlessTmuxSession {
@@ -1381,9 +1406,11 @@ function buildTmuxCommands(
   cwd: string | undefined,
   env: Env,
   customName: string | undefined,
+  options: { pastePrompt?: boolean } = {},
 ): TmuxCommands {
   const sessionName = buildHeadlessTmuxSessionName(agent, customName ?? String(process.pid));
   const startDir = cwd ?? process.cwd();
+  const pastePrompt = options.pastePrompt ?? true;
   const opencodeWakeDelayMs = parseDelayMs(
     env.HEADLESS_TMUX_OPENCODE_WAKE_DELAY_MS ?? env.HEADLESS_TMUX_OPENCODE_ENTER_DELAY_MS,
     4000,
@@ -1398,7 +1425,7 @@ function buildTmuxCommands(
       args: ["new-session", "-d", "-s", sessionName, "-c", startDir, quoteCommand(command)],
     },
     postLaunch:
-      agent === "opencode"
+      agent === "opencode" && pastePrompt
         ? [
             {
               command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
@@ -1923,6 +1950,99 @@ async function executeTmuxCommands(
   return 0;
 }
 
+function tmuxWaitMarker(sessionName: string): string {
+  return `headless-tmux-wait:${sessionName}`;
+}
+
+function promptWithTmuxWaitMarker(prompt: string, sessionName: string): string {
+  return `${prompt}\n\n<!-- ${tmuxWaitMarker(sessionName)} -->`;
+}
+
+function createTmuxWaitSnapshot(agent: AgentName, sessionName: string, workDir: string, env: Env): TmuxWaitSnapshot {
+  return {
+    marker: tmuxWaitMarker(sessionName),
+    startedAt: new Date().toISOString(),
+    transcripts: new Map(
+      resolveLatestNativeTranscripts(agent, workDir, env, {}, 20).map((transcript) => [
+        tmuxWaitTranscriptIdentity(transcript),
+        transcript.kind === "jsonl" ? statSync(transcript.path).size : undefined,
+      ]),
+    ),
+  };
+}
+
+function tmuxWaitTranscriptIdentity(transcript: ReturnType<typeof resolveLatestNativeTranscripts>[number]): string {
+  return [transcript.kind, transcript.path, transcript.sessionId ?? ""].join("\t");
+}
+
+function tmuxWaitCandidateWithSnapshot(
+  transcript: ReturnType<typeof resolveLatestNativeTranscripts>[number],
+  snapshot: TmuxWaitSnapshot,
+): ReturnType<typeof resolveLatestNativeTranscripts>[number] | undefined {
+  if (transcript.kind !== "jsonl") {
+    return transcript;
+  }
+  const startOffset = snapshot.transcripts.get(tmuxWaitTranscriptIdentity(transcript)) ?? 0;
+  const endOffset = statSync(transcript.path).size;
+  if (startOffset >= endOffset) {
+    return undefined;
+  }
+  return { ...transcript, startOffset, endOffset };
+}
+
+function readTmuxFinalMessage(agent: AgentName, workDir: string, env: Env, snapshot: TmuxWaitSnapshot): string {
+  const candidates = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20);
+  for (const candidate of candidates) {
+    const transcript = tmuxWaitCandidateWithSnapshot(candidate, snapshot);
+    if (!transcript) continue;
+    if (!nativeTranscriptIncludesText(transcript, snapshot.marker)) continue;
+    const activity = deriveNativeTranscriptActivity(agent, transcript, { terminalDonePrecedence: true });
+    if (activity?.reason !== "terminal_done") continue;
+    const message = activity.message ?? indexNativeAssistantCompletion(agent, transcript)?.message;
+    if (message) return message;
+  }
+  return "";
+}
+
+async function waitForTmuxFinalMessage(
+  agent: AgentName,
+  sessionName: string,
+  workDir: string,
+  env: Env,
+  snapshot: TmuxWaitSnapshot,
+  timeoutSeconds: number | undefined,
+): Promise<string> {
+  const intervalMs = parseDelayMs(env.HEADLESS_TMUX_WAIT_INTERVAL_MS, 1000);
+  const deadline = timeoutSeconds === undefined ? undefined : Date.now() + timeoutSeconds * 1000;
+  while (true) {
+    const message = readTmuxFinalMessage(agent, workDir, env, snapshot);
+    if (message) return message;
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw new CliError(`tmux wait timed out after ${timeoutSeconds}s`);
+    }
+    if (!(await headlessTmuxSessionExists(sessionName, env))) {
+      const finalMessage = readTmuxFinalMessage(agent, workDir, env, snapshot);
+      if (finalMessage) return finalMessage;
+      throw new CliError(`tmux session ended before final message: ${sessionName}`);
+    }
+    await waitForDelay(intervalMs);
+  }
+}
+
+async function deleteTmuxSession(sessionName: string, env: Env, stderr: (text: string) => void): Promise<number> {
+  const result = await captureSimpleCommand({ command: "tmux", args: ["kill-session", "-t", sessionName] }, undefined, env);
+  if (result.code === 0) {
+    return 0;
+  }
+  if (result.stderr.includes("no server running") || result.stderr.includes("can't find session")) {
+    return 0;
+  }
+  if (result.stderr) {
+    stderr(result.stderr);
+  }
+  return result.code;
+}
+
 async function executeTmuxSendCommands(
   commands: TmuxSendCommands,
   env: Env,
@@ -2179,6 +2299,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (
         parsed.tmux ||
+        parsed.wait ||
+        parsed.delete ||
         parsed.sessionAlias !== undefined ||
         parsed.json ||
         parsed.debug ||
@@ -2219,6 +2341,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with attach");
+      }
+      if (parsed.wait) {
+        throw new CliError("--wait cannot be used with attach");
+      }
+      if (parsed.delete) {
+        throw new CliError("--delete cannot be used with attach");
       }
       if (parsed.json) {
         throw new CliError("--json cannot be used with attach");
@@ -2330,6 +2458,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with rename");
       }
+      if (parsed.wait) {
+        throw new CliError("--wait cannot be used with rename");
+      }
+      if (parsed.delete) {
+        throw new CliError("--delete cannot be used with rename");
+      }
       if (parsed.json) {
         throw new CliError("--json cannot be used with rename");
       }
@@ -2376,6 +2510,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.tmux) {
         throw new CliError("--tmux cannot be used with send");
       }
+      if (parsed.wait) {
+        throw new CliError("--wait cannot be used with send");
+      }
+      if (parsed.delete) {
+        throw new CliError("--delete cannot be used with send");
+      }
       if (parsed.json) {
         throw new CliError("--json cannot be used with send");
       }
@@ -2416,6 +2556,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.timeoutSeconds !== undefined) {
         throw new CliError("--timeout cannot be used with --check");
       }
+      if (parsed.wait) {
+        throw new CliError("--wait cannot be used with --check");
+      }
+      if (parsed.delete) {
+        throw new CliError("--delete cannot be used with --check");
+      }
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --check");
       }
@@ -2436,6 +2582,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.list) {
       if (parsed.timeoutSeconds !== undefined) {
         throw new CliError("--timeout cannot be used with --list");
+      }
+      if (parsed.wait) {
+        throw new CliError("--wait cannot be used with --list");
+      }
+      if (parsed.delete) {
+        throw new CliError("--delete cannot be used with --list");
       }
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --list");
@@ -2476,7 +2628,18 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--json cannot be used with --tmux");
     }
     if (parsed.tmux && parsed.timeoutSeconds !== undefined) {
-      throw new CliError("--timeout cannot be used with --tmux");
+      if (!parsed.wait) {
+        throw new CliError("--timeout cannot be used with --tmux");
+      }
+    }
+    if (parsed.wait && !parsed.tmux) {
+      throw new CliError("--wait requires --tmux");
+    }
+    if (parsed.delete && !parsed.wait) {
+      throw new CliError("--delete requires --wait");
+    }
+    if (parsed.wait && parsed.printCommand) {
+      throw new CliError("--wait cannot be used with --print-command");
     }
     if (parsed.usage && parsed.json) {
       throw new CliError("--usage cannot be used with --json");
@@ -2613,17 +2776,20 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     );
 
     if (parsed.tmux) {
+      const tmuxWaitWorkDir = cwd ?? process.cwd();
       const sessionName = parsed.sessionAlias
         ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
         : undefined;
       if (sessionName && (await headlessTmuxSessionExists(sessionName, env))) {
-        const tmuxCommands = buildTmuxSendCommands(sessionName, composedPrompt);
+        const tmuxPrompt = parsed.wait ? promptWithTmuxWaitMarker(composedPrompt, sessionName) : composedPrompt;
+        const tmuxCommands = buildTmuxSendCommands(sessionName, tmuxPrompt);
         if (parsed.printCommand) {
           for (const command of tmuxCommands.commands) {
             stdout(`${quoteCommand(command)}\n`);
           }
           return 0;
         }
+        const waitSnapshot = parsed.wait ? createTmuxWaitSnapshot(parsed.agent, sessionName, tmuxWaitWorkDir, env) : undefined;
         const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
         if (parsed.runId && parsed.role && nodeId) {
           if (code === 0) {
@@ -2648,20 +2814,40 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           }
         }
         if (code === 0) {
+          if (waitSnapshot) {
+            stderr(`sent: ${tmuxCommands.sessionName}\n`);
+            const finalMessage = await waitForTmuxFinalMessage(
+              parsed.agent,
+              tmuxCommands.sessionName,
+              tmuxWaitWorkDir,
+              env,
+              waitSnapshot,
+              commandTimeoutSeconds,
+            );
+            if (parsed.runId && parsed.role && nodeId) {
+              updateNodeStatus(env, parsed.runId, nodeId, "idle", finalMessage);
+            }
+            const deleteCode = parsed.delete ? await deleteTmuxSession(tmuxCommands.sessionName, env, stderr) : 0;
+            stdout(`${finalMessage}\n`);
+            return deleteCode;
+          }
           stdout(`sent: ${tmuxCommands.sessionName}\n`);
         }
         return code;
       }
-      const tmuxCommand = buildInteractiveAgentCommand(
-        parsed.agent,
-        {
-          prompt: composedPrompt,
-          model: configuredDefaults.model,
-          allow,
-          reasoningEffort: configuredDefaults.reasoningEffort,
-        },
-        env,
-      );
+      const tmuxNamePart = parsed.sessionAlias ?? parsed.tmuxName ?? String(process.pid);
+      const tmuxSessionName = buildHeadlessTmuxSessionName(parsed.agent, tmuxNamePart);
+      const tmuxPrompt = parsed.wait ? promptWithTmuxWaitMarker(composedPrompt, tmuxSessionName) : composedPrompt;
+      const tmuxCommandOptions = {
+        prompt: tmuxPrompt,
+        model: configuredDefaults.model,
+        allow,
+        reasoningEffort: configuredDefaults.reasoningEffort,
+      };
+      const tmuxCommand =
+        parsed.agent === "opencode" && parsed.wait
+          ? buildInteractiveOpencodeRun(tmuxCommandOptions)
+          : buildInteractiveAgentCommand(parsed.agent, tmuxCommandOptions, env);
       const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "tmux");
       if (reasoningWarning) {
         stderr(reasoningWarning);
@@ -2669,10 +2855,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const tmuxCommands = buildTmuxCommands(
         parsed.agent,
         tmuxCommand,
-        composedPrompt,
+        tmuxPrompt,
         cwd,
         env,
-        parsed.sessionAlias ?? parsed.tmuxName,
+        tmuxNamePart,
+        { pastePrompt: !(parsed.agent === "opencode" && parsed.wait) },
       );
       if (parsed.printCommand) {
         stdout(`${quoteCommand(tmuxCommands.newSession)}\n`);
@@ -2689,6 +2876,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         trustCursorWorkspace(cwd, env);
       }
 
+      const waitSnapshot = parsed.wait
+        ? createTmuxWaitSnapshot(parsed.agent, tmuxCommands.sessionName, tmuxWaitWorkDir, env)
+        : undefined;
       const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
       if (parsed.runId && parsed.role && nodeId) {
         if (code === 0) {
@@ -2713,8 +2903,28 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
       }
       if (code === 0) {
-        stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
-        stdout(`attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`);
+        const sessionLine = `tmux session: ${tmuxCommands.sessionName}\n`;
+        const attachLine = `attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`;
+        if (waitSnapshot) {
+          stderr(sessionLine);
+          stderr(attachLine);
+          const finalMessage = await waitForTmuxFinalMessage(
+            parsed.agent,
+            tmuxCommands.sessionName,
+            tmuxWaitWorkDir,
+            env,
+            waitSnapshot,
+            commandTimeoutSeconds,
+          );
+          if (parsed.runId && parsed.role && nodeId) {
+            updateNodeStatus(env, parsed.runId, nodeId, "idle", finalMessage);
+          }
+          const deleteCode = parsed.delete ? await deleteTmuxSession(tmuxCommands.sessionName, env, stderr) : 0;
+          stdout(`${finalMessage}\n`);
+          return deleteCode;
+        }
+        stdout(sessionLine);
+        stdout(attachLine);
       }
       return code;
     }
