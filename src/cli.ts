@@ -66,6 +66,7 @@ import {
 import {
   deriveNativeTranscriptActivity,
   indexNativeAssistantCompletion,
+  nativeTranscriptIncludesText,
   nativeTranscriptKey,
   resolveLatestNativeTranscripts,
 } from "./native-transcripts.js";
@@ -911,6 +912,7 @@ interface TmuxPostLaunchCommand {
 }
 
 interface TmuxWaitSnapshot {
+  marker: string;
   startedAt: string;
   transcripts: Map<string, number | undefined>;
 }
@@ -1948,8 +1950,17 @@ async function executeTmuxCommands(
   return 0;
 }
 
-function createTmuxWaitSnapshot(agent: AgentName, workDir: string, env: Env): TmuxWaitSnapshot {
+function tmuxWaitMarker(sessionName: string): string {
+  return `headless-tmux-wait:${sessionName}`;
+}
+
+function promptWithTmuxWaitMarker(prompt: string, sessionName: string): string {
+  return `${prompt}\n\n<!-- ${tmuxWaitMarker(sessionName)} -->`;
+}
+
+function createTmuxWaitSnapshot(agent: AgentName, sessionName: string, workDir: string, env: Env): TmuxWaitSnapshot {
   return {
+    marker: tmuxWaitMarker(sessionName),
     startedAt: new Date().toISOString(),
     transcripts: new Map(
       resolveLatestNativeTranscripts(agent, workDir, env, {}, 20).map((transcript) => [
@@ -1984,6 +1995,7 @@ function readTmuxFinalMessage(agent: AgentName, workDir: string, env: Env, snaps
   for (const candidate of candidates) {
     const transcript = tmuxWaitCandidateWithSnapshot(candidate, snapshot);
     if (!transcript) continue;
+    if (!nativeTranscriptIncludesText(transcript, snapshot.marker)) continue;
     const activity = deriveNativeTranscriptActivity(agent, transcript, { terminalDonePrecedence: true });
     if (activity?.reason !== "terminal_done") continue;
     const message = activity.message ?? indexNativeAssistantCompletion(agent, transcript)?.message;
@@ -2769,14 +2781,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
         : undefined;
       if (sessionName && (await headlessTmuxSessionExists(sessionName, env))) {
-        const tmuxCommands = buildTmuxSendCommands(sessionName, composedPrompt);
+        const tmuxPrompt = parsed.wait ? promptWithTmuxWaitMarker(composedPrompt, sessionName) : composedPrompt;
+        const tmuxCommands = buildTmuxSendCommands(sessionName, tmuxPrompt);
         if (parsed.printCommand) {
           for (const command of tmuxCommands.commands) {
             stdout(`${quoteCommand(command)}\n`);
           }
           return 0;
         }
-        const waitSnapshot = parsed.wait ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env) : undefined;
+        const waitSnapshot = parsed.wait ? createTmuxWaitSnapshot(parsed.agent, sessionName, tmuxWaitWorkDir, env) : undefined;
         const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
         if (parsed.runId && parsed.role && nodeId) {
           if (code === 0) {
@@ -2822,8 +2835,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
         return code;
       }
+      const tmuxNamePart = parsed.sessionAlias ?? parsed.tmuxName ?? String(process.pid);
+      const tmuxSessionName = buildHeadlessTmuxSessionName(parsed.agent, tmuxNamePart);
+      const tmuxPrompt = parsed.wait ? promptWithTmuxWaitMarker(composedPrompt, tmuxSessionName) : composedPrompt;
       const tmuxCommandOptions = {
-        prompt: composedPrompt,
+        prompt: tmuxPrompt,
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
@@ -2839,10 +2855,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const tmuxCommands = buildTmuxCommands(
         parsed.agent,
         tmuxCommand,
-        composedPrompt,
+        tmuxPrompt,
         cwd,
         env,
-        parsed.sessionAlias ?? parsed.tmuxName,
+        tmuxNamePart,
         { pastePrompt: !(parsed.agent === "opencode" && parsed.wait) },
       );
       if (parsed.printCommand) {
@@ -2860,7 +2876,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         trustCursorWorkspace(cwd, env);
       }
 
-      const waitSnapshot = parsed.wait ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env) : undefined;
+      const waitSnapshot = parsed.wait
+        ? createTmuxWaitSnapshot(parsed.agent, tmuxCommands.sessionName, tmuxWaitWorkDir, env)
+        : undefined;
       const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
       if (parsed.runId && parsed.role && nodeId) {
         if (code === 0) {

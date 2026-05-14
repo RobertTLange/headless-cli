@@ -144,6 +144,11 @@ export function indexNativeAssistantCompletion(
   return { message, source: "native-transcript", path: transcript.path };
 }
 
+export function nativeTranscriptIncludesText(transcript: NativeTranscript | undefined, text: string): boolean {
+  if (!transcript || !text || !existsSync(transcript.path)) return false;
+  return transcript.kind === "sqlite" ? openCodeTranscriptIncludesText(transcript, text) : readTranscriptSlice(transcript).includes(text);
+}
+
 function readTranscriptSlice(transcript: NativeTranscript): string {
   const bytes = readFileSync(transcript.path);
   const start = transcript.startOffset ?? 0;
@@ -174,6 +179,31 @@ function indexOpenCodeCompletion(transcript: NativeTranscript): string {
   );
   if (sqlite.status !== 0) return "";
   return sqlite.stdout.trim();
+}
+
+function openCodeTranscriptIncludesText(transcript: NativeTranscript, text: string): boolean {
+  if (!transcript.sessionId || !/^[A-Za-z0-9_.:-]+$/.test(transcript.sessionId)) return false;
+  const sqlite = spawnSync(
+    "sqlite3",
+    [
+      "-json",
+      transcript.path,
+      [
+        "select part.data as part_data",
+        "from part",
+        `where part.session_id = '${transcript.sessionId.replaceAll("'", "''")}'`,
+        "order by part.time_created asc;",
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  if (sqlite.status !== 0 || !sqlite.stdout.trim()) return false;
+  try {
+    const rows = JSON.parse(sqlite.stdout) as unknown;
+    return Array.isArray(rows) && rows.some((row) => asString(asRecord(row).part_data).includes(text));
+  } catch {
+    return false;
+  }
 }
 
 function claudeTranscriptPath(nativeId: string, workDir: string | undefined, env: Env): string | undefined {
@@ -250,6 +280,10 @@ function geminiProjectSlot(root: string, workspace: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
 }
 
 function findFileContaining(root: string | undefined, text: string): string | undefined {

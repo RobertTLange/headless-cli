@@ -2534,9 +2534,11 @@ test("CLI --tmux --wait prints final message from native transcript activity", a
           "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
           "if (args[0] === 'new-session') {",
           "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
+          "  const sessionName = args[3];",
           "  const cwd = args[5];",
           "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'wait', cwd } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello <!-- headless-tmux-wait:' + sessionName + ' -->' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'wait final' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
           "    '',",
@@ -2605,6 +2607,7 @@ test("CLI --tmux --wait ignores stale transcript bytes from an existing session"
           "const args = process.argv.slice(2);",
           "if (args[0] === 'new-session') {",
           "  fs.appendFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'again <!-- headless-tmux-wait:' + args[3] + ' -->' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fresh final' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
           "    '',",
@@ -2658,6 +2661,7 @@ test("CLI --tmux --wait accepts terminal completion even when final answer asks 
           "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
           "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'question', cwd: args[5] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello <!-- headless-tmux-wait:' + args[3] + ' -->' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Should I run the full gate?' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
           "    '',",
@@ -2689,6 +2693,70 @@ test("CLI --tmux --wait accepts terminal completion even when final answer asks 
   }
 });
 
+test("CLI --tmux --wait ignores another same-workdir transcript without its wait marker", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const sessionsDir = join(home, ".codex", "sessions", "2026", "05", "14");
+    mkdirSync(workDir, { recursive: true });
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const args = process.argv.slice(2);",
+          "if (args[0] === 'new-session') {",
+          "  const sessionName = args[3];",
+          "  const cwd = args[5];",
+          "  const sessionsDir = process.env.HEADLESS_SESSIONS_DIR;",
+          "  fs.mkdirSync(sessionsDir, { recursive: true });",
+          "  fs.writeFileSync(path.join(sessionsDir, 'rollout-target.jsonl'), [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'target', cwd } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello <!-- headless-tmux-wait:' + sessionName + ' -->' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'target final' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:03.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "  fs.writeFileSync(path.join(sessionsDir, 'rollout-other.jsonl'), [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'other', cwd } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'other <!-- headless-tmux-wait:headless-codex-other -->' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'other final' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:03.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "}",
+          "if (args[0] === 'has-session') process.exit(1);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--timeout", "2"], {
+      env: {
+        ...process.env,
+        HEADLESS_SESSIONS_DIR: sessionsDir,
+        HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "target final\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --tmux --wait --delete kills the tmux session after final output", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -2713,6 +2781,7 @@ test("CLI --tmux --wait --delete kills the tmux session after final output", asy
           "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
           "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'delete', cwd: args[5] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello <!-- headless-tmux-wait:' + args[3] + ' -->' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'delete final' }] } }),",
           "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
           "    '',",
@@ -2775,12 +2844,15 @@ test(
             "if (args[0] === 'new-session') {",
             "  const sessionId = 'ses_wait_delete';",
             "  const now = Date.now();",
+            "  const userPart = JSON.stringify({ type: 'text', text: args[6] }).replaceAll(\"'\", \"''\");",
             "  const sql = `",
             "create table session (id text primary key, directory text not null, time_updated integer not null, data text);",
             "create table message (id text primary key, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);",
             "create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);",
             "insert into session values ('${sessionId}', '${args[5].replaceAll(\"'\", \"''\")}', ${now}, '{}');",
+            "insert into message values ('user_msg', '${sessionId}', ${now}, ${now}, '{\"role\":\"user\"}');",
             "insert into message values ('assistant_msg', '${sessionId}', ${now}, ${now + 2}, '{\"role\":\"assistant\"}');",
+            "insert into part values ('user_part', 'user_msg', '${sessionId}', ${now}, ${now}, '${userPart}');",
             "insert into part values ('text_part', 'assistant_msg', '${sessionId}', ${now + 1}, ${now + 1}, '{\"type\":\"text\",\"text\":\"opencode wait final\",\"metadata\":{\"openai\":{\"phase\":\"final_answer\"}}}');",
             "insert into part values ('finish_part', 'assistant_msg', '${sessionId}', ${now + 2}, ${now + 2}, '{\"type\":\"step-finish\",\"reason\":\"stop\"}');",
             "`;",
