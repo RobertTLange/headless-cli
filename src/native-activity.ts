@@ -16,6 +16,7 @@ export interface NativeTranscriptActivity {
 export interface NativeTranscriptActivityOptions {
   nowMs?: number;
   runningTtlMs?: number;
+  terminalDonePrecedence?: boolean;
   waitingTtlMs?: number;
 }
 
@@ -58,6 +59,7 @@ export function deriveNativeTranscriptActivity(
   const nowMsValue = options.nowMs ?? Date.now();
   const decision = deriveActivityDecision(agent, events, updatedAtMs, nowMsValue, {
     runningTtlMs: options.runningTtlMs ?? defaultRunningTtlMs,
+    terminalDonePrecedence: options.terminalDonePrecedence ?? false,
     waitingTtlMs: options.waitingTtlMs ?? defaultWaitingTtlMs,
   });
   return { ...decision, updatedAtMs };
@@ -151,11 +153,16 @@ function deriveActivityDecision(
   events: NativeActivityEvent[],
   updatedAtMs: number,
   nowMsValue: number,
-  ttl: { runningTtlMs: number; waitingTtlMs: number },
+  ttl: { runningTtlMs: number; terminalDonePrecedence: boolean; waitingTtlMs: number },
 ): NativeActivityDecision {
   const unmatchedToolUses = countUnmatchedToolUses(events);
   if (unmatchedToolUses > 0) {
     return applyFreshness({ status: "running", reason: "pending_tool_use_fresh" }, updatedAtMs, nowMsValue, ttl.runningTtlMs);
+  }
+
+  const terminalEvent = findLatestTerminalDoneEvent(agent, events);
+  if (terminalEvent && ttl.terminalDonePrecedence) {
+    return { status: "idle", reason: "terminal_done", message: latestMessage(terminalEvent) || latestAssistantMessage(events) };
   }
 
   const waitEvent = findPendingWaitSignalEvent(events);
@@ -168,7 +175,6 @@ function deriveActivityDecision(
     );
   }
 
-  const terminalEvent = findLatestTerminalDoneEvent(agent, events);
   if (terminalEvent) {
     return { status: "idle", reason: "terminal_done", message: latestMessage(terminalEvent) || latestAssistantMessage(events) };
   }

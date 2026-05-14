@@ -2636,6 +2636,59 @@ test("CLI --tmux --wait ignores stale transcript bytes from an existing session"
   }
 });
 
+test("CLI --tmux --wait accepts terminal completion even when final answer asks a question", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const transcriptPath = join(home, ".codex", "sessions", "2026", "05", "14", "rollout-question.jsonl");
+    mkdirSync(workDir, { recursive: true });
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const args = process.argv.slice(2);",
+          "if (args[0] === 'new-session') {",
+          "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
+          "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'question', cwd: args[5] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Should I run the full gate?' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "}",
+          "if (args[0] === 'has-session') process.exit(1);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--timeout", "2"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        HEADLESS_TRANSCRIPT: transcriptPath,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "Should I run the full gate?\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --tmux --wait --delete kills the tmux session after final output", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

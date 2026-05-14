@@ -1984,8 +1984,8 @@ function readTmuxFinalMessage(agent: AgentName, workDir: string, env: Env, snaps
   for (const candidate of candidates) {
     const transcript = tmuxWaitCandidateWithSnapshot(candidate, snapshot);
     if (!transcript) continue;
-    const activity = deriveNativeTranscriptActivity(agent, transcript);
-    if (activity?.status !== "idle") continue;
+    const activity = deriveNativeTranscriptActivity(agent, transcript, { terminalDonePrecedence: true });
+    if (activity?.reason !== "terminal_done") continue;
     const message = activity.message ?? indexNativeAssistantCompletion(agent, transcript)?.message;
     if (message) return message;
   }
