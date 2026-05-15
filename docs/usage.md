@@ -92,6 +92,42 @@ headless codex --prompt "Fix the failing tests" --debug
 headless codex --prompt "Summarize this repo" --model gpt-5 --usage
 ```
 
+## Cron Jobs
+
+Use `headless cron add` to schedule the same detached one-shot invocation at fixed intervals or with a five-field cron expression. `--every` accepts positive `s`, `m`, `h`, and `d` durations. `--schedule` accepts `minute hour day-of-month month day-of-week` expressions evaluated in the local system timezone.
+
+```bash
+headless cron add codex --name inbox-triage --every 1h --prompt "Triage inbox"
+headless cron add claude --schedule "0 */6 * * *" --prompt-file ./triage.md --work-dir /path/to/project
+```
+
+Jobs are stored under `~/.headless/cron` with private file permissions. Set `HEADLESS_CRON_DIR` to use another cron root. `cron add` starts the per-user daemon when it is not running; `cron start` and `cron stop` manage the daemon without deleting jobs.
+
+```bash
+headless cron list
+headless cron view inbox-triage
+headless cron start
+headless cron stop
+```
+
+`cron list` shows active jobs, status, next run, last run, and last exit code. `cron view <job>` shows the stored command, daemon state, active execution, pending flag, prompt-file warnings, recent execution records, log paths, and extracted final messages when available.
+
+Lifecycle commands modify persisted job state without editing OS scheduler state:
+
+```bash
+headless cron pause inbox-triage
+headless cron resume inbox-triage
+headless cron kill inbox-triage
+headless cron rm inbox-triage
+headless cron rm inbox-triage --force
+```
+
+Paused jobs do not schedule new executions. `kill` terminates the active execution if present, clears pending work, and disables the job. `rm` refuses to delete a job with an active execution unless `--force` is set.
+
+Cron jobs accept detached-safe one-shot options: `--model`, `--reasoning-effort`, `--allow`, `--work-dir`, Docker and Modal options, `--timeout`, `--json`, `--debug`, and `--usage`. Interactive options such as `--tmux`, `--wait`, `--delete`, `--session`, and run-management flags are rejected for scheduled jobs.
+
+If a job's next tick arrives while that job is still running, Headless records one pending execution. Further ticks keep the pending flag true instead of creating an unbounded backlog. When the active execution exits, the daemon immediately starts the single pending execution.
+
 ## Sessions and tmux
 
 Pass `--session <name>` to start or resume a named native session. Headless stores per-agent aliases in `~/.headless/sessions.json` and maps each alias to the selected backend's native session id or session file. A missing alias starts a new session and records it after the run succeeds; an existing alias resumes that native session.
@@ -218,6 +254,7 @@ headless attach [session-name] [--all]
 headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]
 headless rename <session-name> <new-name> [options]
 headless run <list|view|mark|message|wait> [args] [options]
+headless cron <add|list|view|pause|resume|kill|rm|start|stop> [args] [options]
 ```
 
 Options:
@@ -242,8 +279,11 @@ Options:
 - `--wait`: with `--tmux`, wait for native transcript completion and print the final message.
 - `--delete`: with `--tmux --wait`, kill the tmux session after completion.
 - `--name`: use a stable managed session name with `--tmux`.
+- `--name`: with `cron add`, use a stable cron job id.
 - `--session`: start or resume a named Headless session. Uses `~/.headless/sessions.json`; in tmux mode starts or sends to `headless-<agent>-<name>`.
 - `headless attach`: attach to the most recently active Headless tmux session; add `--all` to tile all active sessions.
+- `headless cron add <agent>`: schedule a detached one-shot invocation with `--every <duration>` or `--schedule <expr>`.
+- `headless cron list|view|pause|resume|kill|rm|start|stop`: inspect and manage scheduled jobs and the cron daemon.
 - `--check`: check supported agent binaries, versions, Docker status, and local API/OAuth credential signals.
 - `--list`: list active tmux sessions created by Headless, including state and timestamps.
 - `--print-command`: print the shell command without executing it. Combine with `--json` for selected-agent metadata.
@@ -266,6 +306,9 @@ See [orchestration.md](orchestration.md) for `--role`, `--run`, `--node`, `--tea
 - `HEADLESS_ACP_REGISTRY_URL`: ACP registry URL override.
 - `HEADLESS_ACP_REGISTRY_FILE`: local ACP registry JSON file.
 - `HEADLESS_ACP_REGISTRY_JSON`: inline ACP registry JSON, mainly useful for tests or wrappers.
+- `HEADLESS_CRON_DIR`: cron state root. Defaults to `~/.headless/cron`.
+- `HEADLESS_CLI_BIN`: binary path the cron daemon uses to start scheduled Headless invocations.
+- `HEADLESS_BIN`: fallback binary path for detached Headless child invocations.
 - `HEADLESS_RUN_DIR`: concrete directory for the active run store, mainly used by Docker run coordination.
 
 Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.
