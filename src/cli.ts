@@ -71,6 +71,8 @@ import {
   resolveLatestNativeTranscripts,
 } from "./native-transcripts.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
+import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
+import { runCronDaemon } from "./cron.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { createRunStatusReporter, parseRunStatusIntervalMs } from "./run-status.js";
 import {
@@ -114,6 +116,11 @@ interface ParsedArgs {
   runCommandNodeId?: string;
   runCommandStatus?: RunStatus;
   runCommandAsync: boolean;
+  cronCommand?: CronCommand;
+  cronJobId?: string;
+  cronEvery?: string;
+  cronSchedule?: string;
+  cronForce: boolean;
   dockerCommand?: "build" | "doctor";
   agent?: AgentName;
   role?: Role;
@@ -188,6 +195,7 @@ function usage(): string {
     "       headless send <session-name> (--prompt <text> | --prompt-file <path>) [options]",
     "       headless rename <session-name> <new-name> [options]",
     "       headless run <list|view|mark|message|wait> [args] [options]",
+    "       headless cron <add|list|view|pause|resume|kill|rm|start|stop> [args] [options]",
     "",
     "Headless gives coding-agent CLIs one shared interface for prompts, models, reasoning effort, output modes, sessions, and work directories.",
     "It runs supported agents locally, in tmux, in Docker, or in Modal while preserving each backend's native execution behavior.",
@@ -244,6 +252,13 @@ function usage(): string {
     "  run mark <run> <node> --status <status> Update node status.",
     "  run message <run> <node> --prompt <text> [--async] Route a message to a node.",
     "  run wait <run>      Wait until no nodes are busy.",
+    "  cron add <agent>    Schedule a detached one-shot agent invocation.",
+    "  cron list           List scheduled cron jobs.",
+    "  cron view <job>     Show job config, daemon state, and recent executions.",
+    "  cron pause|resume <job> Pause or resume a scheduled job.",
+    "  cron kill <job>     Kill the active execution and disable the job.",
+    "  cron rm <job> [--force] Remove a job and execution history.",
+    "  cron start|stop     Start or stop the per-user cron daemon.",
     "  docker doctor       Check Docker setup and image availability.",
     "  docker build        Build the local Docker image tag headless-local:dev.",
     "  --check              Check agents, versions, auth, configured models/effort, and Docker.",
@@ -265,6 +280,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     send: false,
     rename: false,
     runCommandAsync: false,
+    cronForce: false,
     dependsOn: [],
     teamSpecs: [],
     docker: false,
@@ -315,6 +331,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.rename = true;
   } else if (first === "run") {
     parsed.runCommand = parseRunCommand(args.shift());
+  } else if (first === "cron") {
+    parsed.cronCommand = parseCronCommand(args.shift());
   } else if (first === "docker") {
     parsed.dockerCommand = parseDockerCommand(args.shift());
   } else if (isAgentName(first)) {
@@ -334,6 +352,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--prompt-file":
         parsed.promptFile = takeValue(args, arg);
+        break;
+      case "--every":
+        parsed.cronEvery = takeValue(args, arg);
+        break;
+      case "--schedule":
+        parsed.cronSchedule = takeValue(args, arg);
         break;
       case "--model":
       case "--agent-model":
@@ -426,7 +450,11 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.timeoutSeconds = parsePositiveInteger(takeValue(args, arg), arg);
         break;
       case "--name":
-        parsed.tmuxName = takeValue(args, arg);
+        if (parsed.cronCommand) {
+          parsed.cronJobId = validateSafeName(takeValue(args, arg), "cron job");
+        } else {
+          parsed.tmuxName = takeValue(args, arg);
+        }
         break;
       case "--session":
         parsed.sessionAlias = takeValue(args, arg);
@@ -466,6 +494,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--async":
         parsed.runCommandAsync = true;
+        break;
+      case "--force":
+        parsed.cronForce = true;
         break;
       case "--show-config":
         parsed.showConfig = true;
@@ -516,11 +547,38 @@ function parseArgs(argv: string[]): ParsedArgs {
             break;
           }
         }
+        if (parsed.cronCommand && arg && !arg.startsWith("-")) {
+          if (parsed.cronCommand === "add" && parsed.agent === undefined && isAgentName(arg)) {
+            parsed.agent = arg;
+            break;
+          }
+          if (parsed.cronCommand !== "add" && parsed.cronJobId === undefined) {
+            parsed.cronJobId = validateSafeName(arg, "cron job");
+            break;
+          }
+        }
         throw new CliError(`unknown argument: ${arg ?? ""}`);
     }
   }
 
   return parsed;
+}
+
+function parseCronCommand(value: string | undefined): CronCommand {
+  if (
+    value === "add" ||
+    value === "list" ||
+    value === "view" ||
+    value === "pause" ||
+    value === "resume" ||
+    value === "kill" ||
+    value === "rm" ||
+    value === "start" ||
+    value === "stop"
+  ) {
+    return value;
+  }
+  throw new CliError("missing cron command; use cron add, list, view, pause, resume, kill, rm, start, or stop");
 }
 
 function parseRunCommand(value: string | undefined): "list" | "view" | "mark" | "message" | "wait" {
@@ -2104,6 +2162,68 @@ function effectiveCoordination(parsed: ParsedArgs, configuredCoordination: Coord
   return configuredCoordination ?? "session";
 }
 
+function validateCronCliOptions(parsed: ParsedArgs): void {
+  if (parsed.tmux) {
+    throw new CliError("--tmux cannot be scheduled");
+  }
+  if (parsed.wait) {
+    throw new CliError("--wait cannot be scheduled");
+  }
+  if (parsed.delete) {
+    throw new CliError("--delete cannot be scheduled");
+  }
+  if (parsed.sessionAlias !== undefined) {
+    throw new CliError("--session cannot be scheduled");
+  }
+  if (parsed.runId !== undefined || parsed.nodeId !== undefined || parsed.dependsOn.length > 0 || parsed.teamSpecs.length > 0) {
+    throw new CliError("run-management options cannot be scheduled");
+  }
+  if (parsed.role !== undefined || parsed.coordination !== undefined) {
+    throw new CliError("--role and --coordination cannot be scheduled");
+  }
+  if (parsed.attachAll) {
+    throw new CliError("--all cannot be used with cron");
+  }
+  if (parsed.check || parsed.list || parsed.showConfig || parsed.printCommand) {
+    throw new CliError("--check, --list, --show-config, and --print-command cannot be used with cron");
+  }
+  if (parsed.runCommandAsync || parsed.runCommandStatus !== undefined) {
+    throw new CliError("run command options cannot be used with cron");
+  }
+  if (parsed.cronCommand !== "add") {
+    const hasAddOnly =
+      parsed.agent !== undefined ||
+      parsed.cronEvery !== undefined ||
+      parsed.cronSchedule !== undefined ||
+      parsed.prompt !== undefined ||
+      parsed.promptFile !== undefined ||
+      parsed.model !== undefined ||
+      parsed.reasoningEffort !== undefined ||
+      parsed.allow !== undefined ||
+      parsed.workDir !== undefined ||
+      parsed.docker ||
+      hasDockerOptions(parsed) ||
+      parsed.modal ||
+      hasModalOptions(parsed) ||
+      parsed.timeoutSeconds !== undefined ||
+      parsed.json ||
+      parsed.debug ||
+      parsed.usage;
+    if (hasAddOnly) {
+      throw new CliError(`unsupported option for cron ${parsed.cronCommand}`);
+    }
+  }
+  if (
+    (parsed.cronCommand === "list" || parsed.cronCommand === "start" || parsed.cronCommand === "stop") &&
+    parsed.cronJobId !== undefined
+  ) {
+    throw new CliError(`cron ${parsed.cronCommand} does not take a job id`);
+  }
+  if (parsed.cronForce && parsed.cronCommand !== "rm") {
+    throw new CliError("--force can only be used with cron rm");
+  }
+}
+
 function withRunEnvironment(command: BuiltCommand, runId: string | undefined, nodeId: string | undefined): BuiltCommand {
   if (!runId && !nodeId) {
     return command;
@@ -2228,6 +2348,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       stderr,
     });
   }
+  if (argv[0] === "cron-daemon") {
+    await runCronDaemon(env);
+    return 0;
+  }
 
   try {
     const parsed = parseArgs(argv);
@@ -2249,6 +2373,48 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       config = loadHeadlessConfig(env);
     } catch (error) {
       throw new CliError(error instanceof Error ? error.message : String(error));
+    }
+    if (parsed.cronCommand) {
+      validateCronCliOptions(parsed);
+      try {
+        return await handleCronCommandImpl(
+          {
+            command: parsed.cronCommand,
+            jobId: parsed.cronJobId,
+            agent: parsed.agent,
+            every: parsed.cronEvery,
+            schedule: parsed.cronSchedule,
+            prompt: parsed.prompt,
+            promptFile: parsed.promptFile,
+            model: parsed.model,
+            reasoningEffort: parsed.reasoningEffort,
+            allow: parsed.allow,
+            workDir: validateWorkDir(parsed.workDir),
+            docker: parsed.docker,
+            dockerImage: parsed.dockerImage,
+            dockerArgs: parsed.dockerArgs,
+            dockerEnv: parsed.dockerEnv,
+            modal: parsed.modal,
+            modalApp: parsed.modalApp,
+            modalCpu: parsed.modalCpu,
+            modalEnv: parsed.modalEnv,
+            modalImage: parsed.modalImage,
+            modalImageSecret: parsed.modalImageSecret,
+            modalIncludeGit: parsed.modalIncludeGit,
+            modalMemoryMiB: parsed.modalMemoryMiB,
+            modalSecrets: parsed.modalSecrets,
+            modalTimeoutSeconds: parsed.modalTimeoutSeconds,
+            timeoutSeconds: parsed.timeoutSeconds,
+            json: parsed.json,
+            debug: parsed.debug,
+            usage: parsed.usage,
+            force: parsed.cronForce,
+          },
+          { env, stdout, stderr },
+        );
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
     }
     if (parsed.runCommand) {
       if (parsed.timeoutSeconds !== undefined) {
