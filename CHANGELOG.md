@@ -2,6 +2,8 @@
 
 ## TBD
 
+## 0.3.2 - 2026-05-15
+
 - Added `headless cron` for scheduled detached agent invocations, including interval and five-field cron schedules, per-user daemon control, private job/execution state, list/view observability, pause/resume/kill/remove lifecycle commands, collapsed pending ticks for long-running jobs, and README/usage documentation.
 - Added `--tmux --wait` to wait for native transcript completion and print the final assistant message, plus `--delete` to kill the tmux session after capture; OpenCode wait mode now uses prompt-bearing interactive runs so sessions persist unless `--delete` is set.
 - Added native transcript activity detection for Codex, Claude, Cursor, Gemini, OpenCode, and Pi, including running, waiting-for-input, and idle/completed signals.
