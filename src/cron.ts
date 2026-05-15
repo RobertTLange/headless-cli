@@ -191,6 +191,7 @@ export function killCronExecution(env: Env, job: CronJobRecord, status: CronJobS
   if (execution?.pid && processAlive(execution.pid)) {
     try {
       process.kill(execution.pid, "SIGTERM");
+      scheduleKillEscalation(execution.pid);
     } catch {
       // The reconciler will mark stale records killed.
     }
@@ -497,6 +498,19 @@ function processAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function scheduleKillEscalation(pid: number): void {
+  setTimeout(() => {
+    if (!processAlive(pid)) {
+      return;
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // The process already exited or is not owned by this user.
+    }
+  }, 1000).unref();
 }
 
 function acquireDaemonLock(env: Env): () => void {
