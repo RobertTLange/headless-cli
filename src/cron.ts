@@ -23,6 +23,7 @@ export { nextCronRun, parseCronSchedule, type CronSchedule } from "./cron-schedu
 const privateDirMode = 0o700;
 const privateFileMode = 0o600;
 const daemonPollMs = 1000;
+const killGraceMs = 1000;
 
 export type CronJobStatus = "active" | "paused" | "disabled";
 export type CronExecutionStatus = "running" | "succeeded" | "failed" | "killed";
@@ -166,9 +167,10 @@ export async function runDueCronJobsOnce(env: Env, now = new Date()): Promise<vo
 export async function runCronDaemon(env: Env): Promise<void> {
   const release = acquireDaemonLock(env);
   let stopped = false;
+  let stopPromise: Promise<void> | undefined;
   const stop = () => {
     stopped = true;
-    killAllActiveExecutions(env);
+    stopPromise ??= killAllActiveExecutions(env);
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
@@ -180,29 +182,27 @@ export async function runCronDaemon(env: Env): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, daemonPollMs));
     }
   } finally {
+    await stopPromise;
     appendDaemonLog(env, `stopped ${process.pid}\n`);
     rmSync(cronPidPath(env), { force: true });
     release();
   }
 }
 
-export function killCronExecution(env: Env, job: CronJobRecord, status: CronJobStatus = "disabled"): CronJobRecord {
+export async function killCronExecution(
+  env: Env,
+  job: CronJobRecord,
+  status: CronJobStatus = "disabled",
+): Promise<CronJobRecord> {
   const execution = job.activeExecutionId ? readExecution(env, job.id, job.activeExecutionId) : undefined;
-  if (execution?.pid && processAlive(execution.pid)) {
-    try {
-      process.kill(execution.pid, "SIGTERM");
-      scheduleKillEscalation(execution.pid);
-    } catch {
-      // The reconciler will mark stale records killed.
-    }
-  }
+  const signal = execution?.pid ? await terminateProcess(execution.pid) : "SIGTERM";
   if (execution) {
     writeExecution(env, job.id, {
       ...execution,
       status: "killed",
       completedAt: new Date().toISOString(),
       exitCode: null,
-      signal: "SIGTERM",
+      signal,
     });
   }
   return recordCronJob(env, {
@@ -335,10 +335,10 @@ function reconcileCronJobs(env: Env): void {
   }
 }
 
-function killAllActiveExecutions(env: Env): void {
+async function killAllActiveExecutions(env: Env): Promise<void> {
   for (const job of listCronJobs(env)) {
     if (job.activeExecutionId) {
-      killCronExecution(env, job, job.status);
+      await killCronExecution(env, job, job.status);
     }
   }
 }
@@ -500,17 +500,36 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function scheduleKillEscalation(pid: number): void {
-  setTimeout(() => {
+async function terminateProcess(pid: number): Promise<NodeJS.Signals | null> {
+  if (!processAlive(pid)) {
+    return "SIGTERM";
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return "SIGTERM";
+  }
+  if (await waitForProcessExit(pid, killGraceMs)) {
+    return "SIGTERM";
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return "SIGKILL";
+  }
+  await waitForProcessExit(pid, killGraceMs);
+  return "SIGKILL";
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (!processAlive(pid)) {
-      return;
+      return true;
     }
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // The process already exited or is not owned by this user.
-    }
-  }, 1000).unref();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !processAlive(pid);
 }
 
 function acquireDaemonLock(env: Env): () => void {

@@ -67,8 +67,8 @@ export async function handleCronCommand(input: CronCommandInput, handlers: CronC
   if (input.command === "view") return cronView(requireJobId(input), handlers);
   if (input.command === "pause") return cronPause(requireJobId(input), handlers);
   if (input.command === "resume") return cronResume(requireJobId(input), handlers);
-  if (input.command === "kill") return cronKill(requireJobId(input), handlers);
-  if (input.command === "rm") return cronRemove(requireJobId(input), input.force, handlers);
+  if (input.command === "kill") return await cronKill(requireJobId(input), handlers);
+  if (input.command === "rm") return await cronRemove(requireJobId(input), input.force, handlers);
   if (input.command === "start") return await cronStart(handlers);
   if (input.command === "stop") return cronStop(handlers);
   throw new Error("unsupported cron command");
@@ -198,20 +198,20 @@ function cronResume(jobId: string, handlers: CronCommandHandlers): number {
   return 0;
 }
 
-function cronKill(jobId: string, handlers: CronCommandHandlers): number {
+async function cronKill(jobId: string, handlers: CronCommandHandlers): Promise<number> {
   const job = requireJob(handlers.env, jobId);
-  killCronExecution(handlers.env, job);
+  await killCronExecution(handlers.env, job);
   handlers.stdout(`killed: ${jobId}\n`);
   return 0;
 }
 
-function cronRemove(jobId: string, force: boolean, handlers: CronCommandHandlers): number {
+async function cronRemove(jobId: string, force: boolean, handlers: CronCommandHandlers): Promise<number> {
   const job = requireJob(handlers.env, jobId);
   if (job.activeExecutionId && !force) {
     throw new Error(`job has an active execution; use --force to remove: ${jobId}`);
   }
   if (job.activeExecutionId) {
-    killCronExecution(handlers.env, job);
+    await killCronExecution(handlers.env, job);
   }
   deleteCronJob(handlers.env, jobId);
   handlers.stdout(`removed: ${jobId}\n`);

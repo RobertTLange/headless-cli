@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +37,15 @@ async function waitFor(assertion: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(assertion(), true);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test("cron schedule parser accepts every durations and five-field cron expressions", () => {
@@ -190,6 +200,65 @@ test("cron lifecycle commands list, view, pause, resume, and refuse active rm wi
     assert.equal(await runCli(["cron", "rm", "docs", "--force"], { env, stdout: () => {} }), 0);
     assert.equal(readCronJob(env, "docs"), undefined);
   } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("cron kill escalates stubborn active executions before returning", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-cron-test-"));
+  const child = spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);"],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const childClosed = new Promise((resolve) => child.once("close", resolve));
+  try {
+    assert.ok(child.pid);
+    await new Promise((resolve) => child.stdout.once("data", resolve));
+    const env = testEnv(dir);
+    const now = new Date("2026-05-15T12:00:00.000Z");
+    recordCronJob(env, {
+      agent: "codex",
+      command: { args: ["codex", "--prompt", "tick"], workDir: dir },
+      id: "stubborn",
+      schedule: parseCronSchedule({ every: "1h" }),
+      now,
+    });
+    const job = readCronJob(env, "stubborn");
+    assert.ok(job);
+    recordCronJob(env, { ...job, activeExecutionId: "exec-stubborn" });
+
+    const executionRoot = join(cronRoot(env), "jobs", "stubborn", "executions", "exec-stubborn");
+    mkdirSync(executionRoot, { recursive: true });
+    writeFileSync(
+      join(executionRoot, "result.json"),
+      JSON.stringify({
+        version: 1,
+        jobId: "stubborn",
+        executionId: "exec-stubborn",
+        status: "running",
+        pid: child.pid,
+        startedAt: now.toISOString(),
+        exitCode: null,
+        signal: null,
+        stdoutLog: join(executionRoot, "stdout.log"),
+        stderrLog: join(executionRoot, "stderr.log"),
+      }),
+    );
+
+    let stdout = "";
+    assert.equal(await runCli(["cron", "kill", "stubborn"], { env, stdout: (text) => { stdout += text; } }), 0);
+    assert.match(stdout, /killed: stubborn/);
+    await childClosed;
+    assert.equal(processAlive(child.pid), false);
+
+    const execution = readFileSync(join(executionRoot, "result.json"), "utf8");
+    assert.match(execution, /"status": "killed"/);
+    assert.match(execution, /"signal": "SIGKILL"/);
+  } finally {
+    if (child.pid && processAlive(child.pid)) {
+      process.kill(child.pid, "SIGKILL");
+    }
     rmSync(dir, { force: true, recursive: true });
   }
 });
