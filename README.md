@@ -87,6 +87,23 @@ headless --check
 
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
+## Scheduled Jobs
+
+Headless can run detached one-shot agent invocations on a schedule with a per-user daemon and local state under `~/.headless/cron`.
+
+```bash
+headless cron add codex --name inbox-triage --every 1h --prompt "Triage inbox"
+headless cron add codex --schedule "0 */6 * * *" --prompt-file ./triage.md --work-dir /path/to/project
+headless cron list
+headless cron view inbox-triage
+headless cron pause inbox-triage
+headless cron resume inbox-triage
+headless cron kill inbox-triage
+headless cron rm inbox-triage --force
+```
+
+Cron jobs accept detached-safe one-shot options such as `--model`, `--reasoning-effort`, `--allow`, `--work-dir`, `--docker`, `--modal`, `--timeout`, `--json`, `--debug`, and `--usage`. Interactive tmux/session/run-management flags are intentionally rejected for scheduled jobs.
+
 ## Multi-Agent Orchestration
 
 Headless can track a local multi-agent run with named roles, team declarations, per-node logs, status updates, and routed follow-up messages. Use an `orchestrator` node to plan work, declare teammates with repeatable `--team` specs, then inspect and message the run with `headless run`.
@@ -116,7 +133,7 @@ Install the agent CLIs you want Headless to drive.
 
 ## More Docs
 
-- [Usage guide](docs/usage.md): agents, output modes, sessions, Docker, Modal, config defaults, CLI flags, and environment variables.
+- [Usage guide](docs/usage.md): agents, output modes, sessions, cron jobs, Docker, Modal, config defaults, CLI flags, and environment variables.
 - [Multi-agent workflows](docs/orchestration.md): roles, coordinated runs, teams, run state, messaging, and `headless run` commands.
 - [Development](docs/development.md): local setup, test commands, pre-push integration coverage, project layout, and agent install references.
 
