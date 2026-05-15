@@ -48,6 +48,11 @@ function processAlive(pid: number): boolean {
   }
 }
 
+function markDaemonRunning(env: NodeJS.ProcessEnv): void {
+  mkdirSync(env.HEADLESS_CRON_DIR as string, { recursive: true });
+  writeFileSync(cronPidPath(env), `${process.pid}\n`);
+}
+
 test("cron schedule parser accepts every durations and five-field cron expressions", () => {
   assert.deepEqual(parseCronSchedule({ every: "30m" }), {
     kind: "every",
@@ -98,6 +103,7 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
   const dir = mkdtempSync(join(tmpdir(), "headless-cron-test-"));
   try {
     const env = testEnv(dir);
+    markDaemonRunning(env);
     let stdout = "";
     let stderr = "";
     const code = await runCli(
@@ -167,6 +173,7 @@ test("cron lifecycle commands list, view, pause, resume, and refuse active rm wi
   const dir = mkdtempSync(join(tmpdir(), "headless-cron-test-"));
   try {
     const env = testEnv(dir);
+    markDaemonRunning(env);
     await runCli(["cron", "add", "codex", "--name", "docs", "--every", "1h", "--prompt-file", "prompt.md"], {
       env,
       stdinIsTTY: true,
@@ -267,8 +274,7 @@ test("cron start is idempotent when the daemon pid is alive", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-cron-test-"));
   try {
     const env = testEnv(dir);
-    mkdirSync(join(env.HEADLESS_CRON_DIR as string), { recursive: true });
-    writeFileSync(cronPidPath(env), `${process.pid}\n`);
+    markDaemonRunning(env);
 
     let stdout = "";
     const code = await runCli(["cron", "start"], {
@@ -279,6 +285,54 @@ test("cron start is idempotent when the daemon pid is alive", async () => {
     });
     assert.equal(code, 0);
     assert.match(stdout, /daemon already running/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("cron start fails when the daemon process cannot be spawned", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-cron-test-"));
+  try {
+    const env = testEnv(dir);
+    let stdout = "";
+    let stderr = "";
+    const code = await runCli(["cron", "start"], {
+      env,
+      stdout: (text) => {
+        stdout += text;
+      },
+      stderr: (text) => {
+        stderr += text;
+      },
+    });
+
+    assert.equal(code, 2);
+    assert.equal(stdout, "");
+    assert.match(stderr, /cron daemon failed to start/);
+    assert.equal(existsSync(cronPidPath(env)), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("cron add rolls back new jobs when the daemon cannot start", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-cron-test-"));
+  try {
+    const env = testEnv(dir);
+    let stderr = "";
+    const code = await runCli(
+      ["cron", "add", "codex", "--name", "missing-daemon", "--every", "1h", "--prompt", "x"],
+      {
+        env,
+        stderr: (text) => {
+          stderr += text;
+        },
+      },
+    );
+
+    assert.equal(code, 2);
+    assert.match(stderr, /cron daemon failed to start/);
+    assert.equal(readCronJob(env, "missing-daemon"), undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

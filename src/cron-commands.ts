@@ -86,6 +86,7 @@ async function cronAdd(input: CronCommandInput, handlers: CronCommandHandlers): 
   }
   const schedule = parseCronSchedule({ every: input.every, schedule: input.schedule });
   const args = buildScheduledArgs(input);
+  const previousJob = input.jobId ? readCronJob(handlers.env, input.jobId) : undefined;
   const job = recordCronJob(handlers.env, {
     id: input.jobId,
     agent: input.agent,
@@ -96,7 +97,16 @@ async function cronAdd(input: CronCommandInput, handlers: CronCommandHandlers): 
     },
   });
   if (!daemonRunning(handlers.env)) {
-    await startDaemonProcess(handlers);
+    try {
+      await startDaemonProcess(handlers);
+    } catch (error) {
+      if (previousJob) {
+        recordCronJob(handlers.env, previousJob);
+      } else {
+        deleteCronJob(handlers.env, job.id);
+      }
+      throw error;
+    }
   }
   handlers.stdout(`added: ${job.id}\nnext run: ${formatDisplayTime(job.nextRunAt)}\n`);
   return 0;
@@ -279,25 +289,44 @@ async function startDaemonProcess(handlers: CronCommandHandlers): Promise<void> 
   const stdoutFd = openSync(logPath, "a", 0o600);
   const stderrFd = openSync(logPath, "a", 0o600);
   chmodSync(logPath, 0o600);
-  let failed = false;
+  let spawnError: Error | undefined;
+  let exitStatus: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   const child = spawn(resolveHeadlessCronBinary(handlers.env), ["cron-daemon"], {
     detached: true,
     env: handlers.env as NodeJS.ProcessEnv,
     stdio: ["ignore", stdoutFd, stderrFd],
   });
-  child.on("error", () => {
-    failed = true;
-    // Add/list/view still operate on persisted state; daemon status is visible separately.
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+  child.once("exit", (code, signal) => {
+    exitStatus = { code, signal };
   });
   closeSync(stdoutFd);
   closeSync(stderrFd);
   child.unref();
   const deadline = Date.now() + 1000;
-  while (!failed && Date.now() < deadline) {
+  while (Date.now() < deadline) {
     if (daemonRunning(handlers.env)) {
       return;
     }
+    throwIfDaemonStartFailed(spawnError, exitStatus);
     await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throwIfDaemonStartFailed(spawnError, exitStatus);
+  throw new Error("cron daemon did not start within 1000ms");
+}
+
+function throwIfDaemonStartFailed(
+  spawnError: Error | undefined,
+  exitStatus: { code: number | null; signal: NodeJS.Signals | null } | undefined,
+): void {
+  if (spawnError) {
+    throw new Error(`cron daemon failed to start: ${spawnError.message}`);
+  }
+  if (exitStatus) {
+    const reason = exitStatus.signal ? `signal ${exitStatus.signal}` : `exit code ${exitStatus.code ?? "unknown"}`;
+    throw new Error(`cron daemon failed to start: ${reason}`);
   }
 }
 
