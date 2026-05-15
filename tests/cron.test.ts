@@ -125,7 +125,6 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
         "read-only",
         "--work-dir",
         dir,
-        "--json",
         "--usage",
       ],
       {
@@ -153,7 +152,6 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
       "read-only",
       "--work-dir",
       dir,
-      "--json",
       "--usage",
     ]);
 
@@ -164,6 +162,26 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
     );
     assert.equal(badCode, 2);
     assert.match(stderr, /--tmux cannot be scheduled/);
+
+    stderr = "";
+    assert.equal(
+      await runCli(
+        ["cron", "add", "codex", "--every", "1h", "--prompt", "x", "--docker-image", "headless-local:dev"],
+        { env, stderr: (text) => { stderr += text; } },
+      ),
+      2,
+    );
+    assert.match(stderr, /require --docker/);
+
+    stderr = "";
+    assert.equal(
+      await runCli(
+        ["cron", "add", "codex", "--every", "1h", "--prompt", "x", "--json", "--usage"],
+        { env, stderr: (text) => { stderr += text; } },
+      ),
+      2,
+    );
+    assert.match(stderr, /--usage cannot be used with --json/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -2222,6 +2222,27 @@ function validateCronCliOptions(parsed: ParsedArgs): void {
   if (parsed.cronForce && parsed.cronCommand !== "rm") {
     throw new CliError("--force can only be used with cron rm");
   }
+  if (parsed.cronCommand === "add") {
+    validateCronAddCliOptions(parsed);
+  }
+}
+
+function validateCronAddCliOptions(parsed: ParsedArgs): void {
+  if (!parsed.docker && hasDockerOptions(parsed)) {
+    throw new CliError("--docker-image, --docker-arg, and --docker-env require --docker");
+  }
+  if (!parsed.modal && hasModalOptions(parsed)) {
+    throw new CliError("--modal-* options require --modal");
+  }
+  if (parsed.docker && parsed.modal) {
+    throw new CliError("--docker cannot be used with --modal");
+  }
+  if (parsed.usage && parsed.json) {
+    throw new CliError("--usage cannot be used with --json");
+  }
+  if (parsed.debug && parsed.json) {
+    throw new CliError("--debug cannot be used with --json");
+  }
 }
 
 function withRunEnvironment(command: BuiltCommand, runId: string | undefined, nodeId: string | undefined): BuiltCommand {
