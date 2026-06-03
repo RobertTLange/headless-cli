@@ -2,6 +2,8 @@
 
 ## TBD
 
+- Changed Claude model overrides to normalize versioned `opus`, `sonnet`, and `haiku` shorthand such as `opus-4.8` or `sonnet-4.5` to Claude Code model IDs before execution.
+
 ## 0.3.2 - 2026-05-15
 
 - Added `headless cron` for scheduled detached agent invocations, including interval and five-field cron schedules, per-user daemon control, private job/execution state, list/view observability, pause/resume/kill/remove lifecycle commands, collapsed pending ticks for long-running jobs, and README/usage documentation.
