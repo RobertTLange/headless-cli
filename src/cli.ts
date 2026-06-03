@@ -24,6 +24,7 @@ import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_OPENCODE_MODEL,
   DEFAULT_PI_MODEL,
+  claudeModel,
   cursorModel,
   piModelSpec,
   getAgentConfig,
@@ -901,7 +902,7 @@ function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env):
     return { provider: "openai", model: defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
   }
   if (agent === "claude") {
-    return { provider: "anthropic", model: defaults.model ?? "claude-opus-4-6" };
+    return { provider: "anthropic", model: claudeModel(defaults.model ?? "claude-opus-4-6") };
   }
   if (agent === "gemini") {
     return { provider: "google", model: defaults.model ?? DEFAULT_GEMINI_MODEL };
@@ -1096,7 +1097,7 @@ function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: 
     return defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5";
   }
   if (agent === "claude") {
-    return defaults.model ?? "claude-opus-4-6";
+    return claudeModel(defaults.model ?? "claude-opus-4-6") ?? "claude-opus-4-6";
   }
   if (agent === "cursor") {
     return cursorModel(defaults);

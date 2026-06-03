@@ -37,6 +37,24 @@ function withModel(args: string[], model: string | undefined): string[] {
   return model ? [...args, "--model", model] : args;
 }
 
+export function claudeModel(model: string | undefined): string | undefined {
+  if (model === undefined) return undefined;
+
+  const trimmed = model.trim();
+  const match = trimmed.match(/^(?:claude-)?(opus|sonnet|haiku)-(\d+)[.-](\d+)(-\d{8})?$/i);
+  if (!match) return trimmed;
+
+  const family = match[1]?.toLowerCase();
+  const major = match[2];
+  const minor = match[3];
+  const suffix = match[4] ?? "";
+  return `claude-${family}-${major}-${minor}${suffix}`;
+}
+
+function withClaudeModel(args: string[], model: string | undefined): string[] {
+  return withModel(args, claudeModel(model));
+}
+
 function withClaudeEffort(args: string[], effort: ReasoningEffort | undefined): string[] {
   return effort ? [...args, "--effort", effort] : args;
 }
@@ -212,7 +230,7 @@ function buildClaudeCommand(args: string[], env: Env, extra?: Pick<BuiltCommand,
 }
 
 function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
-  const args = withModel([], options.model ?? defaultClaudeModel);
+  const args = withClaudeModel([], options.model ?? defaultClaudeModel);
   args.push("-p");
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--resume", options.sessionId);
@@ -471,7 +489,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     seedPaths: [".claude.json", ".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
     buildCommand: buildClaude,
     buildInteractiveCommand: (options, env) => {
-      const args = withModel([], options.model ?? defaultClaudeModel);
+      const args = withClaudeModel([], options.model ?? defaultClaudeModel);
       args.push(...withClaudeEffort([], options.reasoningEffort));
       args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);

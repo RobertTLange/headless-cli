@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildAgentCommand, buildInteractiveAgentCommand, getAgentConfig, listAgents } from "../src/agents.ts";
+import { buildAgentCommand, buildInteractiveAgentCommand, claudeModel, getAgentConfig, listAgents } from "../src/agents.ts";
 import { acpClientCapabilities } from "../src/acp.ts";
 import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
@@ -378,6 +378,52 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
       "hello",
     ],
   });
+});
+
+test("normalizes versioned Claude model shorthand", () => {
+  assert.equal(claudeModel("opus-4.8"), "claude-opus-4-8");
+  assert.equal(claudeModel("opus-4-8"), "claude-opus-4-8");
+  assert.equal(claudeModel("claude-opus-4.8"), "claude-opus-4-8");
+  assert.equal(claudeModel("claude-opus-4-8"), "claude-opus-4-8");
+  assert.equal(claudeModel("sonnet-4.5"), "claude-sonnet-4-5");
+  assert.equal(claudeModel("sonnet-4-5"), "claude-sonnet-4-5");
+  assert.equal(claudeModel("claude-sonnet-4.5"), "claude-sonnet-4-5");
+  assert.equal(claudeModel("haiku-4.5-20251001"), "claude-haiku-4-5-20251001");
+  assert.equal(claudeModel(" opus-4.8 "), "claude-opus-4-8");
+  assert.equal(claudeModel("opus"), "opus");
+  assert.equal(claudeModel("sonnet"), "sonnet");
+  assert.equal(claudeModel("haiku"), "haiku");
+  assert.equal(claudeModel("claude-3-5-sonnet-20241022"), "claude-3-5-sonnet-20241022");
+  assert.equal(claudeModel(undefined), undefined);
+});
+
+test("builds Claude commands with normalized model shorthand", () => {
+  assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", model: "opus-4.8" }, {}).args.slice(0, 2), [
+    "--model",
+    "claude-opus-4-8",
+  ]);
+  assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", model: "sonnet-4.5" }, {}).args.slice(0, 2), [
+    "--model",
+    "claude-sonnet-4-5",
+  ]);
+  assert.deepEqual(buildAgentCommand("claude", { prompt: "", promptFile: "prompt.md", model: "haiku-4.5-20251001" }, {}).args.slice(0, 2), [
+    "--model",
+    "claude-haiku-4-5-20251001",
+  ]);
+  assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "claude-sonnet-4.5" }, {}).args.slice(0, 2), [
+    "--model",
+    "claude-sonnet-4-5",
+  ]);
+});
+
+test("CLI print-command normalizes Claude model shorthand", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["claude", "--prompt", "hello", "--model", "sonnet-4.5", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /^claude --model claude-sonnet-4-5 -p hello/);
 });
 
 test("prefers an executable user-local Claude binary", () => {
@@ -817,6 +863,9 @@ test("CLI applies model and reasoning defaults from ~/.headless/config.toml", as
         'model = "gpt-5.5"',
         'reasoning_effort = "xhigh"',
         "",
+        "[agents.claude]",
+        'model = "opus-4.8"',
+        "",
       ].join("\n"),
     );
 
@@ -840,6 +889,18 @@ test("CLI applies model and reasoning defaults from ~/.headless/config.toml", as
 
     assert.equal(cursorCode, 0);
     assert.equal(stdout.join(""), "agent -p --trust --force --output-format stream-json --model gpt-5.5-extra-high hello\n");
+
+    stdout.length = 0;
+    const claudeCode = await runCli(["claude", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(claudeCode, 0);
+    assert.equal(
+      stdout.join(""),
+      "claude --model claude-opus-4-8 -p hello --output-format stream-json --verbose --dangerously-skip-permissions\n",
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
