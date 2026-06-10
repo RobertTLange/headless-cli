@@ -389,10 +389,14 @@ test("normalizes versioned Claude model shorthand", () => {
   assert.equal(claudeModel("sonnet-4-5"), "claude-sonnet-4-5");
   assert.equal(claudeModel("claude-sonnet-4.5"), "claude-sonnet-4-5");
   assert.equal(claudeModel("haiku-4.5-20251001"), "claude-haiku-4-5-20251001");
+  assert.equal(claudeModel("fable-5"), "claude-fable-5");
+  assert.equal(claudeModel("claude-fable-5"), "claude-fable-5");
+  assert.equal(claudeModel("fable-5.1"), "claude-fable-5-1");
   assert.equal(claudeModel(" opus-4.8 "), "claude-opus-4-8");
   assert.equal(claudeModel("opus"), "opus");
   assert.equal(claudeModel("sonnet"), "sonnet");
   assert.equal(claudeModel("haiku"), "haiku");
+  assert.equal(claudeModel("fable"), "fable");
   assert.equal(claudeModel("claude-3-5-sonnet-20241022"), "claude-3-5-sonnet-20241022");
   assert.equal(claudeModel(undefined), undefined);
 });
@@ -409,6 +413,10 @@ test("builds Claude commands with normalized model shorthand", () => {
   assert.deepEqual(buildAgentCommand("claude", { prompt: "", promptFile: "prompt.md", model: "haiku-4.5-20251001" }, {}).args.slice(0, 2), [
     "--model",
     "claude-haiku-4-5-20251001",
+  ]);
+  assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", model: "fable-5" }, {}).args.slice(0, 2), [
+    "--model",
+    "claude-fable-5",
   ]);
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "claude-sonnet-4.5" }, {}).args.slice(0, 2), [
     "--model",

@@ -41,14 +41,14 @@ export function claudeModel(model: string | undefined): string | undefined {
   if (model === undefined) return undefined;
 
   const trimmed = model.trim();
-  const match = trimmed.match(/^(?:claude-)?(opus|sonnet|haiku)-(\d+)[.-](\d+)(-\d{8})?$/i);
+  const match = trimmed.match(/^(?:claude-)?(opus|sonnet|haiku|fable)-(\d+)(?:[.-](\d+))?(-\d{8})?$/i);
   if (!match) return trimmed;
 
   const family = match[1]?.toLowerCase();
   const major = match[2];
-  const minor = match[3];
+  const minor = match[3] ? `-${match[3]}` : "";
   const suffix = match[4] ?? "";
-  return `claude-${family}-${major}-${minor}${suffix}`;
+  return `claude-${family}-${major}${minor}${suffix}`;
 }
 
 function withClaudeModel(args: string[], model: string | undefined): string[] {
