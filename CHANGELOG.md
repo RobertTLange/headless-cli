@@ -3,6 +3,7 @@
 ## TBD
 
 - Changed Claude model overrides to normalize versioned `opus`, `sonnet`, and `haiku` shorthand such as `opus-4.8` or `sonnet-4.5` to Claude Code model IDs before execution.
+- Changed Claude model normalization to also cover `fable` shorthand, mapping `fable-5` to `claude-fable-5`, including major-only versions without a minor component.
 
 ## 0.3.2 - 2026-05-15
 
