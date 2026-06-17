@@ -35,7 +35,7 @@ async function waitFor(assertion: () => boolean): Promise<void> {
 }
 
 test("lists all supported agents", () => {
-  assert.deepEqual(listAgents(), ["acp", "claude", "codex", "cursor", "gemini", "opencode", "pi"]);
+  assert.deepEqual(listAgents(), ["acp", "antigravity", "claude", "codex", "cursor", "gemini", "opencode", "pi"]);
 });
 
 test("default Docker image reference is accepted by Docker", () => {
@@ -93,6 +93,35 @@ test("builds ACP adapter command with read-only permission mode", () => {
     env: { HEADLESS_ACP_ALLOW: "read-only" },
     stdinText: "hello",
   });
+});
+
+test("builds Antigravity one-shot command with explicit cwd", () => {
+  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", workDir: "/repo/project" }, {}), {
+    command: "agy",
+    args: ["-p", "hello", "--cwd", "/repo/project", "--dangerously-skip-permissions"],
+  });
+});
+
+test("builds Antigravity command with binary override and sandboxed read-only mode", () => {
+  assert.deepEqual(
+    buildAgentCommand("antigravity", { prompt: "review", allow: "read-only", workDir: "/repo/project" }, {
+      ANTIGRAVITY_CLI_BIN: "/opt/agy",
+    }),
+    {
+      command: "/opt/agy",
+      args: ["-p", "review", "--cwd", "/repo/project", "--sandbox"],
+    },
+  );
+});
+
+test("builds interactive Antigravity resume command", () => {
+  assert.deepEqual(
+    buildInteractiveAgentCommand("antigravity", { prompt: "continue", sessionMode: "resume", sessionId: "conv-123" }, {}),
+    {
+      command: "agy",
+      args: ["--dangerously-skip-permissions", "--conversation", "conv-123"],
+    },
+  );
 });
 
 test("ACP client advertises read-only filesystem capability", () => {
@@ -440,6 +469,7 @@ test("each harness declares its tmux-wait resolution tier", () => {
   assert.equal(waitTierForAgent("opencode"), "tag");
   assert.equal(waitTierForAgent("pi"), "dir");
   assert.equal(waitTierForAgent("codex"), "claim");
+  assert.equal(waitTierForAgent("antigravity"), "unsupported");
 });
 
 test("interactive Claude and Gemini commands pin a new session id when provided", () => {
@@ -664,6 +694,26 @@ test("builds native session commands for supported agents", () => {
   ]);
 });
 
+test("CLI rejects Antigravity session aliases until conversation discovery exists", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["antigravity", "--session", "work", "--prompt", "hello", "--print-command"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /--session is not supported by antigravity/);
+});
+
+test("CLI rejects Antigravity model selection until a model flag is documented", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["antigravity", "--model", "gemini-pro", "--prompt", "hello", "--print-command"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /--model is not supported by antigravity/);
+});
+
 test("builds interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", model: "gpt-next" }, {}), {
     command: "codex",
@@ -683,6 +733,11 @@ test("builds interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("opencode", { prompt: "hello", model: "oc-model" }, {}), {
     command: "opencode",
     args: ["--model", "oc-model", "--dangerously-skip-permissions"],
+  });
+
+  assert.deepEqual(buildInteractiveAgentCommand("antigravity", { prompt: "hello" }, {}), {
+    command: "agy",
+    args: ["--dangerously-skip-permissions"],
   });
 
   assert.deepEqual(
@@ -821,6 +876,14 @@ test("exposes config metadata", () => {
     configRelDir: ".config/opencode",
     workspaceConfigRelDir: ".opencode",
     seedPaths: [".config/opencode"],
+  });
+
+  assert.deepEqual(getAgentConfig("antigravity"), {
+    name: "antigravity",
+    promptFileMode: "argument",
+    configRelDir: ".gemini/antigravity-cli",
+    workspaceConfigRelDir: ".agents",
+    seedPaths: [".gemini/antigravity-cli", ".gemini/config"],
   });
 });
 
@@ -2156,6 +2219,7 @@ test("CLI --json does not show a waiting spinner on stderr", async () => {
 
 test("CLI --json streams raw trace output for every provider", async () => {
   const providerBinaries: Record<AgentName, string> = {
+    antigravity: "agy",
     claude: "claude",
     codex: "codex",
     cursor: "agent",
@@ -3821,6 +3885,56 @@ test("CLI --tmux sends Enter after launching opencode prompt", async () => {
   }
 });
 
+test("CLI --tmux sends Enter after launching Antigravity prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "tmux.jsonl");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["antigravity", "--prompt", "hello world", "--work-dir", dir, "--tmux"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HEADLESS_TMUX_ANTIGRAVITY_ENTER_DELAY_MS: "0",
+        HEADLESS_TMUX_ANTIGRAVITY_PASTE_DELAY_MS: "0",
+        HEADLESS_TMUX_ANTIGRAVITY_SUBMIT_DELAY_MS: "0",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const sessionName = calls[0][3];
+    assert.equal(code, 0);
+    assert.deepEqual(calls, [
+      ["new-session", "-d", "-s", sessionName, "-c", dir, "agy --dangerously-skip-permissions"],
+      ["send-keys", "-t", sessionName, "Space", "BSpace"],
+      ["set-buffer", "-b", `${sessionName}-prompt`, "hello world"],
+      ["paste-buffer", "-d", "-b", `${sessionName}-prompt`, "-t", sessionName],
+      ["send-keys", "-t", sessionName, "Enter"],
+    ]);
+    assert.match(sessionName, /^headless-antigravity-\d+$/);
+    assert.match(stdout.join(""), new RegExp(`tmux attach-session -t ${sessionName}`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --tmux marks Claude workspaces trusted before launch", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -3947,6 +4061,36 @@ test("CLI --tmux --print-command includes opencode Enter submit command", async 
   assert.match(stdout.join(""), /\ntmux set-buffer -b headless-opencode-\d+-prompt 'hello world'\n/);
   assert.match(stdout.join(""), /\ntmux paste-buffer -d -b headless-opencode-\d+-prompt -t headless-opencode-\d+\n/);
   assert.match(stdout.join(""), /\ntmux send-keys -t headless-opencode-\d+ Enter\n$/);
+});
+
+test("CLI --tmux --print-command includes Antigravity Enter submit command", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["antigravity", "--prompt", "hello world", "--tmux", "--print-command"], {
+    env: {
+      ...process.env,
+      HEADLESS_TMUX_ANTIGRAVITY_ENTER_DELAY_MS: "0",
+      HEADLESS_TMUX_ANTIGRAVITY_PASTE_DELAY_MS: "0",
+      HEADLESS_TMUX_ANTIGRAVITY_SUBMIT_DELAY_MS: "0",
+    },
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /^tmux new-session -d -s headless-antigravity-\d+ -c /);
+  assert.match(stdout.join(""), /\ntmux send-keys -t headless-antigravity-\d+ Space BSpace\n/);
+  assert.match(stdout.join(""), /\ntmux set-buffer -b headless-antigravity-\d+-prompt 'hello world'\n/);
+  assert.match(stdout.join(""), /\ntmux paste-buffer -d -b headless-antigravity-\d+-prompt -t headless-antigravity-\d+\n/);
+  assert.match(stdout.join(""), /\ntmux send-keys -t headless-antigravity-\d+ Enter\n$/);
+});
+
+test("CLI rejects Antigravity tmux wait until native transcript resolution exists", async () => {
+  const stderr: string[] = [];
+  const code = await runCli(["antigravity", "--prompt", "hello", "--tmux", "--wait", "--timeout", "1"], {
+    stderr: (text) => stderr.push(text),
+  });
+
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /--tmux --wait is not supported by antigravity/);
 });
 
 test("CLI --list lists active headless tmux sessions", async () => {

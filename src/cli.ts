@@ -695,7 +695,7 @@ function unsupportedReasoningEffortWarning(
   if (mode === "tmux" && agent === "opencode") {
     return "headless: reasoning effort is not supported by opencode in tmux mode and was ignored\n";
   }
-  if (agent === "gemini") {
+  if (agent === "gemini" || agent === "antigravity") {
     return `headless: reasoning effort is not supported by ${agent} and was ignored\n`;
   }
   return undefined;
@@ -870,7 +870,7 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
   return workDir;
 }
 
-const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "cursor"];
+const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "antigravity", "cursor"];
 
 function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): AgentName {
   if (preferredAgent && commandExists(commandForAgent(preferredAgent, env), env)) {
@@ -1186,6 +1186,9 @@ function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env)
   if (!validAlias) {
     return undefined;
   }
+  if (agent === "antigravity") {
+    throw new CliError("--session is not supported by antigravity: conversation id discovery is not available");
+  }
   if (!sessionStorePath(env)) {
     throw new CliError("HOME is required for --session");
   }
@@ -1215,6 +1218,7 @@ async function prepareSessionPlan(
 function applySessionPlan(commandOptions: {
   prompt: string;
   promptFile?: string;
+  workDir?: string;
   model?: string;
   allow?: AllowMode;
   reasoningEffort?: ReasoningEffort;
@@ -1478,41 +1482,53 @@ function buildTmuxCommands(
   const sessionName = buildHeadlessTmuxSessionName(agent, customName ?? String(process.pid));
   const startDir = cwd ?? process.cwd();
   const pastePrompt = options.pastePrompt ?? true;
-  const opencodeWakeDelayMs = parseDelayMs(
-    env.HEADLESS_TMUX_OPENCODE_WAKE_DELAY_MS ?? env.HEADLESS_TMUX_OPENCODE_ENTER_DELAY_MS,
-    4000,
-  );
-  const opencodePasteDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_PASTE_DELAY_MS, 1000);
-  const opencodeSubmitDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_SUBMIT_DELAY_MS, 1000);
-  const opencodePromptBuffer = `${sessionName}-prompt`;
+  const promptInput = tmuxPromptInput(agent, sessionName, prompt, env, pastePrompt);
   return {
     sessionName,
     newSession: {
       command: "tmux",
       args: ["new-session", "-d", "-s", sessionName, "-c", startDir, quoteCommand(command)],
     },
-    postLaunch:
-      agent === "opencode" && pastePrompt
-        ? [
-            {
-              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
-              delayMs: opencodeWakeDelayMs,
-            },
-            {
-              command: { command: "tmux", args: ["set-buffer", "-b", opencodePromptBuffer, prompt] },
-              delayMs: opencodePasteDelayMs,
-            },
-            {
-              command: { command: "tmux", args: ["paste-buffer", "-d", "-b", opencodePromptBuffer, "-t", sessionName] },
-              delayMs: 0,
-            },
-            {
-              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
-              delayMs: opencodeSubmitDelayMs,
-            },
-          ]
-        : [],
+    postLaunch: promptInput,
   };
+}
+
+function tmuxPromptInput(
+  agent: AgentName,
+  sessionName: string,
+  prompt: string,
+  env: Env,
+  pastePrompt: boolean,
+): TmuxPostLaunchCommand[] {
+  if (!pastePrompt || (agent !== "opencode" && agent !== "antigravity")) return [];
+
+  const envPrefix = agent === "opencode" ? "OPENCODE" : "ANTIGRAVITY";
+  const wakeDelayMs = parseDelayMs(
+    env[`HEADLESS_TMUX_${envPrefix}_WAKE_DELAY_MS`] ?? env[`HEADLESS_TMUX_${envPrefix}_ENTER_DELAY_MS`],
+    4000,
+  );
+  const pasteDelayMs = parseDelayMs(env[`HEADLESS_TMUX_${envPrefix}_PASTE_DELAY_MS`], 1000);
+  const submitDelayMs = parseDelayMs(env[`HEADLESS_TMUX_${envPrefix}_SUBMIT_DELAY_MS`], 1000);
+  const promptBuffer = `${sessionName}-prompt`;
+
+  return [
+    {
+      command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
+      delayMs: wakeDelayMs,
+    },
+    {
+      command: { command: "tmux", args: ["set-buffer", "-b", promptBuffer, prompt] },
+      delayMs: pasteDelayMs,
+    },
+    {
+      command: { command: "tmux", args: ["paste-buffer", "-d", "-b", promptBuffer, "-t", sessionName] },
+      delayMs: 0,
+    },
+    {
+      command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
+      delayMs: submitDelayMs,
+    },
+  ];
 }
 
 function parseDelayMs(value: string | undefined, fallback: number): number {
@@ -2190,6 +2206,9 @@ async function resolveTmuxWaitPlan(
   cwd: string | undefined,
   env: Env,
 ): Promise<{ strategy: WaitResolveStrategy; identity: Partial<BuildOptions>; prompt: string }> {
+  if (waitTierForAgent(agent) === "unsupported") {
+    throw new CliError(`--tmux --wait is not supported by ${agent}: native transcript resolution is not available`);
+  }
   if (isTruthyFlag(env.HEADLESS_TMUX_WAIT_FORCE_MARKER)) {
     return {
       strategy: { kind: "marker", marker: tmuxWaitMarker(sessionName) },
@@ -2216,6 +2235,8 @@ async function resolveTmuxWaitPlan(
     }
     case "claim":
       return { strategy: { kind: "claim" }, identity: {}, prompt: composedPrompt };
+    case "unsupported":
+      throw new CliError(`--tmux --wait is not supported by ${agent}: native transcript resolution is not available`);
   }
 }
 
@@ -2532,6 +2553,7 @@ async function executeStoredNode(
       applySessionPlan(
         {
           prompt,
+          workDir: node.workDir,
           model: defaults.model,
           allow,
           reasoningEffort: defaults.reasoningEffort,
@@ -3120,6 +3142,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
+    if (parsed.agent === "antigravity" && configuredDefaults.model) {
+      throw new CliError("--model is not supported by antigravity: no documented agy model flag is available");
+    }
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
       throw new CliError("--role orchestrator with --run cannot use --allow read-only; it must be able to launch child nodes and update run state");
     }
@@ -3394,6 +3419,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       applySessionPlan({
         prompt: composedPrompt,
         promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
+        workDir: cwd ?? process.cwd(),
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,

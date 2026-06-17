@@ -249,6 +249,10 @@ function extractGeminiDeltaMessage(values: unknown[]): string {
 }
 
 export function extractFinalMessage(agent: AgentName, stdout: string): string {
+  if (agent === "antigravity") {
+    return stdout.trim();
+  }
+
   const values = parseJsonValues(stdout);
   if (agent === "gemini") {
     const deltaMessage = extractGeminiDeltaMessage(values);

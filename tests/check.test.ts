@@ -19,6 +19,15 @@ test("CLI --check prints installed status and numeric versions for all agents", 
     const binDir = join(dir, "bin");
     mkdirSync(binDir);
     await writeExecutable(
+      join(binDir, "agy"),
+      [
+        "#!/bin/sh",
+        "if [ \"$1\" = \"--version\" ]; then echo 'agy 2.0.1'; exit 0; fi",
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    await writeExecutable(
       join(binDir, "codex"),
       [
         "#!/bin/sh",
@@ -65,6 +74,7 @@ test("CLI --check prints installed status and numeric versions for all agents", 
     assert.equal(code, 0);
     assert.match(output, /^\+[-+]+\+$/m);
     assert.match(output, /^\| Agent\s+\| S\s+\| Auth\s+\| Version\s+\| Model\s+\| Effort\s+\|$/m);
+    assert.match(output, /^\| antigravity\s+\| ✓\s+\| -\s+\| 2\.0\.1\s+\| -\s+\| -\s+\|$/m);
     assert.match(output, /^\| codex\s+\| ✓\s+\| -\s+\| 1\.2\.3\s+\| gpt-5\.5\s+\| -\s+\|$/m);
     assert.match(output, /^\| gemini\s+\| ✓\s+\| -\s+\| 0\.39\.1\s+\| gemini-3\.1-pro-preview\s+\| -\s+\|$/m);
     assert.match(output, /^\| opencode\s+\| ✓\s+\| -\s+\| 1\.4\.10\s+\| openai\/gpt-5\.4\s+\| -\s+\|$/m);
@@ -271,6 +281,7 @@ test("CLI --check reports OAuth auth from local seed files", async () => {
   try {
     const home = join(dir, "home");
     mkdirSync(join(home, ".codex"), { recursive: true });
+    mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true });
     writeFileSync(join(home, ".codex", "auth.json"), "{}\n");
     writeFileSync(join(home, ".claude.json"), "{}\n");
 
@@ -282,6 +293,7 @@ test("CLI --check reports OAuth auth from local seed files", async () => {
 
     assert.equal(code, 0);
     assert.match(stdout.join(""), /^\| claude\s+\| ✗\s+\| oauth\s+\| -\s+\| claude-opus-4-6\s+\| -\s+\|$/m);
+    assert.match(stdout.join(""), /^\| antigravity\s+\| ✗\s+\| -\s+\| -\s+\| -\s+\| -\s+\|$/m);
     assert.match(stdout.join(""), /^\| codex\s+\| ✗\s+\| oauth\s+\| -\s+\| gpt-5\.5\s+\| -\s+\|$/m);
   } finally {
     rmSync(dir, { force: true, recursive: true });

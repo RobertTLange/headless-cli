@@ -79,6 +79,10 @@ test("extracts final Cursor assistant message from stream JSON trace", () => {
   assert.equal(extractFinalMessage("cursor", trace), "final cursor answer");
 });
 
+test("extracts Antigravity final message from plain text output", () => {
+  assert.equal(extractFinalMessage("antigravity", "\nfinal antigravity answer\n"), "final antigravity answer");
+});
+
 test("extracts final Gemini assistant message from JSON object trace", () => {
   const trace = JSON.stringify({
     type: "model",

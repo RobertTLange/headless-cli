@@ -51,6 +51,9 @@ export function commandForAgent(agent: AgentName, env: Env): string {
   if (agent === "cursor") {
     return env.CURSOR_CLI_BIN || "agent";
   }
+  if (agent === "antigravity") {
+    return env.ANTIGRAVITY_CLI_BIN || env.AGY_CLI_BIN || "agy";
+  }
   if (agent === "claude") {
     return claudeCommand(env);
   }
@@ -104,6 +107,7 @@ const awsCredentialEnvNames = ["AWS_ACCESS_KEY_ID", "AWS_PROFILE"];
 
 const apiEnvNamesByAgent: Record<AgentName, string[]> = {
   acp: commonProviderApiEnvNames,
+  antigravity: [],
   claude: ["ANTHROPIC_API_KEY"],
   codex: ["CODEX_API_KEY", "OPENAI_API_KEY"],
   cursor: ["CURSOR_API_KEY"],
@@ -114,6 +118,7 @@ const apiEnvNamesByAgent: Record<AgentName, string[]> = {
 
 const oauthEnvNamesByAgent: Record<AgentName, string[]> = {
   acp: [],
+  antigravity: [],
   claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
   codex: [],
   cursor: [],
@@ -124,6 +129,7 @@ const oauthEnvNamesByAgent: Record<AgentName, string[]> = {
 
 const oauthPathsByAgent: Record<AgentName, string[]> = {
   acp: [".config/acp"],
+  antigravity: [],
   claude: [".claude/.credentials.json", ".claude/auth.json"],
   codex: [".codex/auth.json"],
   cursor: [".cursor/cli-config.json"],

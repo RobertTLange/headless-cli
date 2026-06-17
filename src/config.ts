@@ -37,6 +37,7 @@ export interface HeadlessConfig {
 
 export const BUILTIN_AGENT_DEFAULTS: Record<AgentName, AgentDefaults> = {
   acp: {},
+  antigravity: {},
   claude: { model: "claude-opus-4-6" },
   codex: { model: "gpt-5.5" },
   cursor: { model: "gpt-5.5", reasoningEffort: "medium" },
@@ -205,6 +206,7 @@ function parseGeneralConfigValue(defaults: GeneralDefaults, key: string, rawValu
 function parseAgentName(value: string, lineNumber: number): AgentName {
   if (
     value === "acp" ||
+    value === "antigravity" ||
     value === "claude" ||
     value === "codex" ||
     value === "cursor" ||
@@ -241,6 +243,7 @@ function parseConfigAllow(value: string, lineNumber: number): AllowMode {
 function parseConfigDefaultAgent(value: string, lineNumber: number): AgentName {
   if (
     value === "claude" ||
+    value === "antigravity" ||
     value === "codex" ||
     value === "cursor" ||
     value === "gemini" ||

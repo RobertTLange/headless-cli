@@ -1,4 +1,4 @@
-export type AgentName = "acp" | "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi";
+export type AgentName = "acp" | "antigravity" | "claude" | "codex" | "cursor" | "gemini" | "opencode" | "pi";
 
 export type PromptFileMode = "argument" | "stdin";
 
@@ -11,6 +11,7 @@ export type Env = Record<string, string | undefined>;
 export interface BuildOptions {
   prompt: string;
   promptFile?: string;
+  workDir?: string;
   model?: string;
   allow?: AllowMode;
   reasoningEffort?: ReasoningEffort;
@@ -31,7 +32,8 @@ export interface BuildOptions {
 //  tag   — unique metadata resolvable later (opencode --title)
 //  dir   — unique per-run session directory (pi --session-dir)
 //  claim — no caller-assignable id; claim the new transcript under a launch lock (codex)
-export type WaitTier = "pin" | "mint" | "tag" | "dir" | "claim";
+//  unsupported — no reliable native transcript resolution yet
+export type WaitTier = "pin" | "mint" | "tag" | "dir" | "claim" | "unsupported";
 
 export interface BuiltCommand {
   command: string;
