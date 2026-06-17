@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { acquireLaunchLock, launchLockPath } from "../src/launch-lock.ts";
@@ -50,24 +52,43 @@ test("launch lock reaps a lock held by a dead process", () => {
     const path = launchLockPath(env, "codex", "/repo/a")!;
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "999999\n"); // pid that does not exist
-    const lock = acquireLaunchLock(env, "codex", "/repo/a", { timeoutMs: 500 });
+    const lock = acquireLaunchLock(env, "codex", "/repo/a");
     assert.equal(readFileSync(path, "utf8").trim(), String(process.pid));
     lock.release();
   });
 });
 
-test("launch lock holds against a live holder until released", () => {
+test("launch lock blocks against a live holder until released", () => {
   withHome((home) => {
     const env = { HOME: home };
     const path = launchLockPath(env, "codex", "/repo/a")!;
     const first = acquireLaunchLock(env, "codex", "/repo/a");
-    // Second acquire by the same (live) pid cannot take the lock; after the
-    // short timeout it proceeds unsynchronized without stealing the file.
-    acquireLaunchLock(env, "codex", "/repo/a", { timeoutMs: 80, staleMs: 60_000 });
+
+    const blocked = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        [
+          `import { acquireLaunchLock } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "src", "launch-lock.ts")).href)};`,
+          `acquireLaunchLock({ HOME: ${JSON.stringify(home)} }, "codex", "/repo/a", { staleMs: 60_000, timeoutMs: 20 });`,
+        ].join("\n"),
+      ],
+      { timeout: 3_000 },
+    );
+
+    assert.equal(blocked.error?.code, "ETIMEDOUT");
     assert.ok(existsSync(path));
     assert.equal(readFileSync(path, "utf8").trim(), String(process.pid));
+
     first.release();
     assert.ok(!existsSync(path));
+
+    const acquiredAfterRelease = acquireLaunchLock(env, "codex", "/repo/a");
+    assert.ok(existsSync(path));
+    acquiredAfterRelease.release();
   });
 });
 
