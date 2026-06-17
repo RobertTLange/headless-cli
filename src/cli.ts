@@ -91,7 +91,7 @@ import {
   validateRunId,
   type RunNode,
 } from "./runs.js";
-import { readStoredSession, sessionStorePath, writeStoredSession } from "./sessions.js";
+import { readStoredSession, sessionStorePath, writeStoredSession, writeStoredTmuxSession, type StoredTmuxWaitStrategy } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
 import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
@@ -1190,7 +1190,7 @@ function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env)
     throw new CliError("HOME is required for --session");
   }
   const stored = readStoredSession(env, agent, validAlias);
-  if (stored) {
+  if (stored?.nativeId) {
     return { alias: validAlias, mode: "resume", nativeId: stored.nativeId };
   }
   return {
@@ -2234,11 +2234,39 @@ function resolveExistingSessionWaitStrategy(
 ): WaitResolveStrategy {
   if (!isTruthyFlag(env.HEADLESS_TMUX_WAIT_FORCE_MARKER) && alias) {
     const stored = readStoredSession(env, agent, alias);
-    if (stored?.nativeId) {
-      return { kind: "pin", sessionId: stored.nativeId };
+    if (stored?.tmuxWaitStrategy) {
+      return waitResolveStrategyFromStored(stored.tmuxWaitStrategy);
     }
   }
   return { kind: "marker", marker: tmuxWaitMarker(sessionName) };
+}
+
+function waitResolveStrategyFromStored(strategy: StoredTmuxWaitStrategy): WaitResolveStrategy {
+  switch (strategy.kind) {
+    case "pin":
+      return { kind: "pin", sessionId: strategy.sessionId };
+    case "title":
+      return { kind: "title", title: strategy.title };
+    case "dir":
+      return { kind: "dir", sessionDir: strategy.sessionDir };
+    case "claim":
+      return { kind: "claim", claimed: strategy.claimed };
+  }
+}
+
+function storedTmuxWaitStrategy(strategy: WaitResolveStrategy): StoredTmuxWaitStrategy | undefined {
+  switch (strategy.kind) {
+    case "pin":
+      return { kind: "pin", sessionId: strategy.sessionId };
+    case "title":
+      return { kind: "title", title: strategy.title };
+    case "dir":
+      return { kind: "dir", sessionDir: strategy.sessionDir };
+    case "claim":
+      return strategy.claimed ? { kind: "claim", claimed: strategy.claimed } : undefined;
+    case "marker":
+      return undefined;
+  }
 }
 
 function realWorkspaceForLock(workDir: string): string {
@@ -3293,12 +3321,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       } finally {
         claimLock?.release();
       }
-      if (code === 0 && waitPlan?.strategy.kind === "pin" && parsed.sessionAlias && sessionStorePath(env)) {
-        // Record the pinned id so a later send into this session resolves cleanly.
-        writeStoredSession(env, {
+      const tmuxWaitStrategy = waitSnapshot ? storedTmuxWaitStrategy(waitSnapshot.strategy) : undefined;
+      if (code === 0 && tmuxWaitStrategy && parsed.sessionAlias && sessionStorePath(env)) {
+        writeStoredTmuxSession(env, {
           agent: parsed.agent,
           alias: parsed.sessionAlias,
-          nativeId: waitPlan.strategy.sessionId,
+          tmuxWaitStrategy,
           workDir: cwd,
         });
       }

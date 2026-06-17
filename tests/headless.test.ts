@@ -3199,6 +3199,174 @@ test("CLI codex --tmux --wait holds the claim lock until the transcript appears"
   }
 });
 
+test("CLI codex --tmux --session --wait reuses stored claim identity without a marker", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const activeFile = join(dir, "active");
+    const bufferFile = join(dir, "buffer.txt");
+    const transcriptPath = join(home, ".codex", "sessions", "2026", "05", "14", "rollout-session-claim.jsonl");
+    mkdirSync(workDir, { recursive: true });
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "tmux"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const args = process.argv.slice(2);",
+          "if (args[0] === 'has-session') process.exit(fs.existsSync(process.env.HEADLESS_TMUX_ACTIVE) ? 0 : 1);",
+          "if (args[0] === 'new-session') {",
+          "  fs.writeFileSync(process.env.HEADLESS_TMUX_ACTIVE, '1');",
+          "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
+          "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'claim', cwd: args[5] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'first final' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "}",
+          "if (args[0] === 'set-buffer') fs.writeFileSync(process.env.HEADLESS_TMUX_BUFFER, args[3]);",
+          "if (args[0] === 'send-keys' && args.at(-1) === 'Enter' && fs.existsSync(process.env.HEADLESS_TMUX_BUFFER)) {",
+          "  const prompt = fs.readFileSync(process.env.HEADLESS_TMUX_BUFFER, 'utf8');",
+          "  fs.appendFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'second final' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:05.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "}",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+    });
+
+    const env = {
+      ...process.env,
+      HEADLESS_TMUX_ACTIVE: activeFile,
+      HEADLESS_TMUX_BUFFER: bufferFile,
+      HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+      HEADLESS_TRANSCRIPT: transcriptPath,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+
+    const firstStdout: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--session", "work", "--wait", "--timeout", "2"], {
+        env,
+        stdout: (text) => firstStdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(firstStdout.join(""), "first final\n");
+
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.deepEqual(store.agents.codex.work.tmuxWaitStrategy, { kind: "claim", claimed: transcriptPath });
+
+    const secondStdout: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--prompt", "again", "--work-dir", workDir, "--tmux", "--session", "work", "--wait", "--timeout", "2"], {
+        env,
+        stdout: (text) => secondStdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(secondStdout.join(""), "second final\n");
+    assert.doesNotMatch(readFileSync(bufferFile, "utf8"), /headless-tmux-wait/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --session --wait ignores stale native session ids without tmux identity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const activeFile = join(dir, "active");
+    const bufferFile = join(dir, "buffer.txt");
+    const transcriptPath = join(home, ".codex", "sessions", "2026", "05", "14", "rollout-stale-native.jsonl");
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(join(home, ".headless"), { recursive: true });
+    mkdirSync(dirname(transcriptPath), { recursive: true });
+    writeFileSync(activeFile, "1");
+    writeFileSync(
+      join(home, ".headless", "sessions.json"),
+      JSON.stringify({
+        version: 1,
+        agents: {
+          codex: {
+            work: {
+              agent: "codex",
+              alias: "work",
+              nativeId: "stale-native",
+              workDir,
+              createdAt: "2026-05-14T10:00:00.000Z",
+              updatedAt: "2026-05-14T10:00:00.000Z",
+            },
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({ timestamp: "2026-05-14T10:00:00.000Z", type: "session_meta", payload: { id: "stale-native", cwd: workDir } })}\n`,
+    );
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "tmux"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "if (args[0] === 'has-session') process.exit(fs.existsSync(process.env.HEADLESS_TMUX_ACTIVE) ? 0 : 1);",
+          "if (args[0] === 'set-buffer') fs.writeFileSync(process.env.HEADLESS_TMUX_BUFFER, args[3]);",
+          "if (args[0] === 'send-keys' && args.at(-1) === 'Enter') {",
+          "  const prompt = fs.readFileSync(process.env.HEADLESS_TMUX_BUFFER, 'utf8');",
+          "  fs.appendFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'marker fallback final' }] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:03.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "}",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--prompt", "again", "--work-dir", workDir, "--tmux", "--session", "work", "--wait", "--timeout", "2"], {
+        env: {
+          ...process.env,
+          HEADLESS_TMUX_ACTIVE: activeFile,
+          HEADLESS_TMUX_BUFFER: bufferFile,
+          HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+          HEADLESS_TRANSCRIPT: transcriptPath,
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+
+    assert.equal(stdout.join(""), "marker fallback final\n");
+    assert.match(readFileSync(bufferFile, "utf8"), /headless-tmux-wait/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI pi --tmux --wait isolates its transcript in a per-run session dir", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
