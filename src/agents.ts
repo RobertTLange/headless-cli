@@ -7,6 +7,7 @@ import type {
   BuiltCommand,
   Env,
   ReasoningEffort,
+  WaitTier,
 } from "./types.js";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -361,6 +362,8 @@ function buildInteractiveGemini(options: BuildOptions): BuiltCommand {
   args.push("--skip-trust");
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--resume", options.sessionId);
+  } else if (options.sessionMode === "new" && options.sessionId) {
+    args.push("--session-id", options.sessionId);
   }
   args.push(...withGeminiAllow([], options.allow));
   args.push(options.prompt);
@@ -409,6 +412,8 @@ export function buildInteractiveOpencodeRun(options: BuildOptions): BuiltCommand
   }
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--session", options.sessionId);
+  } else if (options.sessionMode === "new" && options.sessionTitle) {
+    args.push("--title", options.sessionTitle);
   }
   args.push(options.prompt);
 
@@ -460,6 +465,8 @@ function buildInteractivePi(options: BuildOptions, env: Env): BuiltCommand {
   }
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--session", options.sessionId);
+  } else if (options.sessionMode === "new" && options.sessionDir) {
+    args.push("--session-dir", options.sessionDir);
   }
   if (options.allow === "read-only") {
     args.push("--tools", "read,grep,find,ls");
@@ -490,6 +497,9 @@ const harnesses: Record<AgentName, AgentHarness> = {
     buildCommand: buildClaude,
     buildInteractiveCommand: (options, env) => {
       const args = withClaudeModel([], options.model ?? defaultClaudeModel);
+      if (options.sessionMode === "new" && options.sessionId) {
+        args.push("--session-id", options.sessionId);
+      }
       args.push(...withClaudeEffort([], options.reasoningEffort));
       args.push(...withClaudeAllow([], options.allow));
       args.push(options.prompt);
@@ -580,4 +590,21 @@ export function buildInteractiveAgentCommand(
   env: Env = process.env,
 ): BuiltCommand {
   return getAgentHarness(name).buildInteractiveCommand(options, env);
+}
+
+// How each harness lets `--tmux --wait` identify this run's native transcript
+// without injecting a marker into the executed prompt. See WaitTier in types.ts
+// for what each tier means and how the interactive builders consume it.
+const waitTiers: Record<AgentName, WaitTier> = {
+  claude: "pin", // --session-id <uuid>
+  gemini: "pin", // --session-id <uuid>
+  cursor: "mint", // create-chat mints an id, then --resume <id>
+  opencode: "tag", // --title <uuid>, resolved via the session store
+  pi: "dir", // --session-dir <unique dir>
+  codex: "claim", // no caller-assignable id; claim the new transcript under a launch lock
+  acp: "claim", // generic ACP harness has no shared id mechanism
+};
+
+export function waitTierForAgent(name: AgentName): WaitTier {
+  return waitTiers[name];
 }
