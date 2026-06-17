@@ -10,6 +10,10 @@ export interface LaunchLock {
   release: () => void;
 }
 
+interface LaunchLockOptions {
+  timeoutMs?: number;
+}
+
 // Serializes only the brief launch window of concurrent same-(agent, workspace)
 // runs so the `claim` wait tier can attribute a brand-new transcript to this run.
 // Different agents and different workspaces never contend (distinct lock files),
@@ -18,11 +22,13 @@ export function acquireLaunchLock(
   env: Env,
   agent: AgentName,
   workspace: string,
+  options: LaunchLockOptions = {},
 ): LaunchLock {
   const lockPath = launchLockPath(env, agent, workspace);
   if (!lockPath) return { release: () => {} };
 
   ensurePrivateDir(lockPath.slice(0, lockPath.lastIndexOf("/")));
+  const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
   while (true) {
     try {
       const fd = openSync(lockPath, "wx", privateFileMode);
@@ -32,6 +38,9 @@ export function acquireLaunchLock(
       return { release: () => rmSync(lockPath, { force: true }) };
     } catch {
       if (reapDeadOwnerLock(lockPath)) continue;
+      if (deadline !== undefined && Date.now() >= deadline) {
+        throw new Error(`timed out acquiring launch lock: ${lockPath}`);
+      }
       sleepSync(25);
     }
   }
