@@ -71,7 +71,7 @@ test("builds read-only commands for supported agents", () => {
 
   assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", allow: "read-only", workDir: "/work" }, {}), {
     command: "agy",
-    args: ["-p", "hello", "--cwd", "/work", "--sandbox"],
+    args: ["-p", "hello", "--sandbox"],
   });
 
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", allow: "read-only" }, {}), {
@@ -144,8 +144,6 @@ test("builds explicit yolo commands for supported agents", () => {
   assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", allow: "yolo", workDir: "/work" }, {}).args, [
     "-p",
     "hello",
-    "--cwd",
-    "/work",
     "--dangerously-skip-permissions",
   ]);
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", allow: "yolo" }, {}).args, [

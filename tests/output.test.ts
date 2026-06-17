@@ -83,6 +83,38 @@ test("extracts Antigravity final message from plain text output", () => {
   assert.equal(extractFinalMessage("antigravity", "\nfinal antigravity answer\n"), "final antigravity answer");
 });
 
+test("extracts Antigravity final message from native transcript records", () => {
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        JSON.stringify({ type: "USER_INPUT", content: "hello" }),
+        JSON.stringify({ type: "PLANNER_RESPONSE", status: "DONE", content: "final antigravity transcript answer" }),
+        "",
+      ].join("\n"),
+    ),
+    "final antigravity transcript answer",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        JSON.stringify({ type: "USER_INPUT", content: "hello" }),
+        JSON.stringify({ type: "ASSISTANT_RESPONSE", status: "COMPLETED", content: "completed antigravity answer" }),
+        "",
+      ].join("\n"),
+    ),
+    "completed antigravity answer",
+  );
+});
+
+test("does not expose raw Antigravity JSON records without a final message", () => {
+  assert.equal(
+    extractFinalMessage("antigravity", JSON.stringify({ type: "SESSION_META", payload: { cwd: "/secret/workspace" } })),
+    "",
+  );
+});
+
 test("extracts final Gemini assistant message from JSON object trace", () => {
   const trace = JSON.stringify({
     type: "model",

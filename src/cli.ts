@@ -70,6 +70,7 @@ import {
   indexNativeAssistantCompletion,
   nativeTranscriptIncludesText,
   nativeTranscriptKey,
+  resolveLatestNativeTranscript,
   resolveLatestNativeTranscripts,
   resolveNativeTranscript,
   resolveOpencodeTranscriptByTitle,
@@ -1169,6 +1170,7 @@ interface SessionPlan {
   alias: string;
   mode: "new" | "resume";
   nativeId?: string;
+  startedAt?: string;
 }
 
 function validateSessionAlias(alias: string | undefined): string | undefined {
@@ -1185,9 +1187,6 @@ function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env)
   const validAlias = validateSessionAlias(alias);
   if (!validAlias) {
     return undefined;
-  }
-  if (agent === "antigravity") {
-    throw new CliError("--session is not supported by antigravity: conversation id discovery is not available");
   }
   if (!sessionStorePath(env)) {
     throw new CliError("HOME is required for --session");
@@ -1209,10 +1208,16 @@ async function prepareSessionPlan(
   cwd: string | undefined,
   env: Env,
 ): Promise<SessionPlan | undefined> {
-  if (!plan || plan.mode !== "new" || agent !== "cursor" || plan.nativeId) {
+  if (!plan || plan.mode !== "new") {
     return plan;
   }
-  return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
+  if (agent === "cursor" && !plan.nativeId) {
+    return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
+  }
+  if (agent === "antigravity" && !plan.nativeId) {
+    return { ...plan, startedAt: new Date().toISOString() };
+  }
+  return plan;
 }
 
 function applySessionPlan(commandOptions: {
@@ -1248,7 +1253,7 @@ async function persistSessionPlan(
   if (!plan) {
     return;
   }
-  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env));
+  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env, plan.startedAt));
   if (!nativeId) {
     throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
   }
@@ -1265,6 +1270,7 @@ async function discoverNativeSessionId(
   stdout: string,
   cwd: string | undefined,
   env: Env,
+  startedAt?: string,
 ): Promise<string> {
   const fromTrace = extractNativeSessionId(agent, stdout);
   if (fromTrace) {
@@ -1272,6 +1278,9 @@ async function discoverNativeSessionId(
   }
   if (agent === "gemini") {
     return await newestGeminiSessionId(cwd, env);
+  }
+  if (agent === "antigravity") {
+    return newestAntigravitySessionId(cwd, env, startedAt);
   }
   if (agent === "opencode") {
     return await newestOpenCodeSessionId(cwd, env);
@@ -1293,6 +1302,10 @@ async function newestGeminiSessionId(cwd: string | undefined, env: Env): Promise
   }
   const matches = [...result.stdout.matchAll(/\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]/gi)];
   return matches.at(-1)?.[1] ?? "";
+}
+
+function newestAntigravitySessionId(cwd: string | undefined, env: Env, startedAt: string | undefined): string {
+  return resolveLatestNativeTranscript("antigravity", cwd ?? process.cwd(), env, startedAt ? { startedAt } : {})?.sessionId ?? "";
 }
 
 async function newestOpenCodeSessionId(cwd: string | undefined, env: Env): Promise<string> {

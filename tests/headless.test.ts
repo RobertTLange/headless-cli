@@ -95,10 +95,10 @@ test("builds ACP adapter command with read-only permission mode", () => {
   });
 });
 
-test("builds Antigravity one-shot command with explicit cwd", () => {
+test("builds Antigravity one-shot command", () => {
   assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", model: "gemini-model", workDir: "/repo/project" }, {}), {
     command: "agy",
-    args: ["--model", "gemini-model", "-p", "hello", "--cwd", "/repo/project", "--dangerously-skip-permissions"],
+    args: ["--model", "gemini-model", "-p", "hello", "--dangerously-skip-permissions"],
   });
 });
 
@@ -109,7 +109,7 @@ test("builds Antigravity command with binary override and sandboxed read-only mo
     }),
     {
       command: "/opt/agy",
-      args: ["-p", "review", "--cwd", "/repo/project", "--sandbox"],
+      args: ["-p", "review", "--sandbox"],
     },
   );
 });
@@ -469,7 +469,7 @@ test("each harness declares its tmux-wait resolution tier", () => {
   assert.equal(waitTierForAgent("opencode"), "tag");
   assert.equal(waitTierForAgent("pi"), "dir");
   assert.equal(waitTierForAgent("codex"), "claim");
-  assert.equal(waitTierForAgent("antigravity"), "unsupported");
+  assert.equal(waitTierForAgent("antigravity"), "claim");
 });
 
 test("interactive Claude and Gemini commands pin a new session id when provided", () => {
@@ -694,16 +694,6 @@ test("builds native session commands for supported agents", () => {
   ]);
 });
 
-test("CLI rejects Antigravity session aliases until conversation discovery exists", async () => {
-  const stderr: string[] = [];
-  const code = await runCli(["antigravity", "--session", "work", "--prompt", "hello", "--print-command"], {
-    stderr: (text) => stderr.push(text),
-  });
-
-  assert.equal(code, 2);
-  assert.match(stderr.join(""), /--session is not supported by antigravity/);
-});
-
 test("CLI passes Antigravity model selection through to agy", async () => {
   const stdout: string[] = [];
   const code = await runCli(["antigravity", "--model", "gemini-pro", "--prompt", "hello", "--print-command"], {
@@ -711,8 +701,7 @@ test("CLI passes Antigravity model selection through to agy", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /^agy --model gemini-pro -p hello --cwd /);
-  assert.match(stdout.join(""), / --dangerously-skip-permissions\n$/);
+  assert.match(stdout.join(""), /^agy --model gemini-pro -p hello --dangerously-skip-permissions\n$/);
 });
 
 test("builds interactive commands for tmux mode", () => {
@@ -1508,6 +1497,81 @@ test("CLI --session stores the newest Gemini session when list output is oldest 
     assert.equal(stdout.join(""), "gemini done\n");
     const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
     assert.equal(store.agents.gemini.work.nativeId, "22222222-2222-4222-8222-222222222222");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --session stores and resumes Antigravity conversations from brain transcripts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "agy-args.jsonl");
+    mkdirSync(home);
+    mkdirSync(workDir);
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "agy"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (process.cwd() !== process.env.HEADLESS_EXPECT_CWD) {",
+          "  console.error(`unexpected cwd: ${process.cwd()}`);",
+          "  process.exit(17);",
+          "}",
+          "const id = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'agy-session-1';",
+          "const transcript = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'brain', id, 'transcript.jsonl');",
+          "fs.mkdirSync(path.dirname(transcript), { recursive: true });",
+          "fs.writeFileSync(transcript, [",
+          "  JSON.stringify({ type: 'SESSION_META', payload: { cwd: process.cwd() } }),",
+          "  JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', content: args.includes('--conversation') ? 'resumed' : 'started' }),",
+          "  '',",
+          "].join('\\n'));",
+          "console.log(args.includes('--conversation') ? 'resumed' : 'started');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "agy"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    const env = {
+      ...process.env,
+      HEADLESS_CAPTURE: captureFile,
+      HEADLESS_EXPECT_CWD: realpathSync(workDir),
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    assert.equal(
+      await runCli(["antigravity", "--session", "work", "--prompt", "hello", "--work-dir", workDir], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "started\n");
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.antigravity.work.nativeId, "agy-session-1");
+
+    stdout.length = 0;
+    assert.equal(
+      await runCli(["antigravity", "--session", "work", "--prompt", "again", "--work-dir", workDir], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "resumed\n");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(calls[0].includes("--cwd"), false);
+    assert.equal(calls[1].includes("--conversation"), true);
+    assert.equal(calls[1].includes("agy-session-1"), true);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -4084,14 +4148,60 @@ test("CLI --tmux --print-command includes Antigravity Enter submit command", asy
   assert.match(stdout.join(""), /\ntmux send-keys -t headless-antigravity-\d+ Enter\n$/);
 });
 
-test("CLI rejects Antigravity tmux wait until native transcript resolution exists", async () => {
-  const stderr: string[] = [];
-  const code = await runCli(["antigravity", "--prompt", "hello", "--tmux", "--wait", "--timeout", "1"], {
-    stderr: (text) => stderr.push(text),
-  });
+test("CLI Antigravity --tmux --wait claims its brain transcript without a marker", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    const transcriptPath = join(home, ".gemini", "antigravity-cli", "brain", "agy-wait-1", "transcript.jsonl");
+    mkdirSync(workDir, { recursive: true });
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "tmux"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args[0] === 'new-session') {",
+          "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
+          "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'SESSION_META', payload: { cwd: args[5] } }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'antigravity wait final' }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "}",
+          "if (args[0] === 'has-session') process.exit(0);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+    });
 
-  assert.equal(code, 2);
-  assert.match(stderr.join(""), /--tmux --wait is not supported by antigravity/);
+    const stdout: string[] = [];
+    const code = await runCli(["antigravity", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--timeout", "2"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        HEADLESS_TRANSCRIPT: transcriptPath,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    const launchCommand = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line))[0][6];
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "antigravity wait final\n");
+    assert.doesNotMatch(launchCommand, /headless-tmux-wait/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("CLI --list lists active headless tmux sessions", async () => {

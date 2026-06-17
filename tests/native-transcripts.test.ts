@@ -20,6 +20,7 @@ test("resolves native transcript files for jsonl-backed agents", () => {
     mkdirSync(workDir, { recursive: true });
     const realWorkDir = realpathSync(workDir);
     const claudePath = join(home, ".claude", "projects", realWorkDir.replace(/\//g, "-"), "claude-session.jsonl");
+    const antigravityPath = join(home, ".gemini", "antigravity-cli", "brain", "antigravity-session", "transcript.jsonl");
     const codexPath = join(home, ".codex", "sessions", "2026", "05", "13", "rollout-2026-05-13T11-12-33-codex-thread.jsonl");
     const cursorPath = join(
       home,
@@ -32,7 +33,7 @@ test("resolves native transcript files for jsonl-backed agents", () => {
     );
     const geminiPath = join(home, ".gemini", "tmp", "gemini-7", "chats", "session-2026-05-13T09-12-gemini-s.jsonl");
     const piPath = join(home, ".pi", "agent", "sessions", "--work--", "pi-session.jsonl");
-    for (const path of [claudePath, codexPath, cursorPath, geminiPath, piPath]) {
+    for (const path of [claudePath, antigravityPath, codexPath, cursorPath, geminiPath, piPath]) {
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, `${JSON.stringify({ type: "assistant", content: "done" })}\n`);
     }
@@ -40,6 +41,7 @@ test("resolves native transcript files for jsonl-backed agents", () => {
     writeFileSync(join(home, ".gemini", "projects.json"), `${JSON.stringify({ [workDir]: "gemini-7" })}\n`);
 
     assert.deepEqual(resolveNativeTranscript("claude", "claude-session", workDir, { HOME: home })?.path, claudePath);
+    assert.deepEqual(resolveNativeTranscript("antigravity", "antigravity-session", workDir, { HOME: home })?.path, antigravityPath);
     assert.deepEqual(resolveNativeTranscript("codex", "codex-thread", workDir, { HOME: home })?.path, codexPath);
     assert.deepEqual(resolveNativeTranscript("cursor", "cursor-session", workDir, { HOME: home })?.path, cursorPath);
     assert.deepEqual(resolveNativeTranscript("gemini", "gemini-session", workDir, { HOME: home })?.path, geminiPath);
@@ -102,6 +104,80 @@ test("resolves the latest native transcript for a workspace", () => {
     utimesSync(otherPath, new Date("2026-05-13T10:02:00.000Z"), new Date("2026-05-13T10:02:00.000Z"));
 
     assert.equal(resolveLatestNativeTranscript("codex", workDir, { HOME: home })?.path, latestPath);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("resolves latest Antigravity brain transcript for a workspace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-native-transcripts-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    const otherWorkDir = join(dir, "other");
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(otherWorkDir, { recursive: true });
+    const realWorkDir = realpathSync(workDir);
+    const brainRoot = join(home, ".gemini", "antigravity-cli", "brain");
+    const targetPath = join(brainRoot, "conversation-target", "transcript.jsonl");
+    const otherPath = join(brainRoot, "conversation-other", "transcript.jsonl");
+    for (const path of [targetPath, otherPath]) {
+      mkdirSync(dirname(path), { recursive: true });
+    }
+    writeFileSync(
+      targetPath,
+      [
+        JSON.stringify({ type: "SESSION_META", payload: { cwd: realWorkDir } }),
+        JSON.stringify({ type: "ASSISTANT_RESPONSE", status: "COMPLETED", content: "antigravity final" }),
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      otherPath,
+      `${JSON.stringify({ type: "SESSION_META", payload: { cwd: realpathSync(otherWorkDir) } })}\n`,
+    );
+    utimesSync(targetPath, new Date("2026-05-13T10:01:00.000Z"), new Date("2026-05-13T10:01:00.000Z"));
+    utimesSync(otherPath, new Date("2026-05-13T10:02:00.000Z"), new Date("2026-05-13T10:02:00.000Z"));
+
+    const transcript = resolveLatestNativeTranscript("antigravity", workDir, { HOME: home });
+    assert.equal(transcript?.path, targetPath);
+    assert.equal(transcript?.sessionId, "conversation-target");
+    assert.deepEqual(indexNativeAssistantCompletion("antigravity", transcript), {
+      message: "antigravity final",
+      source: "native-transcript",
+      path: targetPath,
+    });
+    const activity = deriveNativeTranscriptActivity("antigravity", transcript, { nowMs: Date.now() });
+    assert.equal(activity?.status, "idle");
+    assert.equal(activity?.reason, "terminal_done");
+    assert.equal(activity?.message, "antigravity final");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Antigravity transcript discovery requires a workspace match", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-native-transcripts-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    const otherWorkDir = join(dir, "other");
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(otherWorkDir, { recursive: true });
+    const otherPath = join(home, ".gemini", "antigravity-cli", "brain", "conversation-other", "transcript.jsonl");
+    mkdirSync(dirname(otherPath), { recursive: true });
+    writeFileSync(
+      otherPath,
+      [
+        JSON.stringify({ type: "SESSION_META", payload: { cwd: realpathSync(otherWorkDir) } }),
+        JSON.stringify({ type: "PLANNER_RESPONSE", status: "DONE", content: "wrong workspace" }),
+        "",
+      ].join("\n"),
+    );
+
+    assert.equal(resolveLatestNativeTranscript("antigravity", workDir, { HOME: home }), undefined);
+    assert.equal(resolveNativeTranscript("antigravity", "../outside", workDir, { HOME: home }), undefined);
+    assert.equal(resolveNativeTranscript("antigravity", join(otherPath), workDir, { HOME: home }), undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

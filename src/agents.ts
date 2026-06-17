@@ -174,7 +174,7 @@ function withAntigravityAllow(args: string[], allow: AllowMode | undefined): str
 
 function buildAntigravity(options: BuildOptions, env: Env): BuiltCommand {
   const args = withModel([], options.model);
-  args.push("-p", options.prompt, "--cwd", options.workDir ?? env.PWD ?? process.cwd());
+  args.push("-p", options.prompt);
   args.push(...withAntigravityAllow([], options.allow));
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--conversation", options.sessionId);
@@ -638,7 +638,7 @@ export function buildInteractiveAgentCommand(
 // without injecting a marker into the executed prompt. See WaitTier in types.ts
 // for what each tier means and how the interactive builders consume it.
 const waitTiers: Record<AgentName, WaitTier> = {
-  antigravity: "unsupported", // no documented transcript path or caller-assignable transcript id yet
+  antigravity: "claim", // claim the new brain/<conversation>/transcript.jsonl under a launch lock
   claude: "pin", // --session-id <uuid>
   gemini: "pin", // --session-id <uuid>
   cursor: "mint", // create-chat mints an id, then --resume <id>

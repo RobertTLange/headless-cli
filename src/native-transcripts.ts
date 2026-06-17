@@ -26,6 +26,8 @@ export function resolveNativeTranscript(
   const path =
     agent === "claude"
       ? claudeTranscriptPath(nativeId, workDir, env)
+      : agent === "antigravity"
+        ? antigravityTranscriptPath(nativeId, env)
       : agent === "codex"
         ? findFileContaining(codexSessionsRoot(env), nativeId)
         : agent === "cursor"
@@ -109,6 +111,8 @@ export function resolveLatestNativeTranscripts(
   const paths =
     agent === "claude"
       ? latestFiles(claudeProjectRoot(workspace, env), partial)
+      : agent === "antigravity"
+        ? latestAntigravityTranscripts(workspace, workDir, env, partial)
       : agent === "codex"
         ? latestWorkspaceFiles(codexSessionsRoot(env), workspace, workDir, partial)
         : agent === "cursor"
@@ -217,6 +221,16 @@ function claudeProjectRoot(workspace: string, env: Env): string | undefined {
   return root ? join(root, "projects", claudeProjectKey(workspace)) : undefined;
 }
 
+function antigravityRoot(env: Env): string | undefined {
+  return env.ANTIGRAVITY_HOME ?? env.AGY_HOME ?? (env.HOME ? join(env.HOME, ".gemini", "antigravity-cli") : undefined);
+}
+
+function antigravityTranscriptPath(nativeId: string, env: Env): string | undefined {
+  if (!/^[A-Za-z0-9_.:-]+$/.test(nativeId)) return undefined;
+  const root = antigravityRoot(env);
+  return root ? join(root, "brain", nativeId, "transcript.jsonl") : undefined;
+}
+
 function codexSessionsRoot(env: Env): string | undefined {
   return env.CODEX_HOME ? join(env.CODEX_HOME, "sessions") : env.HOME ? join(env.HOME, ".codex", "sessions") : undefined;
 }
@@ -312,6 +326,29 @@ function latestGeminiTranscripts(
   if (!root) return [];
   const projectSlot = geminiProjectSlot(root, workspace);
   return projectSlot ? latestFiles(join(root, "tmp", projectSlot, "chats"), partial) : [];
+}
+
+function latestAntigravityTranscripts(
+  workspace: string,
+  workDir: string | undefined,
+  env: Env,
+  partial: Partial<NativeTranscript>,
+): string[] {
+  const root = antigravityRoot(env);
+  const brainRoot = root ? join(root, "brain") : undefined;
+  if (!brainRoot || !existsSync(brainRoot)) return [];
+  const startedAtMs = partial.startedAt ? Date.parse(partial.startedAt) : Number.NaN;
+  const candidates = readdirSync(brainRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(brainRoot, entry.name, "transcript.jsonl"))
+    .filter((path) => {
+      if (!existsSync(path)) return false;
+      const stat = statSync(path);
+      return !Number.isFinite(startedAtMs) || stat.mtimeMs >= startedAtMs;
+    })
+    .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs || right.localeCompare(left));
+  const needles = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
+  return candidates.filter((path) => fileHasWorkspaceCwd(path, needles));
 }
 
 function latestOpenCodeTranscripts(
@@ -452,6 +489,10 @@ function asString(value: unknown): string {
 }
 
 function nativeIdFromPath(agent: AgentName, path: string): string | undefined {
+  if (agent === "antigravity") {
+    const nativeId = path.split("/").at(-2);
+    return nativeId && /^[A-Za-z0-9_.:-]+$/.test(nativeId) ? nativeId : undefined;
+  }
   const name = path.split("/").at(-1)?.replace(/\.jsonl$/, "");
   if (!name) return undefined;
   if (agent === "codex") {

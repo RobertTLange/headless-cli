@@ -124,6 +124,14 @@ function candidateFromRecord(record: JsonRecord, agent: AgentName): string {
     if (text) return text;
   }
 
+  if (agent === "antigravity" && (rowType === "planner_response" || rowType === "assistant_response")) {
+    const status = asString(record.status).trim().toLowerCase();
+    if (!status || status === "done" || status === "completed") {
+      const text = joinText(record.content || record.text || record.message);
+      if (text) return text;
+    }
+  }
+
   const message = asRecord(record.message);
   if (Object.keys(message).length > 0) {
     const messageRole = roleFromRecord(message) || roleFromRecord(record);
@@ -249,11 +257,12 @@ function extractGeminiDeltaMessage(values: unknown[]): string {
 }
 
 export function extractFinalMessage(agent: AgentName, stdout: string): string {
+  const values = parseJsonValues(stdout);
   if (agent === "antigravity") {
-    return stdout.trim();
+    const candidates = values.flatMap((value) => collectCandidates(value, agent));
+    return candidates.at(-1)?.trim() ?? (values.length === 0 ? stdout.trim() : "");
   }
 
-  const values = parseJsonValues(stdout);
   if (agent === "gemini") {
     const deltaMessage = extractGeminiDeltaMessage(values);
     if (deltaMessage) return deltaMessage;
@@ -264,6 +273,9 @@ export function extractFinalMessage(agent: AgentName, stdout: string): string {
 }
 
 export function extractNativeSessionId(agent: AgentName, stdout: string): string {
+  if (agent === "antigravity") {
+    return "";
+  }
   const records = parseJsonValues(stdout).flatMap(flattenRecords);
   for (const record of records) {
     if (agent === "codex") {

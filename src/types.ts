@@ -31,7 +31,7 @@ export interface BuildOptions {
 //  mint  — round-trip to mint a resumable id, then pin it (cursor create-chat)
 //  tag   — unique metadata resolvable later (opencode --title)
 //  dir   — unique per-run session directory (pi --session-dir)
-//  claim — no caller-assignable id; claim the new transcript under a launch lock (codex)
+//  claim — no caller-assignable id; claim the new transcript under a launch lock (antigravity/codex)
 //  unsupported — no reliable native transcript resolution yet
 export type WaitTier = "pin" | "mint" | "tag" | "dir" | "claim" | "unsupported";
 
