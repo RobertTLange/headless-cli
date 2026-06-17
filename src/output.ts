@@ -13,6 +13,14 @@ const skippedItemTypes = new Set([
   "function_call",
   "function_call_output",
 ]);
+const antigravityTraceTypes = new Set([
+  "assistant response",
+  "conversation history",
+  "planner response",
+  "session meta",
+  "system message",
+  "user input",
+]);
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
@@ -24,6 +32,10 @@ function asArray(value: unknown): unknown[] {
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function normalizeType(value: unknown): string {
+  return asString(value).trim().toLowerCase().replace(/_/g, " ");
 }
 
 function normalizeRole(value: unknown): string {
@@ -201,6 +213,21 @@ function collectCandidates(value: unknown, agent: AgentName): string[] {
   return candidates;
 }
 
+function isAntigravityTraceValue(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(isAntigravityTraceValue);
+  }
+
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return false;
+
+  return (
+    antigravityTraceTypes.has(normalizeType(record.type)) ||
+    Object.hasOwn(record, "step_index") ||
+    Object.hasOwn(record, "created_at")
+  );
+}
+
 function flattenRecords(value: unknown): JsonRecord[] {
   if (Array.isArray(value)) {
     return value.flatMap((item) => flattenRecords(item));
@@ -260,7 +287,8 @@ export function extractFinalMessage(agent: AgentName, stdout: string): string {
   const values = parseJsonValues(stdout);
   if (agent === "antigravity") {
     const candidates = values.flatMap((value) => collectCandidates(value, agent));
-    return candidates.at(-1)?.trim() ?? (values.length === 0 ? stdout.trim() : "");
+    if (candidates.length > 0) return candidates.at(-1)?.trim() ?? "";
+    return values.some(isAntigravityTraceValue) ? "" : stdout.trim();
   }
 
   if (agent === "gemini") {

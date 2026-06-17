@@ -83,6 +83,11 @@ test("extracts Antigravity final message from plain text output", () => {
   assert.equal(extractFinalMessage("antigravity", "\nfinal antigravity answer\n"), "final antigravity answer");
 });
 
+test("extracts Antigravity JSON-shaped plain text answers", () => {
+  assert.equal(extractFinalMessage("antigravity", '{"ok":true}\n'), '{"ok":true}');
+  assert.equal(extractFinalMessage("antigravity", "[1,2,3]\n"), "[1,2,3]");
+});
+
 test("extracts Antigravity final message from native transcript records", () => {
   assert.equal(
     extractFinalMessage(
