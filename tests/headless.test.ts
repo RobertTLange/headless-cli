@@ -1526,7 +1526,10 @@ test("CLI --session stores and resumes Antigravity conversations from brain tran
           "  process.exit(17);",
           "}",
           "const id = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : 'agy-session-1';",
-          "const transcript = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'brain', id, 'transcript.jsonl');",
+          "const cache = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json');",
+          "const transcript = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');",
+          "fs.mkdirSync(path.dirname(cache), { recursive: true });",
+          "fs.writeFileSync(cache, JSON.stringify({ [process.cwd()]: id }));",
           "fs.mkdirSync(path.dirname(transcript), { recursive: true });",
           "fs.writeFileSync(transcript, [",
           "  JSON.stringify({ type: 'SESSION_META', payload: { cwd: process.cwd() } }),",
@@ -4155,8 +4158,19 @@ test("CLI Antigravity --tmux --wait claims its brain transcript without a marker
     const binDir = join(dir, "bin");
     const workDir = join(dir, "work");
     const captureFile = join(dir, "tmux.jsonl");
-    const transcriptPath = join(home, ".gemini", "antigravity-cli", "brain", "agy-wait-1", "transcript.jsonl");
+    const transcriptPath = join(home, ".gemini", "antigravity-cli", "brain", "agy-wait-1", ".system_generated", "logs", "transcript.jsonl");
+    const distractorPath = join(home, ".gemini", "antigravity-cli", "brain", "agy-distractor", ".system_generated", "logs", "transcript.jsonl");
+    const hasSessionMarker = join(dir, "has-session-once");
     mkdirSync(workDir, { recursive: true });
+    mkdirSync(dirname(distractorPath), { recursive: true });
+    writeFileSync(
+      distractorPath,
+      [
+        JSON.stringify({ timestamp: "2026-05-14T09:59:00.000Z", type: "PLANNER_RESPONSE", status: "DONE", content: "old distractor" }),
+        "",
+      ].join("\n"),
+    );
+    utimesSync(distractorPath, new Date("2026-05-14T09:59:00.000Z"), new Date("2026-05-14T09:59:00.000Z"));
     await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
       await mkdir(binDir);
       await writeFile(
@@ -4170,12 +4184,32 @@ test("CLI Antigravity --tmux --wait claims its brain transcript without a marker
           "if (args[0] === 'new-session') {",
           "  fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
           "  fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
-          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'SESSION_META', payload: { cwd: args[5] } }),",
-          "    JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'antigravity wait final' }),",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'USER_INPUT', status: 'DONE', content: 'hello' }),",
+          "    '',",
+          "  ].join('\\n'));",
+          "  fs.writeFileSync(process.env.HEADLESS_DISTRACTOR_TRANSCRIPT, [",
+          "    JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'wrong distractor final' }),",
           "    '',",
           "  ].join('\\n'));",
           "}",
-          "if (args[0] === 'has-session') process.exit(0);",
+          "if (args[0] === 'has-session') {",
+          "  if (!fs.existsSync(process.env.HEADLESS_HAS_SESSION_MARKER)) {",
+          "    fs.writeFileSync(process.env.HEADLESS_HAS_SESSION_MARKER, '1');",
+          "    for (let index = 0; index < 25; index += 1) {",
+          "      const newer = path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'brain', `agy-newer-${index}`, '.system_generated', 'logs', 'transcript.jsonl');",
+          "      fs.mkdirSync(path.dirname(newer), { recursive: true });",
+          "      fs.writeFileSync(newer, [",
+          "        JSON.stringify({ timestamp: '2026-05-14T10:00:03.000Z', type: 'PLANNER_RESPONSE', status: 'DONE', content: `newer ${index}` }),",
+          "        '',",
+          "      ].join('\\n'));",
+          "    }",
+          "    fs.appendFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "      JSON.stringify({ timestamp: '2026-05-14T10:00:04.000Z', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'antigravity wait final' }),",
+          "      '',",
+          "    ].join('\\n'));",
+          "  }",
+          "  process.exit(0);",
+          "}",
           "",
         ].join("\n"),
       );
@@ -4188,6 +4222,8 @@ test("CLI Antigravity --tmux --wait claims its brain transcript without a marker
         ...process.env,
         HEADLESS_TMUX_CAPTURE: captureFile,
         HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        HEADLESS_DISTRACTOR_TRANSCRIPT: distractorPath,
+        HEADLESS_HAS_SESSION_MARKER: hasSessionMarker,
         HEADLESS_TRANSCRIPT: transcriptPath,
         HOME: home,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,

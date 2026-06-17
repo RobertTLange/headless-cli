@@ -9,6 +9,7 @@ import {
   deriveNativeTranscriptActivity,
   indexNativeAssistantCompletion,
   resolveLatestNativeTranscript,
+  resolveLatestNativeTranscripts,
   resolveNativeTranscript,
 } from "../src/native-transcripts.ts";
 
@@ -20,7 +21,16 @@ test("resolves native transcript files for jsonl-backed agents", () => {
     mkdirSync(workDir, { recursive: true });
     const realWorkDir = realpathSync(workDir);
     const claudePath = join(home, ".claude", "projects", realWorkDir.replace(/\//g, "-"), "claude-session.jsonl");
-    const antigravityPath = join(home, ".gemini", "antigravity-cli", "brain", "antigravity-session", "transcript.jsonl");
+    const antigravityPath = join(
+      home,
+      ".gemini",
+      "antigravity-cli",
+      "brain",
+      "antigravity-session",
+      ".system_generated",
+      "logs",
+      "transcript.jsonl",
+    );
     const codexPath = join(home, ".codex", "sessions", "2026", "05", "13", "rollout-2026-05-13T11-12-33-codex-thread.jsonl");
     const cursorPath = join(
       home,
@@ -119,15 +129,19 @@ test("resolves latest Antigravity brain transcript for a workspace", () => {
     mkdirSync(otherWorkDir, { recursive: true });
     const realWorkDir = realpathSync(workDir);
     const brainRoot = join(home, ".gemini", "antigravity-cli", "brain");
-    const targetPath = join(brainRoot, "conversation-target", "transcript.jsonl");
-    const otherPath = join(brainRoot, "conversation-other", "transcript.jsonl");
+    const targetPath = join(brainRoot, "conversation-target", ".system_generated", "logs", "transcript.jsonl");
+    const otherPath = join(brainRoot, "conversation-other", ".system_generated", "logs", "transcript.jsonl");
     for (const path of [targetPath, otherPath]) {
       mkdirSync(dirname(path), { recursive: true });
     }
+    mkdirSync(join(home, ".gemini", "antigravity-cli", "cache"), { recursive: true });
+    writeFileSync(
+      join(home, ".gemini", "antigravity-cli", "cache", "last_conversations.json"),
+      `${JSON.stringify({ [realWorkDir]: "conversation-target" })}\n`,
+    );
     writeFileSync(
       targetPath,
       [
-        JSON.stringify({ type: "SESSION_META", payload: { cwd: realWorkDir } }),
         JSON.stringify({ type: "ASSISTANT_RESPONSE", status: "COMPLETED", content: "antigravity final" }),
         "",
       ].join("\n"),
@@ -164,7 +178,16 @@ test("Antigravity transcript discovery requires a workspace match", () => {
     const otherWorkDir = join(dir, "other");
     mkdirSync(workDir, { recursive: true });
     mkdirSync(otherWorkDir, { recursive: true });
-    const otherPath = join(home, ".gemini", "antigravity-cli", "brain", "conversation-other", "transcript.jsonl");
+    const otherPath = join(
+      home,
+      ".gemini",
+      "antigravity-cli",
+      "brain",
+      "conversation-other",
+      ".system_generated",
+      "logs",
+      "transcript.jsonl",
+    );
     mkdirSync(dirname(otherPath), { recursive: true });
     writeFileSync(
       otherPath,
@@ -178,6 +201,54 @@ test("Antigravity transcript discovery requires a workspace match", () => {
     assert.equal(resolveLatestNativeTranscript("antigravity", workDir, { HOME: home }), undefined);
     assert.equal(resolveNativeTranscript("antigravity", "../outside", workDir, { HOME: home }), undefined);
     assert.equal(resolveNativeTranscript("antigravity", join(otherPath), workDir, { HOME: home }), undefined);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Antigravity cache priority merges transcript workspace matches and rejects explicit mismatches", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-native-transcripts-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "work");
+    const otherWorkDir = join(dir, "other");
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(otherWorkDir, { recursive: true });
+    const realWorkDir = realpathSync(workDir);
+    const realOtherWorkDir = realpathSync(otherWorkDir);
+    const root = join(home, ".gemini", "antigravity-cli");
+    const mappedPath = join(root, "brain", "conversation-mapped", ".system_generated", "logs", "transcript.jsonl");
+    const fallbackPath = join(root, "brain", "conversation-fallback", ".system_generated", "logs", "transcript.jsonl");
+    const stalePath = join(root, "brain", "conversation-stale", ".system_generated", "logs", "transcript.jsonl");
+    for (const path of [mappedPath, fallbackPath, stalePath]) {
+      mkdirSync(dirname(path), { recursive: true });
+    }
+    mkdirSync(join(root, "cache"), { recursive: true });
+    writeFileSync(join(root, "cache", "last_conversations.json"), `${JSON.stringify({ [realWorkDir]: "conversation-mapped" })}\n`);
+    writeFileSync(
+      mappedPath,
+      `${JSON.stringify({ type: "PLANNER_RESPONSE", status: "DONE", content: "mapped final" })}\n`,
+    );
+    writeFileSync(
+      fallbackPath,
+      `${JSON.stringify({ type: "SESSION_META", payload: { cwd: realWorkDir } })}\n`,
+    );
+    writeFileSync(
+      stalePath,
+      `${JSON.stringify({ type: "SESSION_META", payload: { cwd: realOtherWorkDir } })}\n`,
+    );
+    utimesSync(mappedPath, new Date("2026-05-13T10:00:00.000Z"), new Date("2026-05-13T10:00:00.000Z"));
+    utimesSync(fallbackPath, new Date("2026-05-13T10:02:00.000Z"), new Date("2026-05-13T10:02:00.000Z"));
+    utimesSync(stalePath, new Date("2026-05-13T10:03:00.000Z"), new Date("2026-05-13T10:03:00.000Z"));
+
+    const transcripts = resolveLatestNativeTranscripts("antigravity", workDir, { HOME: home }, {}, 5);
+    assert.deepEqual(
+      transcripts.map((transcript) => transcript.path),
+      [mappedPath, fallbackPath],
+    );
+
+    writeFileSync(join(root, "cache", "last_conversations.json"), `${JSON.stringify({ [realWorkDir]: "conversation-stale" })}\n`);
+    assert.equal(resolveLatestNativeTranscript("antigravity", workDir, { HOME: home })?.path, fallbackPath);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -2064,7 +2064,7 @@ function createTmuxWaitSnapshot(
     startedAt: new Date().toISOString(),
     strategy,
     transcripts: new Map(
-      resolveLatestNativeTranscripts(agent, workDir, env, {}, 20).map((transcript) => [
+      resolveLatestNativeTranscripts(agent, workDir, env, {}, 20, claimTranscriptOptions(agent)).map((transcript) => [
         tmuxWaitTranscriptIdentity(transcript),
         transcript.kind === "jsonl" ? statSync(transcript.path).size : undefined,
       ]),
@@ -2124,9 +2124,34 @@ function claimedTranscript(
   snapshot: TmuxWaitSnapshot,
 ): ReturnType<typeof resolveLatestNativeTranscripts>[number] | undefined {
   const claimedPath = snapshot.strategy.kind === "claim" ? snapshot.strategy.claimed : undefined;
-  return resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find((candidate) =>
-    claimedPath ? candidate.path === claimedPath : !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
+  if (claimedPath && existsSync(claimedPath)) {
+    return {
+      kind: "jsonl",
+      path: claimedPath,
+      sessionId: claimedNativeIdFromPath(agent, claimedPath),
+      startedAt: snapshot.startedAt,
+      endOffset: statSync(claimedPath).size,
+    };
+  }
+  return resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20, claimTranscriptOptions(agent)).find((candidate) =>
+    !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
   );
+}
+
+function claimedNativeIdFromPath(agent: AgentName, path: string): string | undefined {
+  if (agent === "antigravity") {
+    const parts = path.split("/");
+    const brainIndex = parts.lastIndexOf("brain");
+    const nativeId = brainIndex >= 0 ? parts[brainIndex + 1] : undefined;
+    return nativeId && /^[A-Za-z0-9_.:-]+$/.test(nativeId) ? nativeId : undefined;
+  }
+  if (agent === "codex") {
+    const name = path.split("/").at(-1)?.replace(/\.jsonl$/, "");
+    if (!name) return undefined;
+    const match = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name);
+    return match?.[1] ?? name;
+  }
+  return undefined;
 }
 
 function readTmuxFinalMessage(agent: AgentName, workDir: string, env: Env, snapshot: TmuxWaitSnapshot): string {
@@ -2311,6 +2336,14 @@ function realWorkspaceForLock(workDir: string): string {
   }
 }
 
+function claimLockScope(agent: AgentName, workDir: string): string {
+  return agent === "antigravity" ? "__global_antigravity_brain__" : realWorkspaceForLock(workDir);
+}
+
+function claimTranscriptOptions(agent: AgentName): Parameters<typeof resolveLatestNativeTranscripts>[5] {
+  return agent === "antigravity" ? { antigravityScope: "all" } : {};
+}
+
 // Poll until a transcript that did not exist before launch appears, so the claim
 // tier can lock onto exactly this run's transcript before the launch lock is released.
 async function claimNewTranscriptPath(
@@ -2324,7 +2357,7 @@ async function claimNewTranscriptPath(
   const intervalMs = parseDelayMs(env.HEADLESS_TMUX_WAIT_INTERVAL_MS, 1000);
   const deadline = timeoutSeconds === undefined ? undefined : Date.now() + timeoutSeconds * 1000;
   while (true) {
-    const fresh = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find(
+    const fresh = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20, claimTranscriptOptions(agent)).find(
       (candidate) => !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
     );
     if (fresh) return fresh.path;
@@ -3327,12 +3360,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         trustCursorWorkspace(cwd, env);
       }
 
-      // The claim tier holds a per-(agent, workspace) lock only across launch and
-      // the moment a brand-new transcript appears, so concurrent same-workspace
-      // runs can't claim each other's transcript. Released before the long wait.
+      // The claim tier holds a short launch lock until a brand-new transcript
+      // appears, then releases before the long wait.
       const claimLock =
         waitPlan?.strategy.kind === "claim"
-          ? acquireLaunchLock(env, parsed.agent, realWorkspaceForLock(tmuxWaitWorkDir))
+          ? acquireLaunchLock(env, parsed.agent, claimLockScope(parsed.agent, tmuxWaitWorkDir))
           : undefined;
       const waitSnapshot = waitPlan
         ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env, waitPlan.strategy)

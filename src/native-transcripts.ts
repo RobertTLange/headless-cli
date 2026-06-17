@@ -14,6 +14,10 @@ export interface NativeAssistantCompletion {
   path: string;
 }
 
+interface ResolveLatestOptions {
+  antigravityScope?: "workspace" | "all";
+}
+
 export function resolveNativeTranscript(
   agent: AgentName,
   nativeId: string | undefined,
@@ -101,6 +105,7 @@ export function resolveLatestNativeTranscripts(
   env: Env,
   partial: Partial<NativeTranscript> = {},
   limit = 20,
+  options: ResolveLatestOptions = {},
 ): NativeTranscript[] {
   const workspace = realWorkspace(workDir);
   if (!workspace) return [];
@@ -112,7 +117,7 @@ export function resolveLatestNativeTranscripts(
     agent === "claude"
       ? latestFiles(claudeProjectRoot(workspace, env), partial)
       : agent === "antigravity"
-        ? latestAntigravityTranscripts(workspace, workDir, env, partial)
+        ? latestAntigravityTranscripts(workspace, workDir, env, partial, options.antigravityScope ?? "workspace")
       : agent === "codex"
         ? latestWorkspaceFiles(codexSessionsRoot(env), workspace, workDir, partial)
         : agent === "cursor"
@@ -228,7 +233,7 @@ function antigravityRoot(env: Env): string | undefined {
 function antigravityTranscriptPath(nativeId: string, env: Env): string | undefined {
   if (!/^[A-Za-z0-9_.:-]+$/.test(nativeId)) return undefined;
   const root = antigravityRoot(env);
-  return root ? join(root, "brain", nativeId, "transcript.jsonl") : undefined;
+  return root ? join(root, "brain", nativeId, ".system_generated", "logs", "transcript.jsonl") : undefined;
 }
 
 function codexSessionsRoot(env: Env): string | undefined {
@@ -333,6 +338,7 @@ function latestAntigravityTranscripts(
   workDir: string | undefined,
   env: Env,
   partial: Partial<NativeTranscript>,
+  scope: "workspace" | "all",
 ): string[] {
   const root = antigravityRoot(env);
   const brainRoot = root ? join(root, "brain") : undefined;
@@ -340,15 +346,46 @@ function latestAntigravityTranscripts(
   const startedAtMs = partial.startedAt ? Date.parse(partial.startedAt) : Number.NaN;
   const candidates = readdirSync(brainRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => join(brainRoot, entry.name, "transcript.jsonl"))
+    .flatMap((entry) => [
+      join(brainRoot, entry.name, ".system_generated", "logs", "transcript.jsonl"),
+      join(brainRoot, entry.name, "transcript.jsonl"),
+    ])
+    .filter((path, index, paths) => paths.indexOf(path) === index)
     .filter((path) => {
       if (!existsSync(path)) return false;
       const stat = statSync(path);
       return !Number.isFinite(startedAtMs) || stat.mtimeMs >= startedAtMs;
     })
     .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs || right.localeCompare(left));
+  if (scope === "all") return candidates;
   const needles = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
-  return candidates.filter((path) => fileHasWorkspaceCwd(path, needles));
+  const mappedIds = antigravityConversationIdsForWorkspace(root, needles);
+  const mapped = candidates.filter((path) => {
+    const nativeId = nativeIdFromPath("antigravity", path);
+    return Boolean(nativeId && mappedIds.includes(nativeId) && fileWorkspaceCwdStatus(path, needles) !== "mismatch");
+  });
+  const fromTranscript = candidates.filter((path) => fileWorkspaceCwdStatus(path, needles) === "match");
+  return uniqueStrings([...mapped, ...fromTranscript]);
+}
+
+function antigravityConversationIdsForWorkspace(root: string | undefined, needles: string[]): string[] {
+  if (!root) return [];
+  const cachePath = join(root, "cache", "last_conversations.json");
+  try {
+    const values = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+    return uniqueStrings(
+      Object.entries(values)
+        .filter(([key]) => {
+          if (needles.includes(key)) return true;
+          const realKey = realWorkspace(key);
+          return Boolean(realKey && needles.includes(realKey));
+        })
+        .map(([, value]) => (typeof value === "string" && /^[A-Za-z0-9_.:-]+$/.test(value) ? value : ""))
+        .filter(Boolean),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function latestOpenCodeTranscripts(
@@ -463,19 +500,25 @@ function latestFiles(root: string | undefined, partial: Partial<NativeTranscript
 }
 
 function fileHasWorkspaceCwd(path: string, needles: string[]): boolean {
+  return fileWorkspaceCwdStatus(path, needles) === "match";
+}
+
+function fileWorkspaceCwdStatus(path: string, needles: string[]): "match" | "mismatch" | "unknown" {
+  let sawCwd = false;
   try {
     for (const line of readFileSync(path, "utf8").split(/\r?\n/).slice(0, 40)) {
       if (!line.trim()) continue;
       const record = JSON.parse(line) as Record<string, unknown>;
       const cwd = cwdFromRecord(record);
-      if (cwd && needles.includes(cwd)) return true;
+      if (cwd) sawCwd = true;
+      if (cwd && needles.includes(cwd)) return "match";
       const realCwd = realWorkspace(cwd);
-      if (realCwd && needles.includes(realCwd)) return true;
+      if (realCwd && needles.includes(realCwd)) return "match";
     }
   } catch {
-    return false;
+    return "unknown";
   }
-  return false;
+  return sawCwd ? "mismatch" : "unknown";
 }
 
 function cwdFromRecord(record: Record<string, unknown>): string {
@@ -490,7 +533,9 @@ function asString(value: unknown): string {
 
 function nativeIdFromPath(agent: AgentName, path: string): string | undefined {
   if (agent === "antigravity") {
-    const nativeId = path.split("/").at(-2);
+    const parts = path.split("/");
+    const brainIndex = parts.lastIndexOf("brain");
+    const nativeId = brainIndex >= 0 ? parts[brainIndex + 1] : undefined;
     return nativeId && /^[A-Za-z0-9_.:-]+$/.test(nativeId) ? nativeId : undefined;
   }
   const name = path.split("/").at(-1)?.replace(/\.jsonl$/, "");
