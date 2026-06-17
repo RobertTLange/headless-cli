@@ -19,6 +19,7 @@ import { acpClientCapabilities } from "../src/acp.ts";
 import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
+import { launchLockPath } from "../src/launch-lock.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
 
@@ -3125,6 +3126,74 @@ test("CLI codex --tmux --wait ignores a transcript that existed before launch", 
 
     assert.equal(code, 0);
     assert.equal(stdout.join(""), "fresh claim final\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI codex --tmux --wait holds the claim lock until the transcript appears", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const transcriptPath = join(home, ".codex", "sessions", "2026", "05", "14", "rollout-delayed.jsonl");
+    const lockObservedPath = join(dir, "lock-observed.txt");
+    mkdirSync(workDir, { recursive: true });
+    const lockPath = launchLockPath({ HOME: home }, "codex", realpathSync(workDir))!;
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "tmux"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const { spawn } = require('node:child_process');",
+          "const args = process.argv.slice(2);",
+          "if (args[0] === 'new-session') {",
+          "  const code = `",
+          "    const fs = require('node:fs');",
+          "    const path = require('node:path');",
+          "    setTimeout(() => {",
+          "      fs.writeFileSync(process.env.HEADLESS_LOCK_OBSERVED, fs.existsSync(process.env.HEADLESS_LOCK_PATH) ? 'present' : 'missing');",
+          "      fs.mkdirSync(path.dirname(process.env.HEADLESS_TRANSCRIPT), { recursive: true });",
+          "      fs.writeFileSync(process.env.HEADLESS_TRANSCRIPT, [",
+          "        JSON.stringify({ timestamp: '2026-05-14T10:00:00.000Z', type: 'session_meta', payload: { id: 'delayed', cwd: process.env.HEADLESS_WORK_DIR } }),",
+          "        JSON.stringify({ timestamp: '2026-05-14T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'delayed claim final' }] } }),",
+          "        JSON.stringify({ timestamp: '2026-05-14T10:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),",
+          "        '',",
+          "      ].join('\\\\n'));",
+          "    }, 120);",
+          "  `;",
+          "  spawn(process.execPath, ['-e', code], { detached: true, env: process.env, stdio: 'ignore' }).unref();",
+          "}",
+          "if (args[0] === 'has-session') process.exit(0);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--timeout", "2"], {
+      env: {
+        ...process.env,
+        HEADLESS_LOCK_OBSERVED: lockObservedPath,
+        HEADLESS_LOCK_PATH: lockPath,
+        HEADLESS_TMUX_CLAIM_TIMEOUT_MS: "20",
+        HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        HEADLESS_TRANSCRIPT: transcriptPath,
+        HEADLESS_WORK_DIR: workDir,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.equal(stdout.join(""), "delayed claim final\n");
+    assert.equal(readFileSync(lockObservedPath, "utf8"), "present");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

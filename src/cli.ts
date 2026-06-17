@@ -2250,8 +2250,7 @@ function realWorkspaceForLock(workDir: string): string {
 }
 
 // Poll until a transcript that did not exist before launch appears, so the claim
-// tier can lock onto exactly this run's transcript. Bounded so a launch that
-// never writes a transcript doesn't hold the launch lock indefinitely.
+// tier can lock onto exactly this run's transcript before the launch lock is released.
 async function claimNewTranscriptPath(
   agent: AgentName,
   sessionName: string,
@@ -2261,14 +2260,16 @@ async function claimNewTranscriptPath(
   timeoutSeconds: number | undefined,
 ): Promise<string | undefined> {
   const intervalMs = parseDelayMs(env.HEADLESS_TMUX_WAIT_INTERVAL_MS, 1000);
-  const capMs = parseDelayMs(env.HEADLESS_TMUX_CLAIM_TIMEOUT_MS, 30_000);
-  const deadline = Date.now() + Math.min(capMs, timeoutSeconds ? timeoutSeconds * 1000 : capMs);
+  const deadline = timeoutSeconds === undefined ? undefined : Date.now() + timeoutSeconds * 1000;
   while (true) {
     const fresh = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find(
       (candidate) => !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
     );
     if (fresh) return fresh.path;
-    if (Date.now() >= deadline || !(await headlessTmuxSessionExists(sessionName, env))) {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw new CliError(`tmux wait timed out after ${timeoutSeconds}s`);
+    }
+    if (!(await headlessTmuxSessionExists(sessionName, env))) {
       return undefined;
     }
     await waitForDelay(intervalMs);
