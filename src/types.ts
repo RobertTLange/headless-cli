@@ -17,7 +17,21 @@ export interface BuildOptions {
   sessionAlias?: string;
   sessionId?: string;
   sessionMode?: "new" | "resume";
+  // Unique non-prompt identity used by `--tmux --wait` to locate this run's
+  // native transcript without injecting a marker into the executed prompt.
+  // Only one is set per launch, matching the agent's wait-resolution tier.
+  sessionTitle?: string; // opencode `--title`
+  sessionDir?: string; // pi `--session-dir`
 }
+
+// How `--tmux --wait` identifies the native transcript for a given harness
+// without polluting the prompt. See waitTierForAgent in agents.ts.
+//  pin   — caller assigns a resolvable new-session id (claude/gemini --session-id)
+//  mint  — round-trip to mint a resumable id, then pin it (cursor create-chat)
+//  tag   — unique metadata resolvable later (opencode --title)
+//  dir   — unique per-run session directory (pi --session-dir)
+//  claim — no caller-assignable id; claim the new transcript under a launch lock (codex)
+export type WaitTier = "pin" | "mint" | "tag" | "dir" | "claim";
 
 export interface BuiltCommand {
   command: string;

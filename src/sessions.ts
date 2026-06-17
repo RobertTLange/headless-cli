@@ -3,10 +3,17 @@ import { dirname, join } from "node:path";
 
 import type { AgentName, Env } from "./types.js";
 
+export type StoredTmuxWaitStrategy =
+  | { kind: "pin"; sessionId: string }
+  | { kind: "title"; title: string }
+  | { kind: "dir"; sessionDir: string }
+  | { kind: "claim"; claimed: string };
+
 export interface StoredSession {
   agent: AgentName;
   alias: string;
-  nativeId: string;
+  nativeId?: string;
+  tmuxWaitStrategy?: StoredTmuxWaitStrategy;
   workDir?: string;
   createdAt: string;
   updatedAt: string;
@@ -41,16 +48,41 @@ export function writeStoredSession(
     agent: session.agent,
     alias: session.alias,
     nativeId: session.nativeId,
+    tmuxWaitStrategy: existing?.tmuxWaitStrategy,
     workDir: session.workDir,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
 
   store.agents[session.agent] = { ...(store.agents[session.agent] ?? {}), [session.alias]: stored };
-  mkdirSync(dirname(path), { recursive: true });
-  const tmpPath = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`);
-  renameSync(tmpPath, path);
+  writeSessionStore(path, store);
+  return stored;
+}
+
+export function writeStoredTmuxSession(
+  env: Env,
+  session: Pick<StoredSession, "agent" | "alias" | "tmuxWaitStrategy" | "workDir">,
+): StoredSession {
+  const path = sessionStorePath(env);
+  if (!path) {
+    throw new Error("HOME is required for --session");
+  }
+
+  const store = readSessionStore(env);
+  const existing = store.agents[session.agent]?.[session.alias];
+  const now = new Date().toISOString();
+  const stored: StoredSession = {
+    agent: session.agent,
+    alias: session.alias,
+    nativeId: existing?.nativeId,
+    tmuxWaitStrategy: session.tmuxWaitStrategy,
+    workDir: session.workDir,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  store.agents[session.agent] = { ...(store.agents[session.agent] ?? {}), [session.alias]: stored };
+  writeSessionStore(path, store);
   return stored;
 }
 
@@ -73,4 +105,11 @@ function readSessionStore(env: Env): SessionStoreFile {
 
 function emptyStore(): SessionStoreFile {
   return { version: 1, agents: {} };
+}
+
+function writeSessionStore(path: string, store: SessionStoreFile): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`);
+  renameSync(tmpPath, path);
 }

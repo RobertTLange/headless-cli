@@ -4,6 +4,7 @@
 
 - Changed Claude model overrides to normalize versioned `opus`, `sonnet`, and `haiku` shorthand such as `opus-4.8` or `sonnet-4.5` to Claude Code model IDs before execution.
 - Changed Claude model normalization to also cover `fable` shorthand, mapping `fable-5` to `claude-fable-5`, including major-only versions without a minor component.
+- Changed `--tmux --wait` to identify each run's native transcript without injecting a marker into the executed prompt, using a per-harness strategy: Claude and Gemini pin `--session-id`, Cursor mints and resumes a session id, OpenCode tags the session with a unique title, Pi isolates the run in its own `--session-dir`, and Codex claims the brand-new transcript under a per-(agent, working-directory) launch lock. This keeps transcript identification correct even when multiple headless runs execute concurrently, including in the same working directory. Set `HEADLESS_TMUX_WAIT_FORCE_MARKER=1` to restore the legacy prompt-marker behavior.
 
 ## 0.3.2 - 2026-05-15
 

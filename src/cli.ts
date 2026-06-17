@@ -31,6 +31,7 @@ import {
   getAgentHarness,
   isAgentName,
   listAgents,
+  waitTierForAgent,
 } from "./agents.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
@@ -70,7 +71,11 @@ import {
   nativeTranscriptIncludesText,
   nativeTranscriptKey,
   resolveLatestNativeTranscripts,
+  resolveNativeTranscript,
+  resolveOpencodeTranscriptByTitle,
+  resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
+import { acquireLaunchLock } from "./launch-lock.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
 import { runCronDaemon } from "./cron.js";
@@ -86,7 +91,7 @@ import {
   validateRunId,
   type RunNode,
 } from "./runs.js";
-import { readStoredSession, sessionStorePath, writeStoredSession } from "./sessions.js";
+import { readStoredSession, sessionStorePath, writeStoredSession, writeStoredTmuxSession, type StoredTmuxWaitStrategy } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
 import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
@@ -101,7 +106,7 @@ import {
   type RunStatus,
 } from "./roles.js";
 import { expandTeamSpecs } from "./teams.js";
-import type { AgentName, AllowMode, BuiltCommand, Env, ReasoningEffort } from "./types.js";
+import type { AgentName, AllowMode, BuildOptions, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
   attach: boolean;
@@ -970,10 +975,22 @@ interface TmuxPostLaunchCommand {
   delayMs: number;
 }
 
+// How the wait loop locates this run's transcript. Every tier resolves a single
+// transcript without reading the injected marker, except the explicit "marker"
+// fallback (kept for the env escape hatch and unidentifiable existing sessions).
+type WaitResolveStrategy =
+  | { kind: "pin"; sessionId: string } // claude/gemini --session-id, cursor minted id, resumed stored id
+  | { kind: "title"; title: string } // opencode --title
+  | { kind: "dir"; sessionDir: string } // pi --session-dir
+  | { kind: "claim"; claimed?: string } // codex: brand-new transcript not in the pre-launch baseline
+  | { kind: "marker"; marker: string }; // last-resort prompt-marker scan
+
 interface TmuxWaitSnapshot {
-  marker: string;
   startedAt: string;
+  // Byte sizes of transcripts that existed before launch, so a resumed session's
+  // stale bytes are skipped and a brand-new transcript is recognised.
   transcripts: Map<string, number | undefined>;
+  strategy: WaitResolveStrategy;
 }
 
 interface HeadlessTmuxSession {
@@ -1173,7 +1190,7 @@ function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env)
     throw new CliError("HOME is required for --session");
   }
   const stored = readStoredSession(env, agent, validAlias);
-  if (stored) {
+  if (stored?.nativeId) {
     return { alias: validAlias, mode: "resume", nativeId: stored.nativeId };
   }
   return {
@@ -1192,16 +1209,7 @@ async function prepareSessionPlan(
   if (!plan || plan.mode !== "new" || agent !== "cursor" || plan.nativeId) {
     return plan;
   }
-  const command = { command: env.CURSOR_CLI_BIN || "agent", args: ["create-chat"] };
-  const result = await captureSimpleCommand(command, cwd, env);
-  if (result.code !== 0) {
-    throw new CliError(result.stderr.trim() || "could not create Cursor session");
-  }
-  const nativeId = result.stdout.trim();
-  if (!nativeId) {
-    throw new CliError("Cursor did not return a session id");
-  }
-  return { ...plan, nativeId };
+  return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
 }
 
 function applySessionPlan(commandOptions: {
@@ -2017,10 +2025,15 @@ function promptWithTmuxWaitMarker(prompt: string, sessionName: string): string {
   return `${prompt}\n\n<!-- ${tmuxWaitMarker(sessionName)} -->`;
 }
 
-function createTmuxWaitSnapshot(agent: AgentName, sessionName: string, workDir: string, env: Env): TmuxWaitSnapshot {
+function createTmuxWaitSnapshot(
+  agent: AgentName,
+  workDir: string,
+  env: Env,
+  strategy: WaitResolveStrategy,
+): TmuxWaitSnapshot {
   return {
-    marker: tmuxWaitMarker(sessionName),
     startedAt: new Date().toISOString(),
+    strategy,
     transcripts: new Map(
       resolveLatestNativeTranscripts(agent, workDir, env, {}, 20).map((transcript) => [
         tmuxWaitTranscriptIdentity(transcript),
@@ -2034,6 +2047,9 @@ function tmuxWaitTranscriptIdentity(transcript: ReturnType<typeof resolveLatestN
   return [transcript.kind, transcript.path, transcript.sessionId ?? ""].join("\t");
 }
 
+// Restrict a transcript to bytes written after the snapshot, so a resumed
+// session's prior turns are ignored. Brand-new transcripts (absent from the
+// baseline) are read whole; sqlite transcripts rely on the startedAt filter.
 function tmuxWaitCandidateWithSnapshot(
   transcript: ReturnType<typeof resolveLatestNativeTranscripts>[number],
   snapshot: TmuxWaitSnapshot,
@@ -2049,18 +2065,74 @@ function tmuxWaitCandidateWithSnapshot(
   return { ...transcript, startOffset, endOffset };
 }
 
+function finalMessageFromTerminalTranscript(
+  agent: AgentName,
+  transcript: ReturnType<typeof resolveLatestNativeTranscripts>[number] | undefined,
+): string {
+  if (!transcript) return "";
+  const activity = deriveNativeTranscriptActivity(agent, transcript, { terminalDonePrecedence: true });
+  if (activity?.reason !== "terminal_done") return "";
+  return activity.message ?? indexNativeAssistantCompletion(agent, transcript)?.message ?? "";
+}
+
+// Read the final message from a transcript resolved directly by id/title/dir,
+// honouring the snapshot baseline so a resumed session's stale turns are skipped.
+function finalMessageFromResolved(
+  agent: AgentName,
+  transcript: ReturnType<typeof resolveLatestNativeTranscripts>[number] | undefined,
+  snapshot: TmuxWaitSnapshot,
+): string {
+  if (!transcript) return "";
+  return finalMessageFromTerminalTranscript(agent, tmuxWaitCandidateWithSnapshot(transcript, snapshot));
+}
+
+// First transcript that did not exist before launch — the `claim` tier's run.
+// A launch lock guarantees only one new transcript can appear in this window.
+function claimedTranscript(
+  agent: AgentName,
+  workDir: string,
+  env: Env,
+  snapshot: TmuxWaitSnapshot,
+): ReturnType<typeof resolveLatestNativeTranscripts>[number] | undefined {
+  const claimedPath = snapshot.strategy.kind === "claim" ? snapshot.strategy.claimed : undefined;
+  return resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find((candidate) =>
+    claimedPath ? candidate.path === claimedPath : !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
+  );
+}
+
 function readTmuxFinalMessage(agent: AgentName, workDir: string, env: Env, snapshot: TmuxWaitSnapshot): string {
-  const candidates = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20);
-  for (const candidate of candidates) {
-    const transcript = tmuxWaitCandidateWithSnapshot(candidate, snapshot);
-    if (!transcript) continue;
-    if (!nativeTranscriptIncludesText(transcript, snapshot.marker)) continue;
-    const activity = deriveNativeTranscriptActivity(agent, transcript, { terminalDonePrecedence: true });
-    if (activity?.reason !== "terminal_done") continue;
-    const message = activity.message ?? indexNativeAssistantCompletion(agent, transcript)?.message;
-    if (message) return message;
+  const strategy = snapshot.strategy;
+  switch (strategy.kind) {
+    case "pin":
+      return finalMessageFromResolved(
+        agent,
+        resolveNativeTranscript(agent, strategy.sessionId, workDir, env, { startedAt: snapshot.startedAt }),
+        snapshot,
+      );
+    case "title":
+      return finalMessageFromResolved(
+        agent,
+        resolveOpencodeTranscriptByTitle(workDir, env, strategy.title, { startedAt: snapshot.startedAt }),
+        snapshot,
+      );
+    case "dir":
+      return finalMessageFromResolved(
+        agent,
+        resolvePiTranscriptInDir(strategy.sessionDir, env, { startedAt: snapshot.startedAt }),
+        snapshot,
+      );
+    case "claim":
+      return finalMessageFromResolved(agent, claimedTranscript(agent, workDir, env, snapshot), snapshot);
+    case "marker": {
+      for (const candidate of resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20)) {
+        const transcript = tmuxWaitCandidateWithSnapshot(candidate, snapshot);
+        if (!transcript || !nativeTranscriptIncludesText(transcript, strategy.marker)) continue;
+        const message = finalMessageFromTerminalTranscript(agent, transcript);
+        if (message) return message;
+      }
+      return "";
+    }
   }
-  return "";
 }
 
 async function waitForTmuxFinalMessage(
@@ -2083,6 +2155,150 @@ async function waitForTmuxFinalMessage(
       const finalMessage = readTmuxFinalMessage(agent, workDir, env, snapshot);
       if (finalMessage) return finalMessage;
       throw new CliError(`tmux session ended before final message: ${sessionName}`);
+    }
+    await waitForDelay(intervalMs);
+  }
+}
+
+async function mintCursorSessionId(cwd: string | undefined, env: Env): Promise<string> {
+  const command = { command: env.CURSOR_CLI_BIN || "agent", args: ["create-chat"] };
+  const result = await captureSimpleCommand(command, cwd, env);
+  if (result.code !== 0) {
+    throw new CliError(result.stderr.trim() || "could not create Cursor session");
+  }
+  const nativeId = result.stdout.trim();
+  if (!nativeId) {
+    throw new CliError("Cursor did not return a session id");
+  }
+  return nativeId;
+}
+
+function createTmuxWaitSessionDir(env: Env, sessionName: string): string {
+  const base = env.HOME ? join(env.HOME, ".headless", "tmux-wait") : ".headless-tmux-wait";
+  const dir = join(base, `${sessionName}-${randomUUID()}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Decide how `--tmux --wait` will locate this run's transcript and what the
+// interactive launch needs (identity flags, prompt). Each tier keeps the prompt
+// clean; only the env-forced marker fallback rewrites it.
+async function resolveTmuxWaitPlan(
+  agent: AgentName,
+  sessionName: string,
+  composedPrompt: string,
+  cwd: string | undefined,
+  env: Env,
+): Promise<{ strategy: WaitResolveStrategy; identity: Partial<BuildOptions>; prompt: string }> {
+  if (isTruthyFlag(env.HEADLESS_TMUX_WAIT_FORCE_MARKER)) {
+    return {
+      strategy: { kind: "marker", marker: tmuxWaitMarker(sessionName) },
+      identity: {},
+      prompt: promptWithTmuxWaitMarker(composedPrompt, sessionName),
+    };
+  }
+  switch (waitTierForAgent(agent)) {
+    case "pin": {
+      const sessionId = randomUUID();
+      return { strategy: { kind: "pin", sessionId }, identity: { sessionMode: "new", sessionId }, prompt: composedPrompt };
+    }
+    case "mint": {
+      const sessionId = await mintCursorSessionId(cwd, env);
+      return { strategy: { kind: "pin", sessionId }, identity: { sessionMode: "new", sessionId }, prompt: composedPrompt };
+    }
+    case "tag": {
+      const title = `headless-wait-${randomUUID()}`;
+      return { strategy: { kind: "title", title }, identity: { sessionMode: "new", sessionTitle: title }, prompt: composedPrompt };
+    }
+    case "dir": {
+      const sessionDir = createTmuxWaitSessionDir(env, sessionName);
+      return { strategy: { kind: "dir", sessionDir }, identity: { sessionMode: "new", sessionDir }, prompt: composedPrompt };
+    }
+    case "claim":
+      return { strategy: { kind: "claim" }, identity: {}, prompt: composedPrompt };
+  }
+}
+
+function isTruthyFlag(value: string | undefined): boolean {
+  return value === "1" || value === "true" || value === "yes";
+}
+
+// Resolving a transcript when sending into an already-running session: reuse the
+// native id recorded when the session was created (clean, no marker); otherwise
+// fall back to the prompt marker since the running session's id is unknown.
+function resolveExistingSessionWaitStrategy(
+  agent: AgentName,
+  alias: string | undefined,
+  sessionName: string,
+  env: Env,
+): WaitResolveStrategy {
+  if (!isTruthyFlag(env.HEADLESS_TMUX_WAIT_FORCE_MARKER) && alias) {
+    const stored = readStoredSession(env, agent, alias);
+    if (stored?.tmuxWaitStrategy) {
+      return waitResolveStrategyFromStored(stored.tmuxWaitStrategy);
+    }
+  }
+  return { kind: "marker", marker: tmuxWaitMarker(sessionName) };
+}
+
+function waitResolveStrategyFromStored(strategy: StoredTmuxWaitStrategy): WaitResolveStrategy {
+  switch (strategy.kind) {
+    case "pin":
+      return { kind: "pin", sessionId: strategy.sessionId };
+    case "title":
+      return { kind: "title", title: strategy.title };
+    case "dir":
+      return { kind: "dir", sessionDir: strategy.sessionDir };
+    case "claim":
+      return { kind: "claim", claimed: strategy.claimed };
+  }
+}
+
+function storedTmuxWaitStrategy(strategy: WaitResolveStrategy): StoredTmuxWaitStrategy | undefined {
+  switch (strategy.kind) {
+    case "pin":
+      return { kind: "pin", sessionId: strategy.sessionId };
+    case "title":
+      return { kind: "title", title: strategy.title };
+    case "dir":
+      return { kind: "dir", sessionDir: strategy.sessionDir };
+    case "claim":
+      return strategy.claimed ? { kind: "claim", claimed: strategy.claimed } : undefined;
+    case "marker":
+      return undefined;
+  }
+}
+
+function realWorkspaceForLock(workDir: string): string {
+  try {
+    return realpathSync(workDir);
+  } catch {
+    return workDir;
+  }
+}
+
+// Poll until a transcript that did not exist before launch appears, so the claim
+// tier can lock onto exactly this run's transcript before the launch lock is released.
+async function claimNewTranscriptPath(
+  agent: AgentName,
+  sessionName: string,
+  workDir: string,
+  env: Env,
+  snapshot: TmuxWaitSnapshot,
+  timeoutSeconds: number | undefined,
+): Promise<string | undefined> {
+  const intervalMs = parseDelayMs(env.HEADLESS_TMUX_WAIT_INTERVAL_MS, 1000);
+  const deadline = timeoutSeconds === undefined ? undefined : Date.now() + timeoutSeconds * 1000;
+  while (true) {
+    const fresh = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find(
+      (candidate) => !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
+    );
+    if (fresh) return fresh.path;
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw new CliError(`tmux wait timed out after ${timeoutSeconds}s`);
+    }
+    if (!(await headlessTmuxSessionExists(sessionName, env))) {
+      return undefined;
     }
     await waitForDelay(intervalMs);
   }
@@ -2969,7 +3185,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
         : undefined;
       if (sessionName && (await headlessTmuxSessionExists(sessionName, env))) {
-        const tmuxPrompt = parsed.wait ? promptWithTmuxWaitMarker(composedPrompt, sessionName) : composedPrompt;
+        const existingStrategy = parsed.wait
+          ? resolveExistingSessionWaitStrategy(parsed.agent, parsed.sessionAlias, sessionName, env)
+          : undefined;
+        const tmuxPrompt =
+          existingStrategy?.kind === "marker" ? promptWithTmuxWaitMarker(composedPrompt, sessionName) : composedPrompt;
         const tmuxCommands = buildTmuxSendCommands(sessionName, tmuxPrompt);
         if (parsed.printCommand) {
           for (const command of tmuxCommands.commands) {
@@ -2977,7 +3197,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           }
           return 0;
         }
-        const waitSnapshot = parsed.wait ? createTmuxWaitSnapshot(parsed.agent, sessionName, tmuxWaitWorkDir, env) : undefined;
+        const waitSnapshot = existingStrategy
+          ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env, existingStrategy)
+          : undefined;
         const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
         if (parsed.runId && parsed.role && nodeId) {
           if (code === 0) {
@@ -3025,12 +3247,18 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       const tmuxNamePart = parsed.sessionAlias ?? parsed.tmuxName ?? String(process.pid);
       const tmuxSessionName = buildHeadlessTmuxSessionName(parsed.agent, tmuxNamePart);
-      const tmuxPrompt = parsed.wait ? promptWithTmuxWaitMarker(composedPrompt, tmuxSessionName) : composedPrompt;
+      // Decide how `--tmux --wait` will locate this run's transcript without a
+      // prompt marker (pin/mint/tag/dir per harness; claim under a launch lock).
+      const waitPlan = parsed.wait
+        ? await resolveTmuxWaitPlan(parsed.agent, tmuxSessionName, composedPrompt, cwd, env)
+        : undefined;
+      const tmuxPrompt = waitPlan?.prompt ?? composedPrompt;
       const tmuxCommandOptions = {
         prompt: tmuxPrompt,
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
+        ...(waitPlan?.identity ?? {}),
       };
       const tmuxCommand =
         parsed.agent === "opencode" && parsed.wait
@@ -3064,10 +3292,44 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         trustCursorWorkspace(cwd, env);
       }
 
-      const waitSnapshot = parsed.wait
-        ? createTmuxWaitSnapshot(parsed.agent, tmuxCommands.sessionName, tmuxWaitWorkDir, env)
+      // The claim tier holds a per-(agent, workspace) lock only across launch and
+      // the moment a brand-new transcript appears, so concurrent same-workspace
+      // runs can't claim each other's transcript. Released before the long wait.
+      const claimLock =
+        waitPlan?.strategy.kind === "claim"
+          ? acquireLaunchLock(env, parsed.agent, realWorkspaceForLock(tmuxWaitWorkDir))
+          : undefined;
+      const waitSnapshot = waitPlan
+        ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env, waitPlan.strategy)
         : undefined;
-      const code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
+      let code: number;
+      try {
+        code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
+        if (code === 0 && waitSnapshot?.strategy.kind === "claim") {
+          const claimed = await claimNewTranscriptPath(
+            parsed.agent,
+            tmuxCommands.sessionName,
+            tmuxWaitWorkDir,
+            env,
+            waitSnapshot,
+            commandTimeoutSeconds,
+          );
+          if (claimed) {
+            waitSnapshot.strategy = { kind: "claim", claimed };
+          }
+        }
+      } finally {
+        claimLock?.release();
+      }
+      const tmuxWaitStrategy = waitSnapshot ? storedTmuxWaitStrategy(waitSnapshot.strategy) : undefined;
+      if (code === 0 && tmuxWaitStrategy && parsed.sessionAlias && sessionStorePath(env)) {
+        writeStoredTmuxSession(env, {
+          agent: parsed.agent,
+          alias: parsed.sessionAlias,
+          tmuxWaitStrategy,
+          workDir: cwd,
+        });
+      }
       if (parsed.runId && parsed.role && nodeId) {
         if (code === 0) {
           registerNode(env, {

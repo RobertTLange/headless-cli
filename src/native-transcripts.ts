@@ -345,6 +345,53 @@ function latestOpenCodeTranscripts(
   return sessionIds.map((sessionId) => ({ kind: "sqlite", path, sessionId, ...partial }));
 }
 
+// Resolve the opencode session whose `title` equals a caller-assigned unique
+// value (the `tag` wait tier). Scoped to the workspace and to sessions updated
+// after the run started, newest first, so a reused title can't match a stale row.
+export function resolveOpencodeTranscriptByTitle(
+  workDir: string | undefined,
+  env: Env,
+  title: string,
+  partial: Partial<NativeTranscript> = {},
+): NativeTranscript | undefined {
+  const path = opencodeDatabasePath(env);
+  const workspace = realWorkspace(workDir);
+  if (!path || !existsSync(path) || !workspace || !title) return undefined;
+  const directories = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
+  const startedAtMs = partial.startedAt ? Date.parse(partial.startedAt) : Number.NaN;
+  const whereDirectory = directories.map((directory) => `'${directory.replaceAll("'", "''")}'`).join(", ");
+  const sqlite = spawnSync(
+    "sqlite3",
+    [
+      path,
+      [
+        "select id",
+        "from session",
+        `where directory in (${whereDirectory})`,
+        `and title = '${title.replaceAll("'", "''")}'`,
+        ...(Number.isFinite(startedAtMs) ? [`and time_updated >= ${Math.floor(startedAtMs)}`] : []),
+        "order by time_updated desc",
+        "limit 1;",
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  const sessionId = sqlite.status === 0 ? sqlite.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
+  return sessionId ? { kind: "sqlite", path, sessionId, ...partial } : undefined;
+}
+
+// Resolve the single transcript pi wrote into a unique per-run --session-dir
+// (the `dir` wait tier). Because the directory is exclusive to this run, the
+// newest .jsonl in it is unambiguously this run's transcript.
+export function resolvePiTranscriptInDir(
+  sessionDir: string,
+  env: Env,
+  partial: Partial<NativeTranscript> = {},
+): NativeTranscript | undefined {
+  const path = latestFiles(sessionDir, partial)[0];
+  return path ? { kind: "jsonl", path, sessionId: nativeIdFromPath("pi", path), ...partial, endOffset: statSync(path).size } : undefined;
+}
+
 function latestWorkspaceFiles(
   root: string | undefined,
   workspace: string,
