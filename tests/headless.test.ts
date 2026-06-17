@@ -96,9 +96,9 @@ test("builds ACP adapter command with read-only permission mode", () => {
 });
 
 test("builds Antigravity one-shot command with explicit cwd", () => {
-  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", workDir: "/repo/project" }, {}), {
+  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", model: "gemini-model", workDir: "/repo/project" }, {}), {
     command: "agy",
-    args: ["-p", "hello", "--cwd", "/repo/project", "--dangerously-skip-permissions"],
+    args: ["--model", "gemini-model", "-p", "hello", "--cwd", "/repo/project", "--dangerously-skip-permissions"],
   });
 });
 
@@ -704,14 +704,15 @@ test("CLI rejects Antigravity session aliases until conversation discovery exist
   assert.match(stderr.join(""), /--session is not supported by antigravity/);
 });
 
-test("CLI rejects Antigravity model selection until a model flag is documented", async () => {
-  const stderr: string[] = [];
+test("CLI passes Antigravity model selection through to agy", async () => {
+  const stdout: string[] = [];
   const code = await runCli(["antigravity", "--model", "gemini-pro", "--prompt", "hello", "--print-command"], {
-    stderr: (text) => stderr.push(text),
+    stdout: (text) => stdout.push(text),
   });
 
-  assert.equal(code, 2);
-  assert.match(stderr.join(""), /--model is not supported by antigravity/);
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /^agy --model gemini-pro -p hello --cwd /);
+  assert.match(stdout.join(""), / --dangerously-skip-permissions\n$/);
 });
 
 test("builds interactive commands for tmux mode", () => {
@@ -735,9 +736,9 @@ test("builds interactive commands for tmux mode", () => {
     args: ["--model", "oc-model", "--dangerously-skip-permissions"],
   });
 
-  assert.deepEqual(buildInteractiveAgentCommand("antigravity", { prompt: "hello" }, {}), {
+  assert.deepEqual(buildInteractiveAgentCommand("antigravity", { prompt: "hello", model: "gemini-model" }, {}), {
     command: "agy",
-    args: ["--dangerously-skip-permissions"],
+    args: ["--model", "gemini-model", "--dangerously-skip-permissions"],
   });
 
   assert.deepEqual(

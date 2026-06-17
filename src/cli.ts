@@ -3142,9 +3142,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const cwd = validateWorkDir(parsed.workDir);
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
-    if (parsed.agent === "antigravity" && configuredDefaults.model) {
-      throw new CliError("--model is not supported by antigravity: no documented agy model flag is available");
-    }
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
       throw new CliError("--role orchestrator with --run cannot use --allow read-only; it must be able to launch child nodes and update run state");
     }

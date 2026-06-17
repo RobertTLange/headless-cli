@@ -5,7 +5,7 @@
 <h1 align="center">Headless CLI</h1>
 
 <p align="center">
-  One CLI entrypoint for running Claude, Codex, Cursor, Gemini, Pi, OpenCode, and ACP-compatible agents in headless mode.
+  One CLI entrypoint for running Antigravity, Claude, Codex, Cursor, Gemini, Pi, OpenCode, and ACP-compatible agents in headless mode.
 </p>
 
 <p align="center">
@@ -59,6 +59,7 @@ printf "Review this diff" | headless pi --model claude-opus
 
 # Preview the native backend command.
 headless gemini --prompt "Summarize the codebase" --print-command
+headless antigravity --prompt "Inspect the current worktree" --print-command
 headless --prompt "identity" --print-command --json
 
 # Run an ACP-compatible agent from the registry or a custom ACP server command.
@@ -85,7 +86,7 @@ headless attach --all
 headless --check
 ```
 
-When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
+When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `antigravity`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
 ## Scheduled Jobs
 
@@ -121,6 +122,7 @@ Roles include `orchestrator`, `explorer`, `worker`, and `reviewer`. Team specs a
 
 | Agent | Install | Binary used by Headless |
 | --- | --- | --- |
+| [Antigravity CLI](https://antigravity.google/docs/cli-overview) | Follow Google's [CLI install docs](https://antigravity.google/docs/cli-getting-started); the upstream installer runs a shell script from `antigravity.google` | `agy`, or set `ANTIGRAVITY_CLI_BIN` / `AGY_CLI_BIN` |
 | [Codex](https://developers.openai.com/codex/cli/reference) | `npm install -g @openai/codex` | `codex` |
 | [Claude Code](https://code.claude.com/docs/en/cli-reference) | `npm install -g @anthropic-ai/claude-code` | `claude` |
 | [Cursor](https://cursor.com/docs/cli/headless) | `curl https://cursor.com/install -fsS \| bash` | `agent`, or set `CURSOR_CLI_BIN=cursor-agent` |

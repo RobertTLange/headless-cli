@@ -173,7 +173,8 @@ function withAntigravityAllow(args: string[], allow: AllowMode | undefined): str
 }
 
 function buildAntigravity(options: BuildOptions, env: Env): BuiltCommand {
-  const args = ["-p", options.prompt, "--cwd", options.workDir ?? env.PWD ?? process.cwd()];
+  const args = withModel([], options.model);
+  args.push("-p", options.prompt, "--cwd", options.workDir ?? env.PWD ?? process.cwd());
   args.push(...withAntigravityAllow([], options.allow));
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--conversation", options.sessionId);
@@ -184,7 +185,7 @@ function buildAntigravity(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 function buildInteractiveAntigravity(options: BuildOptions, env: Env): BuiltCommand {
-  const args = withAntigravityAllow([], options.allow);
+  const args = withAntigravityAllow(withModel([], options.model), options.allow);
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--conversation", options.sessionId);
   } else if (options.sessionMode === "resume") {
