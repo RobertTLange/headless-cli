@@ -2,10 +2,14 @@
 
 ## TBD
 
+## 0.4.0 - 2026-06-18
+
 - Added Antigravity CLI (`agy`) harness support for one-shot prompts, model selection, read-only sandbox mode, native session aliases, tmux launches, `--tmux --wait`, transcript final-message extraction, setup checks, Docker packaging, and README/config documentation.
+- Added README documentation for using `--tmux --wait --delete` as a native TUI completion path, including prompts that use TUI commands such as `\goal`.
 - Changed Claude model overrides to normalize versioned `opus`, `sonnet`, and `haiku` shorthand such as `opus-4.8` or `sonnet-4.5` to Claude Code model IDs before execution.
 - Changed Claude model normalization to also cover `fable` shorthand, mapping `fable-5` to `claude-fable-5`, including major-only versions without a minor component.
 - Changed `--tmux --wait` to identify each run's native transcript without injecting a marker into the executed prompt, using a per-harness strategy: Claude and Gemini pin `--session-id`, Cursor mints and resumes a session id, OpenCode tags the session with a unique title, Pi isolates the run in its own `--session-dir`, and Codex claims the brand-new transcript under a per-(agent, working-directory) launch lock. This keeps transcript identification correct even when multiple headless runs execute concurrently, including in the same working directory. Set `HEADLESS_TMUX_WAIT_FORCE_MARKER=1` to restore the legacy prompt-marker behavior.
+- Fixed Antigravity final-message extraction so JSON-shaped plain text answers are preserved instead of being mistaken for structured trace output.
 
 ## 0.3.2 - 2026-05-15
 
