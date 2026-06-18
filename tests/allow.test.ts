@@ -69,6 +69,11 @@ test("builds read-only commands for supported agents", () => {
     ],
   });
 
+  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", allow: "read-only", workDir: "/work" }, {}), {
+    command: "agy",
+    args: ["-p", "hello", "--sandbox"],
+  });
+
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", allow: "read-only" }, {}), {
     command: "opencode",
     args: ["run", "--format", "json", "--model", "openai/gpt-5.4", "hello"],
@@ -136,6 +141,11 @@ test("builds explicit yolo commands for supported agents", () => {
     "--approval-mode",
     "yolo",
   ]);
+  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", allow: "yolo", workDir: "/work" }, {}).args, [
+    "-p",
+    "hello",
+    "--dangerously-skip-permissions",
+  ]);
   assert.deepEqual(buildAgentCommand("opencode", { prompt: "hello", allow: "yolo" }, {}).args, [
     "run",
     "--format",
@@ -160,12 +170,12 @@ test("builds explicit yolo commands for supported agents", () => {
 });
 
 test("defaults to yolo commands for supported agents", () => {
-  const agents = ["claude", "codex", "cursor", "gemini", "opencode", "pi"] as const;
+  const agents = ["antigravity", "claude", "codex", "cursor", "gemini", "opencode", "pi"] as const;
 
   for (const agent of agents) {
     assert.deepEqual(
-      buildAgentCommand(agent, { prompt: "hello" }, {}),
-      buildAgentCommand(agent, { prompt: "hello", allow: "yolo" }, {}),
+      buildAgentCommand(agent, { prompt: "hello", workDir: "/work" }, {}),
+      buildAgentCommand(agent, { prompt: "hello", allow: "yolo", workDir: "/work" }, {}),
     );
     assert.deepEqual(
       buildInteractiveAgentCommand(agent, { prompt: "hello" }, {}),
@@ -192,6 +202,10 @@ test("builds read-only interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", allow: "read-only" }, {}), {
     command: "gemini",
     args: ["--model", "gemini-3.1-pro-preview", "--skip-trust", "--approval-mode", "plan", "hello"],
+  });
+  assert.deepEqual(buildInteractiveAgentCommand("antigravity", { prompt: "hello", allow: "read-only" }, {}), {
+    command: "agy",
+    args: ["--sandbox"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("opencode", { prompt: "hello", allow: "read-only" }, {}), {
     command: "opencode",
@@ -327,6 +341,16 @@ test("CLI tmux print-command includes allow mode flags", async () => {
 
   assert.equal(code, 0);
   assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search --model gpt-5\.5 hello/);
+});
+
+test("CLI Antigravity tmux print-command includes allow mode flags", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["antigravity", "--tmux", "--allow", "read-only", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /agy --sandbox/);
 });
 
 test("CLI execution passes command environment overrides", async () => {

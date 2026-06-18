@@ -248,6 +248,13 @@ function isTerminalDoneEvent(agent: AgentName, event: NativeActivityEvent): bool
   const partReason = normalizeMarkerText(part.reason);
 
   if (payloadType === "task complete") return true;
+  if (
+    agent === "antigravity" &&
+    (rawType === "planner response" || rawType === "assistant response") &&
+    ["done", "completed"].includes(normalizeMarkerText(raw.status))
+  ) {
+    return true;
+  }
   if (rawType === "assistant" && stopReason === "end turn") return true;
   if (event.kind === "assistant" && stopReason === "stop") return true;
   if (partType === "step finish" && partReason === "stop") return true;
@@ -343,6 +350,7 @@ function eventKindFromRecord(rawType: string, role: string, record: Record<strin
 
 function roleFromRawType(agent: AgentName, rawType: string): string {
   if (rawType === "assistant" || rawType === "model" || rawType === "gemini") return "assistant";
+  if (agent === "antigravity" && (rawType === "planner response" || rawType === "assistant response")) return "assistant";
   if (rawType === "user") return "user";
   if (agent === "gemini" && rawType === "system") return "system";
   return "";

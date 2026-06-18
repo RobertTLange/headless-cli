@@ -14,7 +14,7 @@ import { delimiter, join } from "node:path";
 import { commandFromCustom, resolveAcpCommand } from "./acp.js";
 import { BUILTIN_AGENT_DEFAULTS } from "./config.js";
 
-const agentOrder: AgentName[] = ["acp", "claude", "codex", "cursor", "gemini", "opencode", "pi"];
+const agentOrder: AgentName[] = ["acp", "antigravity", "claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const defaultClaudeModel = BUILTIN_AGENT_DEFAULTS.claude.model;
 const defaultCodexModel = BUILTIN_AGENT_DEFAULTS.codex.model;
 export const DEFAULT_CURSOR_MODEL = BUILTIN_AGENT_DEFAULTS.cursor.model ?? "gpt-5.5";
@@ -159,6 +159,39 @@ function buildAcp(options: BuildOptions, env: Env): BuiltCommand {
     return { command, args, env: commandEnv, stdinText: options.prompt };
   }
   return { command, args, stdinText: options.prompt };
+}
+
+function antigravityCommand(env: Env): string {
+  return env.ANTIGRAVITY_CLI_BIN || env.AGY_CLI_BIN || "agy";
+}
+
+function withAntigravityAllow(args: string[], allow: AllowMode | undefined): string[] {
+  if (allow === "read-only") {
+    return [...args, "--sandbox"];
+  }
+  return allow === "yolo" || allow === undefined ? [...args, "--dangerously-skip-permissions"] : args;
+}
+
+function buildAntigravity(options: BuildOptions, env: Env): BuiltCommand {
+  const args = withModel([], options.model);
+  args.push("-p", options.prompt);
+  args.push(...withAntigravityAllow([], options.allow));
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--conversation", options.sessionId);
+  } else if (options.sessionMode === "resume") {
+    args.push("--continue");
+  }
+  return { command: antigravityCommand(env), args };
+}
+
+function buildInteractiveAntigravity(options: BuildOptions, env: Env): BuiltCommand {
+  const args = withAntigravityAllow(withModel([], options.model), options.allow);
+  if (options.sessionMode === "resume" && options.sessionId) {
+    args.push("--conversation", options.sessionId);
+  } else if (options.sessionMode === "resume") {
+    args.push("--continue");
+  }
+  return { command: antigravityCommand(env), args };
 }
 
 function buildInteractiveAcp(_options: BuildOptions, env: Env): BuiltCommand {
@@ -488,6 +521,15 @@ const harnesses: Record<AgentName, AgentHarness> = {
     buildCommand: buildAcp,
     buildInteractiveCommand: buildInteractiveAcp,
   },
+  antigravity: {
+    name: "antigravity",
+    promptFileMode: "argument",
+    configRelDir: ".gemini/antigravity-cli",
+    workspaceConfigRelDir: ".agents",
+    seedPaths: [".gemini/antigravity-cli", ".gemini/config"],
+    buildCommand: buildAntigravity,
+    buildInteractiveCommand: buildInteractiveAntigravity,
+  },
   claude: {
     name: "claude",
     promptFileMode: "stdin",
@@ -596,6 +638,7 @@ export function buildInteractiveAgentCommand(
 // without injecting a marker into the executed prompt. See WaitTier in types.ts
 // for what each tier means and how the interactive builders consume it.
 const waitTiers: Record<AgentName, WaitTier> = {
+  antigravity: "claim", // claim the new brain/<conversation>/transcript.jsonl under a launch lock
   claude: "pin", // --session-id <uuid>
   gemini: "pin", // --session-id <uuid>
   cursor: "mint", // create-chat mints an id, then --resume <id>

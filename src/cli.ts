@@ -70,6 +70,7 @@ import {
   indexNativeAssistantCompletion,
   nativeTranscriptIncludesText,
   nativeTranscriptKey,
+  resolveLatestNativeTranscript,
   resolveLatestNativeTranscripts,
   resolveNativeTranscript,
   resolveOpencodeTranscriptByTitle,
@@ -695,7 +696,7 @@ function unsupportedReasoningEffortWarning(
   if (mode === "tmux" && agent === "opencode") {
     return "headless: reasoning effort is not supported by opencode in tmux mode and was ignored\n";
   }
-  if (agent === "gemini") {
+  if (agent === "gemini" || agent === "antigravity") {
     return `headless: reasoning effort is not supported by ${agent} and was ignored\n`;
   }
   return undefined;
@@ -870,7 +871,7 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
   return workDir;
 }
 
-const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "cursor"];
+const autoAgentPreference: AgentName[] = ["codex", "claude", "pi", "opencode", "gemini", "antigravity", "cursor"];
 
 function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): AgentName {
   if (preferredAgent && commandExists(commandForAgent(preferredAgent, env), env)) {
@@ -1169,6 +1170,7 @@ interface SessionPlan {
   alias: string;
   mode: "new" | "resume";
   nativeId?: string;
+  startedAt?: string;
 }
 
 function validateSessionAlias(alias: string | undefined): string | undefined {
@@ -1206,15 +1208,22 @@ async function prepareSessionPlan(
   cwd: string | undefined,
   env: Env,
 ): Promise<SessionPlan | undefined> {
-  if (!plan || plan.mode !== "new" || agent !== "cursor" || plan.nativeId) {
+  if (!plan || plan.mode !== "new") {
     return plan;
   }
-  return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
+  if (agent === "cursor" && !plan.nativeId) {
+    return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
+  }
+  if (agent === "antigravity" && !plan.nativeId) {
+    return { ...plan, startedAt: new Date().toISOString() };
+  }
+  return plan;
 }
 
 function applySessionPlan(commandOptions: {
   prompt: string;
   promptFile?: string;
+  workDir?: string;
   model?: string;
   allow?: AllowMode;
   reasoningEffort?: ReasoningEffort;
@@ -1244,7 +1253,7 @@ async function persistSessionPlan(
   if (!plan) {
     return;
   }
-  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env));
+  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env, plan.startedAt));
   if (!nativeId) {
     throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
   }
@@ -1261,6 +1270,7 @@ async function discoverNativeSessionId(
   stdout: string,
   cwd: string | undefined,
   env: Env,
+  startedAt?: string,
 ): Promise<string> {
   const fromTrace = extractNativeSessionId(agent, stdout);
   if (fromTrace) {
@@ -1268,6 +1278,9 @@ async function discoverNativeSessionId(
   }
   if (agent === "gemini") {
     return await newestGeminiSessionId(cwd, env);
+  }
+  if (agent === "antigravity") {
+    return newestAntigravitySessionId(cwd, env, startedAt);
   }
   if (agent === "opencode") {
     return await newestOpenCodeSessionId(cwd, env);
@@ -1289,6 +1302,10 @@ async function newestGeminiSessionId(cwd: string | undefined, env: Env): Promise
   }
   const matches = [...result.stdout.matchAll(/\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]/gi)];
   return matches.at(-1)?.[1] ?? "";
+}
+
+function newestAntigravitySessionId(cwd: string | undefined, env: Env, startedAt: string | undefined): string {
+  return resolveLatestNativeTranscript("antigravity", cwd ?? process.cwd(), env, startedAt ? { startedAt } : {})?.sessionId ?? "";
 }
 
 async function newestOpenCodeSessionId(cwd: string | undefined, env: Env): Promise<string> {
@@ -1478,41 +1495,53 @@ function buildTmuxCommands(
   const sessionName = buildHeadlessTmuxSessionName(agent, customName ?? String(process.pid));
   const startDir = cwd ?? process.cwd();
   const pastePrompt = options.pastePrompt ?? true;
-  const opencodeWakeDelayMs = parseDelayMs(
-    env.HEADLESS_TMUX_OPENCODE_WAKE_DELAY_MS ?? env.HEADLESS_TMUX_OPENCODE_ENTER_DELAY_MS,
-    4000,
-  );
-  const opencodePasteDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_PASTE_DELAY_MS, 1000);
-  const opencodeSubmitDelayMs = parseDelayMs(env.HEADLESS_TMUX_OPENCODE_SUBMIT_DELAY_MS, 1000);
-  const opencodePromptBuffer = `${sessionName}-prompt`;
+  const promptInput = tmuxPromptInput(agent, sessionName, prompt, env, pastePrompt);
   return {
     sessionName,
     newSession: {
       command: "tmux",
       args: ["new-session", "-d", "-s", sessionName, "-c", startDir, quoteCommand(command)],
     },
-    postLaunch:
-      agent === "opencode" && pastePrompt
-        ? [
-            {
-              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
-              delayMs: opencodeWakeDelayMs,
-            },
-            {
-              command: { command: "tmux", args: ["set-buffer", "-b", opencodePromptBuffer, prompt] },
-              delayMs: opencodePasteDelayMs,
-            },
-            {
-              command: { command: "tmux", args: ["paste-buffer", "-d", "-b", opencodePromptBuffer, "-t", sessionName] },
-              delayMs: 0,
-            },
-            {
-              command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
-              delayMs: opencodeSubmitDelayMs,
-            },
-          ]
-        : [],
+    postLaunch: promptInput,
   };
+}
+
+function tmuxPromptInput(
+  agent: AgentName,
+  sessionName: string,
+  prompt: string,
+  env: Env,
+  pastePrompt: boolean,
+): TmuxPostLaunchCommand[] {
+  if (!pastePrompt || (agent !== "opencode" && agent !== "antigravity")) return [];
+
+  const envPrefix = agent === "opencode" ? "OPENCODE" : "ANTIGRAVITY";
+  const wakeDelayMs = parseDelayMs(
+    env[`HEADLESS_TMUX_${envPrefix}_WAKE_DELAY_MS`] ?? env[`HEADLESS_TMUX_${envPrefix}_ENTER_DELAY_MS`],
+    4000,
+  );
+  const pasteDelayMs = parseDelayMs(env[`HEADLESS_TMUX_${envPrefix}_PASTE_DELAY_MS`], 1000);
+  const submitDelayMs = parseDelayMs(env[`HEADLESS_TMUX_${envPrefix}_SUBMIT_DELAY_MS`], 1000);
+  const promptBuffer = `${sessionName}-prompt`;
+
+  return [
+    {
+      command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Space", "BSpace"] },
+      delayMs: wakeDelayMs,
+    },
+    {
+      command: { command: "tmux", args: ["set-buffer", "-b", promptBuffer, prompt] },
+      delayMs: pasteDelayMs,
+    },
+    {
+      command: { command: "tmux", args: ["paste-buffer", "-d", "-b", promptBuffer, "-t", sessionName] },
+      delayMs: 0,
+    },
+    {
+      command: { command: "tmux", args: ["send-keys", "-t", sessionName, "Enter"] },
+      delayMs: submitDelayMs,
+    },
+  ];
 }
 
 function parseDelayMs(value: string | undefined, fallback: number): number {
@@ -2035,7 +2064,7 @@ function createTmuxWaitSnapshot(
     startedAt: new Date().toISOString(),
     strategy,
     transcripts: new Map(
-      resolveLatestNativeTranscripts(agent, workDir, env, {}, 20).map((transcript) => [
+      resolveLatestNativeTranscripts(agent, workDir, env, {}, 20, claimTranscriptOptions(agent)).map((transcript) => [
         tmuxWaitTranscriptIdentity(transcript),
         transcript.kind === "jsonl" ? statSync(transcript.path).size : undefined,
       ]),
@@ -2095,9 +2124,34 @@ function claimedTranscript(
   snapshot: TmuxWaitSnapshot,
 ): ReturnType<typeof resolveLatestNativeTranscripts>[number] | undefined {
   const claimedPath = snapshot.strategy.kind === "claim" ? snapshot.strategy.claimed : undefined;
-  return resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find((candidate) =>
-    claimedPath ? candidate.path === claimedPath : !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
+  if (claimedPath && existsSync(claimedPath)) {
+    return {
+      kind: "jsonl",
+      path: claimedPath,
+      sessionId: claimedNativeIdFromPath(agent, claimedPath),
+      startedAt: snapshot.startedAt,
+      endOffset: statSync(claimedPath).size,
+    };
+  }
+  return resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20, claimTranscriptOptions(agent)).find((candidate) =>
+    !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
   );
+}
+
+function claimedNativeIdFromPath(agent: AgentName, path: string): string | undefined {
+  if (agent === "antigravity") {
+    const parts = path.split("/");
+    const brainIndex = parts.lastIndexOf("brain");
+    const nativeId = brainIndex >= 0 ? parts[brainIndex + 1] : undefined;
+    return nativeId && /^[A-Za-z0-9_.:-]+$/.test(nativeId) ? nativeId : undefined;
+  }
+  if (agent === "codex") {
+    const name = path.split("/").at(-1)?.replace(/\.jsonl$/, "");
+    if (!name) return undefined;
+    const match = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name);
+    return match?.[1] ?? name;
+  }
+  return undefined;
 }
 
 function readTmuxFinalMessage(agent: AgentName, workDir: string, env: Env, snapshot: TmuxWaitSnapshot): string {
@@ -2190,6 +2244,9 @@ async function resolveTmuxWaitPlan(
   cwd: string | undefined,
   env: Env,
 ): Promise<{ strategy: WaitResolveStrategy; identity: Partial<BuildOptions>; prompt: string }> {
+  if (waitTierForAgent(agent) === "unsupported") {
+    throw new CliError(`--tmux --wait is not supported by ${agent}: native transcript resolution is not available`);
+  }
   if (isTruthyFlag(env.HEADLESS_TMUX_WAIT_FORCE_MARKER)) {
     return {
       strategy: { kind: "marker", marker: tmuxWaitMarker(sessionName) },
@@ -2216,6 +2273,8 @@ async function resolveTmuxWaitPlan(
     }
     case "claim":
       return { strategy: { kind: "claim" }, identity: {}, prompt: composedPrompt };
+    case "unsupported":
+      throw new CliError(`--tmux --wait is not supported by ${agent}: native transcript resolution is not available`);
   }
 }
 
@@ -2277,6 +2336,14 @@ function realWorkspaceForLock(workDir: string): string {
   }
 }
 
+function claimLockScope(agent: AgentName, workDir: string): string {
+  return agent === "antigravity" ? "__global_antigravity_brain__" : realWorkspaceForLock(workDir);
+}
+
+function claimTranscriptOptions(agent: AgentName): Parameters<typeof resolveLatestNativeTranscripts>[5] {
+  return agent === "antigravity" ? { antigravityScope: "all" } : {};
+}
+
 // Poll until a transcript that did not exist before launch appears, so the claim
 // tier can lock onto exactly this run's transcript before the launch lock is released.
 async function claimNewTranscriptPath(
@@ -2290,7 +2357,7 @@ async function claimNewTranscriptPath(
   const intervalMs = parseDelayMs(env.HEADLESS_TMUX_WAIT_INTERVAL_MS, 1000);
   const deadline = timeoutSeconds === undefined ? undefined : Date.now() + timeoutSeconds * 1000;
   while (true) {
-    const fresh = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20).find(
+    const fresh = resolveLatestNativeTranscripts(agent, workDir, env, { startedAt: snapshot.startedAt }, 20, claimTranscriptOptions(agent)).find(
       (candidate) => !snapshot.transcripts.has(tmuxWaitTranscriptIdentity(candidate)),
     );
     if (fresh) return fresh.path;
@@ -2532,6 +2599,7 @@ async function executeStoredNode(
       applySessionPlan(
         {
           prompt,
+          workDir: node.workDir,
           model: defaults.model,
           allow,
           reasoningEffort: defaults.reasoningEffort,
@@ -3292,12 +3360,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         trustCursorWorkspace(cwd, env);
       }
 
-      // The claim tier holds a per-(agent, workspace) lock only across launch and
-      // the moment a brand-new transcript appears, so concurrent same-workspace
-      // runs can't claim each other's transcript. Released before the long wait.
+      // The claim tier holds a short launch lock until a brand-new transcript
+      // appears, then releases before the long wait.
       const claimLock =
         waitPlan?.strategy.kind === "claim"
-          ? acquireLaunchLock(env, parsed.agent, realWorkspaceForLock(tmuxWaitWorkDir))
+          ? acquireLaunchLock(env, parsed.agent, claimLockScope(parsed.agent, tmuxWaitWorkDir))
           : undefined;
       const waitSnapshot = waitPlan
         ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env, waitPlan.strategy)
@@ -3394,6 +3461,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       applySessionPlan({
         prompt: composedPrompt,
         promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
+        workDir: cwd ?? process.cwd(),
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,

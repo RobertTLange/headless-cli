@@ -9,6 +9,10 @@ coordination = "session"
 run_status_interval_ms = 5000
 list_waiting_after_ms = 15000
 
+[agents.antigravity]
+# model = "Gemini 3.5 Flash (High)" # Use a name reported by `agy models`.
+# reasoning_effort = "high" # Accepted for config compatibility; execution prints an unsupported warning.
+
 [agents.claude]
 model = "claude-opus-4-6"
 # reasoning_effort = "xhigh"

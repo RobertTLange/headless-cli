@@ -17,6 +17,7 @@ printf "Review this diff" | headless pi --model claude-opus
 | Agent | Command shape |
 | --- | --- |
 | `acp` | `headless acp-client -- <acp-server-command>`, selected with `--acp-agent` or `--acp-command` |
+| `antigravity` | `agy -p ... --dangerously-skip-permissions` |
 | `claude` | `claude -p ... --output-format stream-json --verbose --dangerously-skip-permissions` |
 | `codex` | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ...` |
 | `cursor` | `agent -p --trust --force --output-format stream-json --model gpt-5.5-medium ...` |
@@ -24,9 +25,9 @@ printf "Review this diff" | headless pi --model claude-opus
 | `opencode` | `opencode run --format json --model openai/gpt-5.4 --dangerously-skip-permissions ...` |
 | `pi` | `pi --no-session --mode json --provider openai-codex --model gpt-5.5 --tools read,bash,edit,write ...` |
 
-When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
+When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `antigravity`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
-When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`.
+When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`. Antigravity has no built-in Headless model default; pass one of the names reported by `agy models` with `--model` when you want a per-run override.
 
 ## ACP Agents
 
@@ -58,7 +59,7 @@ Environment equivalents are also supported: `HEADLESS_ACP_AGENT`, `HEADLESS_ACP_
 
 By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only or planning mode where available. Pass `--allow yolo` to request full tool access explicitly.
 
-Pass `--reasoning-effort low|medium|high|xhigh` or `--effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Gemini and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
+Pass `--reasoning-effort low|medium|high|xhigh` or `--effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Antigravity, Gemini, and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
 
 ## Output Modes
 
@@ -136,7 +137,9 @@ Pass `--session <name>` to start or resume a named native session. Headless stor
 headless codex --prompt "Continue the fix" --session bughunt
 ```
 
-Pass `--tmux` to create a detached interactive session named `headless-<agent>-<pid>`, start the selected agent with the prompt as its initial message, print an attach command, and exit. Pass `--wait` with `--tmux` to wait until the agent's native transcript reports completion, then print the final assistant message. `--wait` identifies this run's transcript without altering the executed prompt, using each harness's native mechanism: Claude and Gemini pin a caller-assigned `--session-id`, Cursor mints and resumes a session id, OpenCode tags the session with a unique title, Pi isolates the run in its own `--session-dir`, and Codex claims the brand-new transcript under a short per-(agent, working-directory) launch lock so concurrent runs in the same directory never pick up each other's transcript. Set `HEADLESS_TMUX_WAIT_FORCE_MARKER=1` to fall back to the legacy behavior of appending a single-line marker comment to the prompt. Add `--delete` to kill the tmux session after that final message is captured. Pass `--name <name>` for a stable managed session name. Pass `--session <name>` for start-or-send behavior: if `headless-<agent>-<name>` is active, Headless sends the prompt there; otherwise it starts that named session.
+For Antigravity, Headless stores the native conversation id from `~/.gemini/antigravity-cli/brain/<conversation-id>/transcript.jsonl` after the first successful run and resumes with `agy --conversation <conversation-id>`.
+
+Pass `--tmux` to create a detached interactive session named `headless-<agent>-<pid>`, start the selected agent with the prompt as its initial message, print an attach command, and exit. Pass `--wait` with `--tmux` to wait until the agent's native transcript reports completion, then print the final assistant message. `--wait` identifies this run's transcript without altering the executed prompt, using each harness's native mechanism: Claude and Gemini pin a caller-assigned `--session-id`, Cursor mints and resumes a session id, OpenCode tags the session with a unique title, Pi isolates the run in its own `--session-dir`, and Antigravity/Codex claim the brand-new native transcript under a short per-(agent, working-directory) launch lock so concurrent runs in the same directory never pick up each other's transcript. Set `HEADLESS_TMUX_WAIT_FORCE_MARKER=1` to fall back to the legacy behavior of appending a single-line marker comment to the prompt for supported transcript-backed agents. Add `--delete` to kill the tmux session after that final message is captured. Pass `--name <name>` for a stable managed session name. Pass `--session <name>` for start-or-send behavior: if `headless-<agent>-<name>` is active, Headless sends the prompt there; otherwise it starts that named session.
 
 ```bash
 headless claude --prompt-file task.md --work-dir /path/to/project --tmux
@@ -210,7 +213,7 @@ mkdir -p ~/.headless
 cp config.toml.example ~/.headless/config.toml
 ```
 
-Supported general keys under `[general]` are `timeout_seconds`, `default_agent`, `coordination`, `run_status_interval_ms`, and `list_waiting_after_ms`. Supported agent sections are `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`; supported agent keys are `model` and `reasoning_effort`. ACP backend selection is controlled by `--acp-agent`, `--acp-command`, and the ACP environment variables rather than model defaults.
+Supported general keys under `[general]` are `timeout_seconds`, `default_agent`, `coordination`, `run_status_interval_ms`, and `list_waiting_after_ms`. Supported agent sections are `[agents.antigravity]`, `[agents.claude]`, `[agents.codex]`, `[agents.cursor]`, `[agents.gemini]`, `[agents.opencode]`, and `[agents.pi]`; supported agent keys are `model` and `reasoning_effort`. Antigravity passes `model` through to `agy --model`, and accepts `reasoning_effort` for config compatibility but prints an unsupported warning during execution. ACP backend selection is controlled by `--acp-agent`, `--acp-command`, and the ACP environment variables rather than model defaults.
 
 Precedence:
 
@@ -294,6 +297,7 @@ See [orchestration.md](orchestration.md) for `--role`, `--run`, `--node`, `--tea
 
 ## Environment
 
+- `ANTIGRAVITY_CLI_BIN`, `AGY_CLI_BIN`: Antigravity CLI binary override. Defaults to `agy`.
 - `CODEX_MODEL`: Codex model override when `--model` is omitted.
 - `CURSOR_CLI_BIN`: Cursor CLI binary override. Defaults to `agent`.
 - `CURSOR_API_KEY`: passed to Cursor as `--api-key`.
