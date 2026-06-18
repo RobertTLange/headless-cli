@@ -88,6 +88,17 @@ headless --check
 
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `antigravity`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
+## Native TUI Completion
+
+Use `--tmux --wait --delete` when you want Headless to launch the agent in its native TUI, wait for the final native transcript message, print that message, and then terminate the tmux session after the prompt completes.
+
+```bash
+headless codex --prompt "Fix the failing tests" --tmux --wait --delete
+headless codex --prompt "\goal ship the review fixes" --tmux --wait --delete
+```
+
+This setup circumvents the built-in headless execution mode of each agent harness. Because the agent runs inside its own interactive TUI, native TUI features remain available, including prompts that use commands such as `\goal`.
+
 ## Scheduled Jobs
 
 Headless can run detached one-shot agent invocations on a schedule with a per-user daemon and local state under `~/.headless/cron`.
