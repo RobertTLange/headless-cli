@@ -33,6 +33,7 @@ import {
   listAgents,
   waitTierForAgent,
 } from "./agents.js";
+import { prepareAntigravityUsageCapture, type AntigravityUsageCapture } from "./antigravity-usage.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
@@ -3531,6 +3532,22 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     statusReporter?.start();
     waitingSpinner?.start();
     let result: ExecuteResult | undefined;
+    let antigravityUsageTrace = "";
+    let antigravityUsageCapture: AntigravityUsageCapture | undefined;
+    if (parsed.agent === "antigravity" && parsed.usage && !parsed.docker && !parsed.modal) {
+      try {
+        antigravityUsageCapture = prepareAntigravityUsageCapture(env);
+        if (antigravityUsageCapture) {
+          command = {
+            ...command,
+            env: { ...(command.env ?? {}), ...antigravityUsageCapture.commandEnv },
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        displayStderr(`headless: could not prepare Antigravity usage capture: ${message}\n`);
+      }
+    }
     try {
       if (parsed.runId && parsed.role && nodeId) {
         updateNodeStatus(env, parsed.runId, nodeId, "busy");
@@ -3586,6 +3603,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     } finally {
       waitingSpinner?.stop();
       statusReporter?.stop();
+      antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
+      antigravityUsageCapture?.cleanup();
     }
     if (!result) {
       throw new CliError("agent execution did not produce a result");
@@ -3593,12 +3612,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (result.code === 0 && sessionPlan) {
       await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
     }
+    const usageTrace = antigravityUsageTrace ? `${result.stdout}\n${antigravityUsageTrace}` : result.stdout;
     if (parsed.json) {
       if (parsed.usage) {
         if (result.stdout && !result.stdout.endsWith("\n")) {
           stdout("\n");
         }
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
+        stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
     }
@@ -3614,7 +3634,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(`${finalMessage}\n`);
       }
       if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
+        stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
     }
