@@ -244,7 +244,7 @@ function usage(): string {
     "  --timeout <s>        One-shot command timeout in seconds.",
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
-    "  --usage              Print final message plus normalized token and cost JSON.",
+    "  --usage              Append normalized token and API-equivalent cost JSON.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --wait               With --tmux, wait for native transcript completion and print the final message.",
     "  --delete             With --tmux --wait, kill the tmux session after completion.",
@@ -927,7 +927,7 @@ function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env):
 
 async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
   const summary = extractUsageSummary(agent, stdout, context);
-  if (summary.pricingStatus === "native") {
+  if (summary.usageStatus === "missing" || summary.pricingStatus === "native") {
     return `${JSON.stringify({ usage: priceUsageSummary(summary, {}) })}\n`;
   }
   try {
@@ -2521,9 +2521,6 @@ function validateCronAddCliOptions(parsed: ParsedArgs): void {
   if (parsed.docker && parsed.modal) {
     throw new CliError("--docker cannot be used with --modal");
   }
-  if (parsed.usage && parsed.json) {
-    throw new CliError("--usage cannot be used with --json");
-  }
   if (parsed.debug && parsed.json) {
     throw new CliError("--debug cannot be used with --json");
   }
@@ -3113,9 +3110,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.wait && parsed.printCommand) {
       throw new CliError("--wait cannot be used with --print-command");
     }
-    if (parsed.usage && parsed.json) {
-      throw new CliError("--usage cannot be used with --json");
-    }
     if (parsed.usage && parsed.tmux) {
       throw new CliError("--usage cannot be used with --tmux");
     }
@@ -3509,7 +3503,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     const stdoutHandling: StdoutHandling = parsed.json
-      ? parsed.sessionAlias || parsed.runId
+      ? parsed.usage || parsed.sessionAlias || parsed.runId
         ? "capture-and-stream"
         : "stream"
       : parsed.debug
@@ -3600,6 +3594,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
     }
     if (parsed.json) {
+      if (parsed.usage) {
+        if (result.stdout && !result.stdout.endsWith("\n")) {
+          stdout("\n");
+        }
+        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
+      }
       return result.code;
     }
 

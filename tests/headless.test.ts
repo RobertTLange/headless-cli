@@ -2438,6 +2438,7 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
         outputTokens: 100,
         reasoningOutputTokens: 0,
         totalTokens: 1100,
+        usageStatus: "reported",
         cost: {
           input: 0.00075,
           cacheRead: 0.00005,
@@ -2445,10 +2446,116 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
           output: 0.001,
           total: 0.0018,
         },
+        costBasis: "api-list-price-estimate",
         pricingSource: "models.dev",
         pricingStatus: "priced",
       },
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage streams raw trace and appends usage without requiring a final message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    const firstRecord = { type: "thread.started", thread_id: "thread-1" };
+    const usageRecord = {
+      type: "turn.completed",
+      usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 100 },
+    };
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          `console.log(${JSON.stringify(JSON.stringify(firstRecord))});`,
+          `setTimeout(() => console.log(${JSON.stringify(JSON.stringify(usageRecord))}), 150);`,
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5": { cost: { input: 1.25, cache_read: 0.125, output: 10 } },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    let completed = false;
+    const result = runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--json", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    }).finally(() => {
+      completed = true;
+    });
+
+    await waitFor(() => stdout.join("").startsWith(`${JSON.stringify(firstRecord)}\n`) && !completed);
+    assert.equal(completed, false);
+    assert.equal(await result, 0);
+
+    const lines = stdout.join("").trim().split("\n");
+    assert.deepEqual(JSON.parse(lines[0] ?? ""), firstRecord);
+    assert.deepEqual(JSON.parse(lines[1] ?? ""), usageRecord);
+    const usage = JSON.parse(lines[2] ?? "").usage;
+    assert.equal(usage.inputTokens, 600);
+    assert.equal(usage.cacheReadTokens, 400);
+    assert.equal(usage.outputTokens, 100);
+    assert.equal(usage.usageStatus, "reported");
+    assert.equal(usage.cost.total, 0.0018);
+    assert.equal(usage.costBasis, "api-list-price-estimate");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage appends partial usage and preserves a nonzero agent status", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }));",
+          "process.exitCode = 7;",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 7);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(JSON.parse(lines[0] ?? "").type, "turn.completed");
+    const usage = JSON.parse(lines[1] ?? "").usage;
+    assert.equal(usage.totalTokens, 12);
+    assert.equal(usage.usageStatus, "reported");
+    assert.equal(usage.cost, null);
+    assert.equal(usage.costBasis, null);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
@@ -2503,6 +2610,7 @@ test("CLI --usage prices Codex hard default model", async () => {
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
     assert.equal(usage.model, "gpt-5.5");
     assert.equal(usage.pricingStatus, "priced");
+    assert.equal(usage.costBasis, "api-list-price-estimate");
     assert.deepEqual(usage.cost, {
       input: 0.002,
       cacheRead: 0,
@@ -2564,6 +2672,7 @@ test("CLI --usage reports Cursor reasoning model variant", async () => {
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
     assert.equal(usage.model, "gpt-5.5-extra-high");
     assert.equal(usage.pricingStatus, "priced");
+    assert.equal(usage.costBasis, "api-list-price-estimate");
     assert.deepEqual(usage.cost, {
       input: 0.0002,
       cacheRead: 0,
@@ -2644,22 +2753,14 @@ test("CLI --usage reports OpenCode hard default model", async () => {
     assert.equal(usage.provider, "openai");
     assert.equal(usage.model, "gpt-5.4");
     assert.equal(usage.pricingStatus, "native");
+    assert.equal(usage.costBasis, "native-reported");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
 
-test("CLI rejects --usage in raw json and tmux modes", async () => {
+test("CLI rejects --usage in tmux mode", async () => {
   const stderr: string[] = [];
-  assert.equal(
-    await runCli(["codex", "--prompt", "hello", "--usage", "--json"], {
-      stderr: (text) => stderr.push(text),
-    }),
-    2,
-  );
-  assert.match(stderr.join(""), /--usage cannot be used with --json/);
-
-  stderr.length = 0;
   assert.equal(
     await runCli(["codex", "--prompt", "hello", "--usage", "--tmux"], {
       stderr: (text) => stderr.push(text),

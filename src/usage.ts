@@ -41,7 +41,9 @@ export interface UsageSummary {
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
+  usageStatus: "reported" | "missing";
   cost: UsageCostBreakdown | null;
+  costBasis: "native-reported" | "api-list-price-estimate" | null;
   pricingSource: "native" | "models.dev" | null;
   pricingStatus: "native" | "priced" | "missing";
   modelBreakdowns?: UsagePart[];
@@ -136,7 +138,9 @@ function summarizeUsage(options: {
   cacheWriteTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
+  usageStatus?: UsageSummary["usageStatus"];
   cost?: UsageCostBreakdown | null;
+  costBasis?: UsageSummary["costBasis"];
   pricingSource?: UsageSummary["pricingSource"];
   pricingStatus?: UsageSummary["pricingStatus"];
   reasoningOutputIncludedInOutput?: boolean;
@@ -157,7 +161,9 @@ function summarizeUsage(options: {
     outputTokens: options.outputTokens,
     reasoningOutputTokens,
     totalTokens,
+    usageStatus: options.usageStatus ?? "reported",
     cost: options.cost ?? null,
+    costBasis: options.costBasis ?? null,
     pricingSource: options.pricingSource ?? null,
     pricingStatus: options.pricingStatus ?? "missing",
     ...(options.modelBreakdowns ? { modelBreakdowns: options.modelBreakdowns } : {}),
@@ -209,6 +215,7 @@ function extractClaudeUsage(records: JsonRecord[], context: { provider?: string;
     cacheWriteTokens: asNumber(usage.cache_creation_input_tokens),
     outputTokens: asNumber(usage.output_tokens),
     cost: totalCost > 0 ? nativeCost(totalCost) : null,
+    costBasis: totalCost > 0 ? "native-reported" : null,
     pricingSource: totalCost > 0 ? "native" : null,
     pricingStatus: totalCost > 0 ? "native" : "missing",
   });
@@ -308,6 +315,7 @@ function extractOpencodeUsage(records: JsonRecord[], context: { provider?: strin
     reasoningOutputTokens: asNumber(tokens.reasoning),
     reasoningOutputIncludedInOutput: false,
     cost: totalCost > 0 ? nativeCost(totalCost) : null,
+    costBasis: totalCost > 0 ? "native-reported" : null,
     pricingSource: totalCost > 0 ? "native" : null,
     pricingStatus: totalCost > 0 ? "native" : "missing",
   });
@@ -337,6 +345,7 @@ function extractPiUsage(records: JsonRecord[], context: { provider?: string; mod
             output: asNumber(cost.output),
           })
         : null,
+    costBasis: totalCost > 0 ? "native-reported" : null,
     pricingSource: totalCost > 0 ? "native" : null,
     pricingStatus: totalCost > 0 ? "native" : "missing",
   });
@@ -369,6 +378,7 @@ export function extractUsageSummary(
       model: extractModel(records, context),
       inputTokens: 0,
       outputTokens: 0,
+      usageStatus: "missing",
     })
   );
 }
@@ -455,6 +465,9 @@ function priceUsagePart(part: UsagePart, pricingData: PricingData): UsageCostBre
 
 export function priceUsageSummary(summary: UsageSummary, pricingData: PricingData): UsageSummary {
   const { modelBreakdowns: _modelBreakdowns, ...publicSummary } = summary;
+  if (summary.usageStatus === "missing") {
+    return { ...publicSummary, cost: null, costBasis: null, pricingSource: null, pricingStatus: "missing" };
+  }
   if (summary.pricingStatus === "native") {
     return publicSummary;
   }
@@ -473,13 +486,19 @@ export function priceUsageSummary(summary: UsageSummary, pricingData: PricingDat
     ];
   const pricedParts = parts.map((part) => priceUsagePart(part, pricingData));
   if (pricedParts.some((part) => part === undefined)) {
-    return { ...publicSummary, cost: null, pricingSource: null, pricingStatus: "missing" };
+    return { ...publicSummary, cost: null, costBasis: null, pricingSource: null, pricingStatus: "missing" };
   }
   const cost = (pricedParts as UsageCostBreakdown[]).reduce(
     (sum, part) => addCost(sum, part),
     { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 },
   );
-  return { ...publicSummary, cost, pricingSource: "models.dev", pricingStatus: "priced" };
+  return {
+    ...publicSummary,
+    cost,
+    costBasis: "api-list-price-estimate",
+    pricingSource: "models.dev",
+    pricingStatus: "priced",
+  };
 }
 
 export async function fetchModelsDevPricing(): Promise<PricingData> {
