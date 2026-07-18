@@ -3018,6 +3018,103 @@ test("CLI --json --usage appends partial usage and preserves a nonzero agent sta
   }
 });
 
+test("CLI --json --usage captures Antigravity status usage without changing real settings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "agy-capture.json");
+    mkdirSync(join(appDir, "brain"), { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(
+      join(appDir, "settings.json"),
+      `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true }, useG1Credits: true })}\n`,
+    );
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const { spawnSync } = require('node:child_process');",
+        "const settings = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8'));",
+        "fs.writeFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify({ home: process.env.HOME, settings }));",
+        "const payload = { conversation_id: 'agy-1', model: { id: 'Gemini 3.5 Flash (Low)', display_name: 'Gemini 3.5 Flash (Low)' }, context_window: { current_usage: { input_tokens: 1000, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 200 } } };",
+        "const status = spawnSync('/bin/sh', ['-c', settings.statusLine.command], { input: JSON.stringify(payload), env: process.env, encoding: 'utf8' });",
+        "if (status.status !== 0) { process.stderr.write(status.stderr); process.exit(status.status ?? 1); }",
+        "process.stdout.write('final answer\\n');",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          google: {
+            models: {
+              "gemini-3.5-flash": { cost: { input: 1.5, cache_read: 0.15, output: 9 } },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      ["antigravity", "--model", "Gemini 3.5 Flash (Low)", "--prompt", "hello", "--json", "--usage"],
+      {
+        env: {
+          ...process.env,
+          ANTIGRAVITY_CLI_BIN: binary,
+          HEADLESS_CAPTURE: captureFile,
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    assert.equal(code, 0);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(lines[0], "final answer");
+    assert.deepEqual(JSON.parse(lines[1]).usage, {
+      agent: "antigravity",
+      provider: "google",
+      model: "Gemini 3.5 Flash (Low)",
+      inputTokens: 1000,
+      cacheReadTokens: 200,
+      cacheWriteTokens: 0,
+      outputTokens: 50,
+      reasoningOutputTokens: 0,
+      totalTokens: 1250,
+      usageStatus: "reported",
+      cost: {
+        input: 0.0015,
+        cacheRead: 0.00003,
+        cacheWrite: 0,
+        output: 0.00045,
+        total: 0.00198,
+      },
+      costBasis: "api-list-price-estimate",
+      pricingSource: "models.dev",
+      pricingStatus: "priced",
+    });
+    const invocation = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.notEqual(invocation.home, home);
+    assert.equal(invocation.settings.statusLine.type, "command");
+    assert.deepEqual(JSON.parse(readFileSync(join(appDir, "settings.json"), "utf8")), {
+      statusLine: { type: "", command: "", enabled: true },
+      useG1Credits: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+
 test("CLI --usage prices Codex hard default model", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;

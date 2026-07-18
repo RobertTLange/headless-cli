@@ -33,6 +33,7 @@ import {
   listAgents,
   waitTierForAgent,
 } from "./agents.js";
+import { prepareAntigravityUsageCapture, type AntigravityUsageCapture } from "./antigravity-usage.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
@@ -3689,6 +3690,22 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     statusReporter?.start();
     waitingSpinner?.start();
     let result: ExecuteResult | undefined;
+    let antigravityUsageTrace = "";
+    let antigravityUsageCapture: AntigravityUsageCapture | undefined;
+    if (parsed.agent === "antigravity" && parsed.usage && !parsed.docker && !parsed.modal) {
+      try {
+        antigravityUsageCapture = prepareAntigravityUsageCapture(env);
+        if (antigravityUsageCapture) {
+          command = {
+            ...command,
+            env: { ...(command.env ?? {}), ...antigravityUsageCapture.commandEnv },
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        displayStderr(`headless: could not prepare Antigravity usage capture: ${message}\n`);
+      }
+    }
     try {
       if (parsed.runId && parsed.role && nodeId) {
         updateNodeStatus(env, parsed.runId, nodeId, "busy");
@@ -3731,66 +3748,71 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             timeoutSeconds: commandTimeoutSeconds,
             captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
           });
-      if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
+      if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
         appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
       }
+    } finally {
+      waitingSpinner?.stop();
+      antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
+      antigravityUsageCapture?.cleanup();
+    }
+    try {
+      if (!result) {
+        throw new CliError("agent execution did not produce a result");
+      }
+      const commandTrace = result.stdout || result.usageTrace || "";
+      const usageTrace = antigravityUsageTrace ? `${commandTrace}\n${antigravityUsageTrace}` : commandTrace;
+      if (result.code === 0 && sessionPlan) {
+        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
+      }
       if (parsed.runId && parsed.role && nodeId) {
-        const commandTrace = result.stdout || result.usageTrace || "";
-        const finalMessage = extractFinalMessage(parsed.agent, commandTrace);
-        const metrics = extractRunNodeMetrics(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env));
+        const finalMessage = extractFinalMessage(parsed.agent, usageTrace);
+        const metrics = extractRunNodeMetrics(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env));
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
         }
       }
+      if (parsed.json) {
+        if (parsed.usage) {
+          const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
+          const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
+          if (stdoutReceived && !stdoutEndsWithNewline) {
+            stdout("\n");
+          }
+          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+        }
+        return result.code;
+      }
+
+      const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
+      if (finalMessage) {
+        if (parsed.debug) {
+          if (!result.stdout.endsWith("\n")) {
+            stdout("\n");
+          }
+          stdout(`--- final message ---\n${finalMessage}\n`);
+        } else {
+          stdout(`${finalMessage}\n`);
+        }
+        if (parsed.usage) {
+          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+        }
+        return result.code;
+      }
+      const agentError = extractAgentError(parsed.agent, result.stdout);
+      if (agentError) {
+        stderr(`headless: ${agentError}\n`);
+        return result.code === 0 ? 1 : result.code;
+      }
+      if (result.code === 0) {
+        stderr("headless: could not extract final message; rerun with --json for raw trace\n");
+        return 1;
+      }
+      return result.code;
     } finally {
-      waitingSpinner?.stop();
       statusReporter?.stop();
     }
-    if (!result) {
-      throw new CliError("agent execution did not produce a result");
-    }
-    const commandTrace = result.stdout || result.usageTrace || "";
-    if (result.code === 0 && sessionPlan) {
-      await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
-    }
-    if (parsed.json) {
-      if (parsed.usage) {
-        const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
-        const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
-        if (stdoutReceived && !stdoutEndsWithNewline) {
-          stdout("\n");
-        }
-        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
-      }
-      return result.code;
-    }
-
-    const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-    if (finalMessage) {
-      if (parsed.debug) {
-        if (!result.stdout.endsWith("\n")) {
-          stdout("\n");
-        }
-        stdout(`--- final message ---\n${finalMessage}\n`);
-      } else {
-        stdout(`${finalMessage}\n`);
-      }
-      if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
-      }
-      return result.code;
-    }
-    const agentError = extractAgentError(parsed.agent, result.stdout);
-    if (agentError) {
-      stderr(`headless: ${agentError}\n`);
-      return result.code === 0 ? 1 : result.code;
-    }
-    if (result.code === 0) {
-      stderr("headless: could not extract final message; rerun with --json for raw trace\n");
-      return 1;
-    }
-    return result.code;
   } catch (error) {
     if (registeredRunNode) {
       try {

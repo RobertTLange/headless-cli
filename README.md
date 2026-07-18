@@ -71,6 +71,7 @@ headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --debug
 headless codex --prompt "Summarize this repo" --usage
 headless codex --prompt "Summarize this repo" --json --usage
+headless antigravity --prompt "Summarize this repo" --usage
 
 # Use read-only mode for review/planning work.
 headless codex --allow read-only --prompt "Review this repo"
