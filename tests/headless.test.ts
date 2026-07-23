@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   buildAgentCommand,
@@ -1506,7 +1506,6 @@ test("CLI forwards suspend and continue signals to timeout-enabled agents", { sk
     rmSync(dir, { force: true, recursive: true });
   }
 });
-
 test("CLI --json --usage keeps usage accounting bounded around a large native trace", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;
@@ -1684,7 +1683,6 @@ test("CLI --json --usage preserves Codex session identity across a large relevan
     rmSync(dir, { force: true, recursive: true });
   }
 });
-
 test("CLI flags override configured role allow and reasoning effort", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -3114,6 +3112,52 @@ test("CLI --json --usage captures Antigravity status usage without changing real
   }
 });
 
+test("CLI cleans the Antigravity usage overlay when the parent receives SIGTERM", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const overlayPath = join(dir, "overlay-home.txt");
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`);
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+        "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 50));",
+        "setTimeout(() => process.kill(process.ppid, 'SIGTERM'), 100);",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        `import { runCli } from ${JSON.stringify(pathToFileURL(join(repoRoot, "src", "cli.ts")).href)};`,
+        "const code = await runCli(['antigravity', '--prompt', 'hello', '--json', '--usage']);",
+        "process.exitCode = code;",
+        "",
+      ].join("\n"),
+    );
+
+    const child = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(child.status, 143, child.stderr);
+    assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
 
 test("CLI --usage prices Codex hard default model", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));

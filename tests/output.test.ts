@@ -490,6 +490,7 @@ test("does not price missing usage as zero", () => {
 
 test("classifies malformed usage-shaped records as missing", () => {
   const cases: Array<[AgentName, unknown]> = [
+    ["antigravity", { type: "headless.antigravity.usage", context_window: { current_usage: { unexpected: true } } }],
     ["claude", { type: "result", usage: { unexpected: true } }],
     ["codex", { type: "turn.completed", usage: { unexpected: true } }],
     ["cursor", { type: "result", usage: { unexpected: true } }],

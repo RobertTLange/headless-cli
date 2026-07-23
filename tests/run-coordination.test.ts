@@ -442,6 +442,75 @@ test("Antigravity json orchestrators preserve terminal responses for run complet
   }
 });
 
+test("json Antigravity usage is included in persisted run-node metrics", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, "settings.json"),
+      `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`,
+    );
+    const agy = join(binDir, "agy");
+    await writeExecutable(
+      agy,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const { spawnSync } = require('node:child_process');",
+        "const settings = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8'));",
+        "const payload = { conversation_id: 'agy-run', model: { id: 'Gemini 3.5 Flash (Low)', display_name: 'Gemini 3.5 Flash (Low)' }, context_window: { current_usage: { input_tokens: 11, output_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 2 } } };",
+        "const status = spawnSync('/bin/sh', ['-c', settings.statusLine.command], { input: JSON.stringify(payload), env: process.env, encoding: 'utf8' });",
+        "if (status.status !== 0) { process.stderr.write(status.stderr); process.exit(status.status ?? 1); }",
+        "process.stdout.write(JSON.stringify({ type: 'assistant', content: 'antigravity done' }) + '\\n');",
+        "",
+      ].join("\n"),
+    );
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const env = {
+      ...process.env,
+      ANTIGRAVITY_CLI_BIN: agy,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(
+      [
+        "antigravity",
+        "--role",
+        "worker",
+        "--run",
+        "agy-run",
+        "--node",
+        "worker",
+        "--coordination",
+        "oneshot",
+        "--prompt",
+        "hello",
+        "--json",
+        "--usage",
+      ],
+      { env, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
+    );
+
+    assert.equal(code, 0, stderr.join(""));
+    const node = readRun(env, "agy-run")?.nodes.worker;
+    assert.equal(node?.metrics?.inputTokens, 11);
+    assert.equal(node?.metrics?.cacheReadTokens, 2);
+    assert.equal(node?.metrics?.outputTokens, 3);
+    assert.equal(node?.metrics?.totalTokens, 16);
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("orchestrator run rejects read-only mode because it must update run state", async () => {
   const stderr: string[] = [];
   const code = await runCli(

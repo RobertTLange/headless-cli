@@ -229,13 +229,12 @@ function extractAntigravityUsage(
   const record = latestRecordWith(records, (item) => {
     if (asString(item.type) !== "headless.antigravity.usage") return false;
     const usage = asRecord(asRecord(item.context_window).current_usage);
-    return (
-      asNumber(usage.input_tokens) +
-        asNumber(usage.output_tokens) +
-        asNumber(usage.cache_creation_input_tokens) +
-        asNumber(usage.cache_read_input_tokens) >
-      0
-    );
+    return hasNumericField(usage, [
+      "input_tokens",
+      "output_tokens",
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+    ]);
   });
   if (!record) return undefined;
 

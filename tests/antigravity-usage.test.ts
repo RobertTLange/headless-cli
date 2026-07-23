@@ -90,3 +90,49 @@ test("Antigravity usage capture overlays settings and preserves the real home", 
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("Antigravity capture preserves state created by a fresh profile and hides the original command env", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-fresh-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, "settings.json"),
+      `${JSON.stringify({ statusLine: { type: "command", command: "printf original", enabled: true } })}\n`,
+    );
+
+    const capture = prepareAntigravityUsageCapture({
+      HOME: home,
+      HEADLESS_ANTIGRAVITY_STATUS_COMMAND: "secret-from-agent-env",
+    });
+    assert.ok(capture);
+    const overlayHome = capture.commandEnv.HOME ?? "";
+    for (const stateRoot of ["brain", "cache"]) {
+      assert.equal(existsSync(join(home, ".gemini", "antigravity-cli", stateRoot)), true);
+      assert.equal(
+        realpathSync(join(overlayHome, ".gemini", "antigravity-cli", stateRoot)),
+        realpathSync(join(home, ".gemini", "antigravity-cli", stateRoot)),
+      );
+    }
+    assert.equal(capture.commandEnv.HEADLESS_ANTIGRAVITY_STATUS_COMMAND, undefined);
+
+    const overlaySettings = JSON.parse(
+      readFileSync(join(overlayHome, ".gemini", "antigravity-cli", "settings.json"), "utf8"),
+    );
+    const status = spawnSync("/bin/sh", ["-c", overlaySettings.statusLine.command], {
+      encoding: "utf8",
+      env: { ...process.env, HEADLESS_ANTIGRAVITY_STATUS_COMMAND: "secret-from-agent-env", ...capture.commandEnv },
+      input: "{}",
+    });
+    assert.equal(status.status, 0);
+    assert.equal(status.stdout, "original");
+
+    const createdState = join(overlayHome, ".gemini", "antigravity-cli", "brain", "conversation.json");
+    writeFileSync(createdState, "persisted\n");
+    capture.cleanup();
+    assert.equal(readFileSync(join(home, ".gemini", "antigravity-cli", "brain", "conversation.json"), "utf8"), "persisted\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
