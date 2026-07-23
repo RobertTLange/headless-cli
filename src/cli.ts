@@ -888,6 +888,9 @@ function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): Ag
 interface ExecuteResult {
   code: number;
   stdout: string;
+  usageTrace?: string;
+  stdoutReceived?: boolean;
+  stdoutEndsWithNewline?: boolean;
 }
 
 function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
@@ -1022,6 +1025,7 @@ interface ExecuteCommandOptions {
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
   timeoutSeconds?: number;
+  captureRelevantTrace?: boolean;
 }
 
 interface WaitingSpinner {
@@ -1413,8 +1417,45 @@ async function executeCommand(
   try {
     return await new Promise<ExecuteResult>((resolve) => {
       let capturedStdout = "";
+      let stdoutReceived = false;
+      let stdoutEndsWithNewline = false;
+      let traceBuffer = "";
+      const relevantTrace: string[] = [];
+      let relevantTraceBytes = 0;
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
+      let termination: { code: number } | undefined;
+      let forceKill: NodeJS.Timeout | undefined;
+      const maxRelevantTraceBytes = 256 * 1024;
+      const relevantTracePattern =
+        /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text)"|"role"\s*:\s*"assistant"/;
+      const appendRelevantTrace = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed || !relevantTracePattern.test(trimmed)) return;
+        const entry = `${trimmed}\n`;
+        const entryBytes = Buffer.byteLength(entry, "utf8");
+        if (entryBytes > maxRelevantTraceBytes) return;
+        relevantTrace.push(entry);
+        relevantTraceBytes += entryBytes;
+        while (relevantTraceBytes > maxRelevantTraceBytes && relevantTrace.length > 1) {
+          const removed = relevantTrace.shift() ?? "";
+          relevantTraceBytes -= Buffer.byteLength(removed, "utf8");
+        }
+      };
+      const captureRelevantChunk = (chunk: string) => {
+        if (!options.captureRelevantTrace) return;
+        traceBuffer += chunk;
+        if (Buffer.byteLength(traceBuffer, "utf8") > maxRelevantTraceBytes) {
+          traceBuffer = traceBuffer.slice(-maxRelevantTraceBytes);
+        }
+        const lines = traceBuffer.split(/\r?\n/);
+        traceBuffer = lines.pop() ?? "";
+        for (const line of lines) appendRelevantTrace(line);
+      };
+      const readRelevantTrace = () => {
+        if (traceBuffer) appendRelevantTrace(traceBuffer);
+        return relevantTrace.join("");
+      };
       const finish = (result: ExecuteResult) => {
         if (settled) {
           return;
@@ -1423,6 +1464,12 @@ async function executeCommand(
         if (timeout) {
           clearTimeout(timeout);
         }
+        if (forceKill) {
+          clearTimeout(forceKill);
+        }
+        result.usageTrace = readRelevantTrace() || undefined;
+        result.stdoutReceived = stdoutReceived;
+        result.stdoutEndsWithNewline = stdoutEndsWithNewline;
         resolve(result);
       };
       const child = spawn(command.command, command.args, {
@@ -1431,14 +1478,22 @@ async function executeCommand(
         stdio,
       });
 
+      const terminateChild = (code: number) => {
+        if (settled || termination) return;
+        termination = { code };
+        child.kill("SIGTERM");
+        forceKill = setTimeout(() => {
+          if (!settled) child.kill("SIGKILL");
+        }, 1000);
+        forceKill.unref();
+      };
+
       if (options.timeoutSeconds !== undefined) {
         timeout = setTimeout(() => {
           const message = `headless: command timed out after ${options.timeoutSeconds}s\n`;
           options.stderr?.(message);
           stderr(message);
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 1000).unref();
-          finish({ code: 124, stdout: capturedStdout });
+          terminateChild(124);
         }, options.timeoutSeconds * 1000);
       }
       if (command.stdinText !== undefined) {
@@ -1446,6 +1501,9 @@ async function executeCommand(
       }
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
+        stdoutReceived = true;
+        stdoutEndsWithNewline = chunk.endsWith("\n");
+        captureRelevantChunk(chunk);
         if (options.stdoutHandling !== "stream") {
           capturedStdout += chunk;
         }
@@ -1466,14 +1524,14 @@ async function executeCommand(
         const message = `${error.message}\n`;
         options.stderr?.(message);
         stderr(message);
-        finish({ code: 127, stdout: capturedStdout });
+        finish({ code: termination?.code ?? 127, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
       child.on("close", (code, signal) => {
         if (signal) {
-          finish({ code: 1, stdout: capturedStdout });
+          finish({ code: termination?.code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
           return;
         }
-        finish({ code: code ?? 1, stdout: capturedStdout });
+        finish({ code: termination?.code ?? code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
     });
   } finally {
@@ -3503,9 +3561,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     const stdoutHandling: StdoutHandling = parsed.json
-      ? parsed.usage || parsed.sessionAlias || parsed.runId
-        ? "capture-and-stream"
-        : "stream"
+      ? parsed.usage
+        ? "stream"
+        : parsed.sessionAlias || parsed.runId
+          ? "capture-and-stream"
+          : "stream"
       : parsed.debug
         ? "capture-and-stream"
         : "capture";
@@ -3571,13 +3631,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             stdoutLog: commandStdoutLog,
             stderr: commandStderr,
             timeoutSeconds: commandTimeoutSeconds,
+            captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
           });
       if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
         appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
       }
       if (parsed.runId && parsed.role && nodeId) {
-        const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-        const metrics = extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env));
+        const commandTrace = result.stdout || result.usageTrace || "";
+        const finalMessage = extractFinalMessage(parsed.agent, commandTrace);
+        const metrics = extractRunNodeMetrics(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env));
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
@@ -3590,15 +3652,18 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (!result) {
       throw new CliError("agent execution did not produce a result");
     }
+    const commandTrace = result.stdout || result.usageTrace || "";
     if (result.code === 0 && sessionPlan) {
-      await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
+      await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
     }
     if (parsed.json) {
       if (parsed.usage) {
-        if (result.stdout && !result.stdout.endsWith("\n")) {
+        const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
+        const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
+        if (stdoutReceived && !stdoutEndsWithNewline) {
           stdout("\n");
         }
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
+        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
     }
@@ -3614,7 +3679,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(`${finalMessage}\n`);
       }
       if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
+        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
     }
