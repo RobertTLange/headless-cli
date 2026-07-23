@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { extractAgentError, extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
 import { extractRunNodeMetrics } from "../src/run-metrics.ts";
+import type { AgentName } from "../src/types.ts";
 
 test("extracts final Codex assistant message from JSONL trace", () => {
   const trace = [
@@ -485,6 +486,41 @@ test("does not price missing usage as zero", () => {
   assert.equal(summary.cost, null);
   assert.equal(summary.costBasis, null);
   assert.equal(summary.pricingStatus, "missing");
+});
+
+test("classifies malformed usage-shaped records as missing", () => {
+  const cases: Array<[AgentName, unknown]> = [
+    ["antigravity", { type: "headless.antigravity.usage", context_window: { current_usage: { unexpected: true } } }],
+    ["claude", { type: "result", usage: { unexpected: true } }],
+    ["codex", { type: "turn.completed", usage: { unexpected: true } }],
+    ["cursor", { type: "result", usage: { unexpected: true } }],
+    ["gemini", { type: "result", stats: { unexpected: true } }],
+    ["opencode", { type: "step_finish", part: { tokens: { unexpected: true } } }],
+    ["pi", { type: "message_end", message: { usage: { unexpected: true } } }],
+  ];
+
+  for (const [agent, record] of cases) {
+    const summary = extractUsageSummary(agent, JSON.stringify(record), { model: "test-model" });
+    assert.equal(summary.usageStatus, "missing", agent);
+    assert.equal(summary.cost, null, agent);
+  }
+});
+
+test("preserves valid native zero-cost reports", () => {
+  const cases: Array<[AgentName, unknown]> = [
+    ["claude", { type: "result", total_cost_usd: 0, usage: { input_tokens: 0 } }],
+    ["opencode", { type: "step_finish", part: { cost: 0, tokens: { input: 0 } } }],
+    ["pi", { type: "message_end", message: { usage: { input: 0, cost: { total: 0 } } } }],
+  ];
+
+  for (const [agent, record] of cases) {
+    const summary = extractUsageSummary(agent, JSON.stringify(record), { model: "test-model" });
+    assert.equal(summary.usageStatus, "reported", agent);
+    assert.equal(summary.cost?.total, 0, agent);
+    assert.equal(summary.costBasis, "native-reported", agent);
+    assert.equal(summary.pricingSource, "native", agent);
+    assert.equal(summary.pricingStatus, "native", agent);
+  }
 });
 
 test("prices Cursor effort model variants with base model rates", () => {

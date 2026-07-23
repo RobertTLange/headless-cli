@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   buildAgentCommand,
@@ -1225,6 +1225,81 @@ test("CLI exits 124 when a one-shot command exceeds --timeout", async () => {
     assert.equal(code, 124);
     assert.match(stderr.join(""), /timed out after 1s/);
   } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI waits for timed-out child stdout to drain before appending usage", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "process.on('SIGTERM', () => { process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }) + '\\n'); setTimeout(() => process.exit(0), 200); });",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 124);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(JSON.parse(lines[0] ?? "").type, "turn.completed");
+    assert.equal(JSON.parse(lines[1] ?? "").usage.usageStatus, "reported");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage keeps usage accounting bounded around a large native trace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          `process.stdout.write(JSON.stringify({ type: 'tool', text: '${"x".repeat(300_000)}' }) + '\\n');`,
+          "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }) + '\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.ok(stdout.join("").length > 300_000);
+    const usage = JSON.parse(stdout.join("").trim().split("\n").at(-1) ?? "").usage;
+    assert.equal(usage.totalTokens, 12);
+    assert.equal(usage.usageStatus, "reported");
+  } finally {
+    globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
   }
 });
@@ -2658,6 +2733,52 @@ test("CLI --json --usage captures Antigravity status usage without changing real
   }
 });
 
+test("CLI cleans the Antigravity usage overlay when the parent receives SIGTERM", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const overlayPath = join(dir, "overlay-home.txt");
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`);
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+        "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 50));",
+        "setTimeout(() => process.kill(process.ppid, 'SIGTERM'), 100);",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        `import { runCli } from ${JSON.stringify(pathToFileURL(join(repoRoot, "src", "cli.ts")).href)};`,
+        "const code = await runCli(['antigravity', '--prompt', 'hello', '--json', '--usage']);",
+        "process.exitCode = code;",
+        "",
+      ].join("\n"),
+    );
+
+    const child = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(child.status, 143, child.stderr);
+    assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
 
 test("CLI --usage prices Codex hard default model", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));

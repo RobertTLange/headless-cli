@@ -34,8 +34,10 @@ export interface AntigravityUsageCapture {
 }
 
 const captureScript = `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 let input = "";
 for await (const chunk of process.stdin) input += chunk;
@@ -72,7 +74,12 @@ try {
   // Usage collection must never interfere with the agent run.
 }
 
-const originalCommand = process.env.HEADLESS_ANTIGRAVITY_STATUS_COMMAND;
+let originalCommand = "";
+try {
+  originalCommand = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "status-command"), "utf8");
+} catch {
+  // The user's status command is optional.
+}
 if (originalCommand) {
   const child = spawnSync("/bin/sh", ["-c", originalCommand], { input, encoding: "utf8" });
   if (child.stdout) process.stdout.write(child.stdout);
@@ -113,6 +120,11 @@ export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCaptur
     const overlayAppDir = join(overlayGeminiDir, "antigravity-cli");
     const capturePath = join(root, "usage.jsonl");
     const scriptPath = join(root, "capture.mjs");
+    const statusCommandPath = join(root, "status-command");
+
+    for (const stateRoot of ["brain", "cache"]) {
+      mkdirSync(join(realAppDir, stateRoot), { recursive: true, mode: 0o700 });
+    }
 
     linkChildren(realHome, overlayHome, new Set([".gemini"]));
     linkChildren(realGeminiDir, overlayGeminiDir, new Set(["antigravity-cli"]));
@@ -127,6 +139,7 @@ export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCaptur
         : undefined;
 
     writeFileSync(capturePath, "", { mode: 0o600 });
+    writeFileSync(statusCommandPath, originalCommand ?? "", { mode: 0o600 });
     writeFileSync(scriptPath, captureScript, { mode: 0o700 });
     chmodSync(scriptPath, 0o700);
     writeFileSync(
@@ -151,7 +164,7 @@ export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCaptur
       commandEnv: {
         HOME: overlayHome,
         HEADLESS_ANTIGRAVITY_USAGE_FILE: capturePath,
-        HEADLESS_ANTIGRAVITY_STATUS_COMMAND: originalCommand,
+        HEADLESS_ANTIGRAVITY_STATUS_COMMAND: undefined,
       },
       read: () => {
         try {
