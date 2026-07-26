@@ -70,6 +70,7 @@ headless acp --acp-command "atlas alta agent run" --prompt "Fix the failing test
 headless pi --prompt "Summarize this repo" --json
 headless codex --prompt "Fix the failing tests" --debug
 headless codex --prompt "Summarize this repo" --usage
+headless codex --prompt "Summarize this repo" --json --usage
 
 # Use read-only mode for review/planning work.
 headless codex --allow read-only --prompt "Review this repo"

@@ -77,6 +77,8 @@ import {
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
 import { acquireLaunchLock } from "./launch-lock.js";
+import { forceKillWindowsProcessTree } from "./process-tree.js";
+import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
 import { runCronDaemon } from "./cron.js";
@@ -244,7 +246,7 @@ function usage(): string {
     "  --timeout <s>        One-shot command timeout in seconds.",
     "  --json               Stream raw agent JSON trace output.",
     "  --debug              Stream raw trace and print extracted final message.",
-    "  --usage              Print final message plus normalized token and cost JSON.",
+    "  --usage              Append normalized token and API-equivalent cost JSON.",
     "  --tmux               Launch an interactive agent in a tmux session.",
     "  --wait               With --tmux, wait for native transcript completion and print the final message.",
     "  --delete             With --tmux --wait, kill the tmux session after completion.",
@@ -888,6 +890,9 @@ function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): Ag
 interface ExecuteResult {
   code: number;
   stdout: string;
+  usageTrace?: string;
+  stdoutReceived?: boolean;
+  stdoutEndsWithNewline?: boolean;
 }
 
 function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
@@ -927,7 +932,7 @@ function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env):
 
 async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
   const summary = extractUsageSummary(agent, stdout, context);
-  if (summary.pricingStatus === "native") {
+  if (summary.usageStatus === "missing" || summary.pricingStatus === "native") {
     return `${JSON.stringify({ usage: priceUsageSummary(summary, {}) })}\n`;
   }
   try {
@@ -1022,6 +1027,7 @@ interface ExecuteCommandOptions {
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
   timeoutSeconds?: number;
+  captureRelevantTrace?: boolean;
 }
 
 interface WaitingSpinner {
@@ -1413,8 +1419,75 @@ async function executeCommand(
   try {
     return await new Promise<ExecuteResult>((resolve) => {
       let capturedStdout = "";
+      let stdoutReceived = false;
+      let stdoutEndsWithNewline = false;
+      let traceBuffer = "";
+      let traceRowDiscarded = false;
+      const relevantTrace: string[] = [];
+      let relevantTraceBytes = 0;
+      let pinnedIdentityTrace = "";
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
+      let termination: { code: number } | undefined;
+      let forceKill: NodeJS.Timeout | undefined;
+      let forceFinish: NodeJS.Timeout | undefined;
+      let removeParentSignalHandlers = () => {};
+      const terminationGraceMs = 1000;
+      const maxRelevantTraceBytes = 256 * 1024;
+      const maxCapturedTraceRowBytes = 4 * 1024 * 1024;
+      const maxPinnedIdentityBytes = 16 * 1024;
+      const relevantTracePattern =
+        /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text|planner_response|assistant_response)"|"role"\s*:\s*"assistant"/i;
+      const codexIdentityPattern = /"type"\s*:\s*"thread\.started"/;
+      const appendRelevantTrace = (line: string) => {
+        let trimmed = line.trim();
+        if (!trimmed || !relevantTracePattern.test(trimmed)) return;
+        let entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
+        if (entryBytes > maxRelevantTraceBytes) {
+          trimmed = compactOversizedTraceLine(agent, trimmed);
+          if (!trimmed || !relevantTracePattern.test(trimmed)) return;
+          entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
+        }
+        if (entryBytes > maxRelevantTraceBytes) return;
+        const entry = `${trimmed}\n`;
+        if (agent === "codex" && codexIdentityPattern.test(trimmed) && entryBytes <= maxPinnedIdentityBytes) {
+          pinnedIdentityTrace = entry;
+        }
+        relevantTrace.push(entry);
+        relevantTraceBytes += entryBytes;
+        while (relevantTraceBytes > maxRelevantTraceBytes && relevantTrace.length > 1) {
+          const removed = relevantTrace.shift() ?? "";
+          relevantTraceBytes -= Buffer.byteLength(removed, "utf8");
+        }
+      };
+      const captureRelevantChunk = (chunk: string) => {
+        if (!options.captureRelevantTrace) return;
+        const fragments = chunk.split("\n");
+        for (let index = 0; index < fragments.length; index += 1) {
+          if (!traceRowDiscarded) {
+            traceBuffer += fragments[index] ?? "";
+            if (Buffer.byteLength(traceBuffer, "utf8") > maxCapturedTraceRowBytes) {
+              traceBuffer = "";
+              traceRowDiscarded = true;
+            }
+          }
+          if (index < fragments.length - 1) {
+            if (!traceRowDiscarded) {
+              const line = traceBuffer.endsWith("\r") ? traceBuffer.slice(0, -1) : traceBuffer;
+              appendRelevantTrace(line);
+            }
+            traceBuffer = "";
+            traceRowDiscarded = false;
+          }
+        }
+      };
+      const readRelevantTrace = () => {
+        if (traceBuffer && !traceRowDiscarded) appendRelevantTrace(traceBuffer);
+        const rollingTrace = relevantTrace.join("");
+        return pinnedIdentityTrace && !rollingTrace.includes(pinnedIdentityTrace)
+          ? `${pinnedIdentityTrace}${rollingTrace}`
+          : rollingTrace;
+      };
       const finish = (result: ExecuteResult) => {
         if (settled) {
           return;
@@ -1423,22 +1496,99 @@ async function executeCommand(
         if (timeout) {
           clearTimeout(timeout);
         }
+        if (forceKill) {
+          clearTimeout(forceKill);
+        }
+        if (forceFinish) {
+          clearTimeout(forceFinish);
+        }
+        removeParentSignalHandlers();
+        result.usageTrace = readRelevantTrace() || undefined;
+        result.stdoutReceived = stdoutReceived;
+        result.stdoutEndsWithNewline = stdoutEndsWithNewline;
         resolve(result);
       };
+      const ownsChildProcessGroup = process.platform !== "win32" && options.timeoutSeconds !== undefined;
       const child = spawn(command.command, command.args, {
         cwd,
+        detached: ownsChildProcessGroup,
         env: commandEnv(env, command) as NodeJS.ProcessEnv,
         stdio,
       });
+
+      const signalChildTree = (signal: NodeJS.Signals) => {
+        if (ownsChildProcessGroup && child.pid) {
+          try {
+            process.kill(-child.pid, signal);
+            return;
+          } catch {
+            // Fall back to the direct child when the process group has already exited.
+          }
+        }
+        child.kill(signal);
+      };
+
+      if (ownsChildProcessGroup) {
+        const handlers = new Map<NodeJS.Signals, () => void>();
+        removeParentSignalHandlers = () => {
+          for (const [signal, handler] of handlers) {
+            process.off(signal, handler);
+          }
+        };
+        for (const signal of ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"] as NodeJS.Signals[]) {
+          const handler = () => {
+            signalChildTree(signal);
+            removeParentSignalHandlers();
+            process.kill(process.pid, signal);
+          };
+          handlers.set(signal, handler);
+          process.once(signal, handler);
+        }
+        const suspendHandler = () => {
+          signalChildTree("SIGTSTP");
+          process.kill(process.pid, "SIGSTOP");
+        };
+        const continueHandler = () => {
+          signalChildTree("SIGCONT");
+        };
+        handlers.set("SIGTSTP", suspendHandler);
+        handlers.set("SIGCONT", continueHandler);
+        process.on("SIGTSTP", suspendHandler);
+        process.on("SIGCONT", continueHandler);
+      }
+
+      const terminateChild = (code: number) => {
+        if (settled || termination) return;
+        termination = { code };
+        if (process.platform === "win32") {
+          forceKillWindowsProcessTree(child, terminationGraceMs);
+        } else {
+          signalChildTree("SIGTERM");
+        }
+        forceKill = setTimeout(() => {
+          if (settled) return;
+          if (process.platform === "win32") {
+            forceKillWindowsProcessTree(child, terminationGraceMs);
+          } else {
+            signalChildTree("SIGKILL");
+          }
+          forceFinish = setTimeout(() => {
+            if (settled) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish({ code, stdout: capturedStdout });
+          }, terminationGraceMs);
+          forceFinish.unref();
+        }, terminationGraceMs);
+        forceKill.unref();
+      };
 
       if (options.timeoutSeconds !== undefined) {
         timeout = setTimeout(() => {
           const message = `headless: command timed out after ${options.timeoutSeconds}s\n`;
           options.stderr?.(message);
           stderr(message);
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 1000).unref();
-          finish({ code: 124, stdout: capturedStdout });
+          terminateChild(124);
         }, options.timeoutSeconds * 1000);
       }
       if (command.stdinText !== undefined) {
@@ -1446,6 +1596,9 @@ async function executeCommand(
       }
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
+        stdoutReceived = true;
+        stdoutEndsWithNewline = chunk.endsWith("\n");
+        captureRelevantChunk(chunk);
         if (options.stdoutHandling !== "stream") {
           capturedStdout += chunk;
         }
@@ -1466,14 +1619,17 @@ async function executeCommand(
         const message = `${error.message}\n`;
         options.stderr?.(message);
         stderr(message);
-        finish({ code: 127, stdout: capturedStdout });
+        finish({ code: termination?.code ?? 127, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
       child.on("close", (code, signal) => {
+        if (termination) {
+          signalChildTree("SIGKILL");
+        }
         if (signal) {
-          finish({ code: 1, stdout: capturedStdout });
+          finish({ code: termination?.code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
           return;
         }
-        finish({ code: code ?? 1, stdout: capturedStdout });
+        finish({ code: termination?.code ?? code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
     });
   } finally {
@@ -2521,9 +2677,6 @@ function validateCronAddCliOptions(parsed: ParsedArgs): void {
   if (parsed.docker && parsed.modal) {
     throw new CliError("--docker cannot be used with --modal");
   }
-  if (parsed.usage && parsed.json) {
-    throw new CliError("--usage cannot be used with --json");
-  }
   if (parsed.debug && parsed.json) {
     throw new CliError("--debug cannot be used with --json");
   }
@@ -3113,9 +3266,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.wait && parsed.printCommand) {
       throw new CliError("--wait cannot be used with --print-command");
     }
-    if (parsed.usage && parsed.json) {
-      throw new CliError("--usage cannot be used with --json");
-    }
     if (parsed.usage && parsed.tmux) {
       throw new CliError("--usage cannot be used with --tmux");
     }
@@ -3509,9 +3659,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
 
     const stdoutHandling: StdoutHandling = parsed.json
-      ? parsed.sessionAlias || parsed.runId
-        ? "capture-and-stream"
-        : "stream"
+      ? parsed.usage
+        ? "stream"
+        : parsed.sessionAlias || parsed.runId
+          ? "capture-and-stream"
+          : "stream"
       : parsed.debug
         ? "capture-and-stream"
         : "capture";
@@ -3577,13 +3729,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             stdoutLog: commandStdoutLog,
             stderr: commandStderr,
             timeoutSeconds: commandTimeoutSeconds,
+            captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
           });
       if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
         appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
       }
       if (parsed.runId && parsed.role && nodeId) {
-        const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-        const metrics = extractRunNodeMetrics(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env));
+        const commandTrace = result.stdout || result.usageTrace || "";
+        const finalMessage = extractFinalMessage(parsed.agent, commandTrace);
+        const metrics = extractRunNodeMetrics(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env));
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
@@ -3596,10 +3750,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (!result) {
       throw new CliError("agent execution did not produce a result");
     }
+    const commandTrace = result.stdout || result.usageTrace || "";
     if (result.code === 0 && sessionPlan) {
-      await persistSessionPlan(parsed.agent, sessionPlan, result.stdout, cwd, env);
+      await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
     }
     if (parsed.json) {
+      if (parsed.usage) {
+        const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
+        const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
+        if (stdoutReceived && !stdoutEndsWithNewline) {
+          stdout("\n");
+        }
+        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
+      }
       return result.code;
     }
 
@@ -3614,7 +3777,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(`${finalMessage}\n`);
       }
       if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, result.stdout, usageContext(parsed.agent, configuredDefaults, env)));
+        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
       }
       return result.code;
     }

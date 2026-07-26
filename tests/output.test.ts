@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { extractAgentError, extractFinalMessage, extractUsageSummary, priceUsageSummary } from "../src/output.ts";
 import { extractRunNodeMetrics } from "../src/run-metrics.ts";
+import type { AgentName } from "../src/types.ts";
 
 test("extracts final Codex assistant message from JSONL trace", () => {
   const trace = [
@@ -244,6 +245,7 @@ test("extracts Codex usage from turn completed trace and prices with models.dev 
     outputTokens: 100,
     reasoningOutputTokens: 25,
     totalTokens: 1100,
+    usageStatus: "reported",
     cost: {
       input: 0.00075,
       cacheRead: 0.00005,
@@ -251,6 +253,7 @@ test("extracts Codex usage from turn completed trace and prices with models.dev 
       output: 0.001,
       total: 0.0018,
     },
+    costBasis: "api-list-price-estimate",
     pricingSource: "models.dev",
     pricingStatus: "priced",
   });
@@ -287,6 +290,7 @@ test("extracts Claude usage and preserves native cost", () => {
     outputTokens: 8,
     reasoningOutputTokens: 0,
     totalTokens: 29242,
+    usageStatus: "reported",
     cost: {
       input: null,
       cacheRead: null,
@@ -294,6 +298,7 @@ test("extracts Claude usage and preserves native cost", () => {
       output: null,
       total: 0.18331675,
     },
+    costBasis: "native-reported",
     pricingSource: "native",
     pricingStatus: "native",
   });
@@ -380,7 +385,57 @@ test("extracts Cursor usage and returns null cost when model pricing is missing"
   assert.equal(summary.outputTokens, 43);
   assert.equal(summary.model, "Composer 2 Fast");
   assert.equal(summary.cost, null);
+  assert.equal(summary.costBasis, null);
   assert.equal(summary.pricingStatus, "missing");
+});
+
+test("does not price missing usage as zero", () => {
+  const summary = priceUsageSummary(
+    extractUsageSummary("codex", JSON.stringify({ type: "thread.started" }), {
+      provider: "openai",
+      model: "gpt-5",
+    }),
+    pricingFixture(),
+  );
+
+  assert.equal(summary.usageStatus, "missing");
+  assert.equal(summary.cost, null);
+  assert.equal(summary.costBasis, null);
+  assert.equal(summary.pricingStatus, "missing");
+});
+
+test("classifies malformed usage-shaped records as missing", () => {
+  const cases: Array<[AgentName, unknown]> = [
+    ["claude", { type: "result", usage: { unexpected: true } }],
+    ["codex", { type: "turn.completed", usage: { unexpected: true } }],
+    ["cursor", { type: "result", usage: { unexpected: true } }],
+    ["gemini", { type: "result", stats: { unexpected: true } }],
+    ["opencode", { type: "step_finish", part: { tokens: { unexpected: true } } }],
+    ["pi", { type: "message_end", message: { usage: { unexpected: true } } }],
+  ];
+
+  for (const [agent, record] of cases) {
+    const summary = extractUsageSummary(agent, JSON.stringify(record), { model: "test-model" });
+    assert.equal(summary.usageStatus, "missing", agent);
+    assert.equal(summary.cost, null, agent);
+  }
+});
+
+test("preserves valid native zero-cost reports", () => {
+  const cases: Array<[AgentName, unknown]> = [
+    ["claude", { type: "result", total_cost_usd: 0, usage: { input_tokens: 0 } }],
+    ["opencode", { type: "step_finish", part: { cost: 0, tokens: { input: 0 } } }],
+    ["pi", { type: "message_end", message: { usage: { input: 0, cost: { total: 0 } } } }],
+  ];
+
+  for (const [agent, record] of cases) {
+    const summary = extractUsageSummary(agent, JSON.stringify(record), { model: "test-model" });
+    assert.equal(summary.usageStatus, "reported", agent);
+    assert.equal(summary.cost?.total, 0, agent);
+    assert.equal(summary.costBasis, "native-reported", agent);
+    assert.equal(summary.pricingSource, "native", agent);
+    assert.equal(summary.pricingStatus, "native", agent);
+  }
 });
 
 test("prices Cursor effort model variants with base model rates", () => {
@@ -419,6 +474,7 @@ test("prices Cursor effort model variants with base model rates", () => {
     output: 0.0004,
     total: 0.00248,
   });
+  assert.equal(summary.costBasis, "api-list-price-estimate");
   assert.equal(summary.pricingStatus, "priced");
 });
 
@@ -455,6 +511,7 @@ test("extracts Gemini multi-model usage and sums priced costs", () => {
     output: 0.000028,
     total: 0.001113,
   });
+  assert.equal(summary.costBasis, "api-list-price-estimate");
   assert.equal(summary.pricingStatus, "priced");
 });
 
@@ -485,6 +542,7 @@ test("extracts OpenCode native usage cost", () => {
     output: null,
     total: 0.00087525,
   });
+  assert.equal(summary.costBasis, "native-reported");
   assert.equal(summary.pricingStatus, "native");
 });
 
@@ -521,6 +579,7 @@ test("extracts Pi usage and native cost", () => {
     outputTokens: 7,
     reasoningOutputTokens: 0,
     totalTokens: 2347,
+    usageStatus: "reported",
     cost: {
       input: 0.01155,
       output: 0.000175,
@@ -528,6 +587,7 @@ test("extracts Pi usage and native cost", () => {
       cacheWrite: 0.000125,
       total: 0.011855,
     },
+    costBasis: "native-reported",
     pricingSource: "native",
     pricingStatus: "native",
   });
