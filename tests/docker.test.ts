@@ -181,14 +181,17 @@ test("mounts only selected Antigravity credential files from its state directory
   try {
     const home = join(dir, "home");
     const antigravityDir = join(home, ".gemini", "antigravity-cli");
+    const configDir = join(home, ".gemini", "config");
     const workDir = join(dir, "project");
     mkdirSync(antigravityDir, { recursive: true });
     mkdirSync(join(antigravityDir, "brain"), { recursive: true });
+    mkdirSync(configDir, { recursive: true });
     mkdirSync(workDir, { recursive: true });
     writeFileSync(join(antigravityDir, "antigravity-oauth-token"), "token");
     writeFileSync(join(antigravityDir, "settings.json"), "{}");
     writeFileSync(join(antigravityDir, "conversation_summaries.db"), "large state");
     writeFileSync(join(antigravityDir, "brain", "transcript.jsonl"), "history");
+    writeFileSync(join(configDir, "mcp_config.json"), "{}");
 
     const command = buildDockerAgentCommand({
       agent: "antigravity",
@@ -216,6 +219,7 @@ test("mounts only selected Antigravity credential files from its state directory
     );
     assert.ok(!command.args.some((arg) => arg.includes("conversation_summaries.db")));
     assert.ok(!command.args.some((arg) => arg.includes("/antigravity-cli:/tmp/headless-host-home")));
+    assert.ok(!command.args.some((arg) => arg.includes(`${configDir}:`)));
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

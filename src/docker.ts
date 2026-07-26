@@ -100,7 +100,7 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
         args.push("--volume", `${hostFile}:${join(hostHomeMountRoot, relPath, fileName)}:ro`);
       }
       mounted.add(hostPath);
-      continue;
+      break;
     }
 
     mounted.add(hostPath);
