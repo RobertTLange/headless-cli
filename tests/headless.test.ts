@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   buildAgentCommand,
@@ -518,6 +518,7 @@ test("interactive pi command isolates a new session with --session-dir", () => {
 test("CLI print-command normalizes Claude model shorthand", async () => {
   const stdout: string[] = [];
   const code = await runCli(["claude", "--prompt", "hello", "--model", "sonnet-4.5", "--print-command"], {
+    env: { ...process.env, CLAUDE_CODE_BIN: undefined, CLAUDE_BIN: "claude" },
     stdout: (text) => stdout.push(text),
   });
 
@@ -1260,7 +1261,7 @@ test("CLI waits for timed-out child stdout to drain before appending usage", asy
     globalThis.fetch = async () => new Response(JSON.stringify({}));
 
     const stdout: string[] = [];
-    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "3"], {
       env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
       stdout: (text) => stdout.push(text),
     });
@@ -1278,6 +1279,8 @@ test("CLI waits for timed-out child stdout to drain before appending usage", asy
 test("CLI bounds timeout drain when a descendant retains stdout", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const pidFile = join(dir, "grandchild.pid");
+  const naturalExitFile = join(dir, "grandchild-natural-exit");
+  const grandchildSource = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(naturalExitFile)}, "done"), 4_000)`;
   let grandchildPid: number | undefined;
   try {
     const binDir = join(dir, "bin");
@@ -1291,7 +1294,7 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
           "const { spawn } = require('node:child_process');",
           "const { writeFileSync } = require('node:fs');",
           "process.on('SIGTERM', () => {",
-          "  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+          `  const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { stdio: ['ignore', 'inherit', 'inherit'] });`,
           "  writeFileSync(process.env.HEADLESS_TEST_GRANDCHILD_PID, String(child.pid));",
           "  child.unref();",
           "  process.exit(0);",
@@ -1303,8 +1306,7 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
       await chmod(binary, 0o755);
     });
 
-    const startedAt = Date.now();
-    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "3"], {
       env: {
         ...process.env,
         HEADLESS_TEST_GRANDCHILD_PID: pidFile,
@@ -1314,11 +1316,12 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
     });
 
     assert.equal(code, 124);
-    assert.ok(Date.now() - startedAt < 4_000, "timeout drain should finish before the descendant exits");
+    assert.equal(existsSync(naturalExitFile), false);
     grandchildPid = Number(readFileSync(pidFile, "utf8"));
     assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
     if (process.platform !== "win32") {
       await waitFor(() => !processIsAlive(grandchildPid as number));
+      assert.equal(existsSync(naturalExitFile), false);
     }
   } finally {
     try {
@@ -1359,7 +1362,7 @@ test("CLI kills timeout descendants after the direct child closes", async () => 
       await chmod(binary, 0o755);
     });
 
-    const code = await runCli(["codex", "--prompt", "hello", "--json", "--timeout", "1"], {
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--timeout", "3"], {
       env: {
         ...process.env,
         HEADLESS_TEST_GRANDCHILD_PID: pidFile,
@@ -3017,6 +3020,393 @@ test("CLI --json --usage appends partial usage and preserves a nonzero agent sta
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("CLI --json --usage captures Antigravity status usage without changing real settings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "agy-capture.json");
+    mkdirSync(join(appDir, "brain"), { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(
+      join(appDir, "settings.json"),
+      `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true }, useG1Credits: true })}\n`,
+    );
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const { spawnSync } = require('node:child_process');",
+        "const settings = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8'));",
+        "fs.writeFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify({ home: process.env.HOME, settings }));",
+        "const payload = { conversation_id: 'agy-1', model: { id: 'Gemini 3.5 Flash (Low)', display_name: 'Gemini 3.5 Flash (Low)' }, context_window: { current_usage: { input_tokens: 1000, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 200 } } };",
+        "const status = spawnSync('/bin/sh', ['-c', settings.statusLine.command], { input: JSON.stringify(payload), env: process.env, encoding: 'utf8' });",
+        "if (status.status !== 0) { process.stderr.write(status.stderr); process.exit(status.status ?? 1); }",
+        "process.stdout.write('final answer\\n');",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          google: {
+            models: {
+              "gemini-3.5-flash": { cost: { input: 1.5, cache_read: 0.15, output: 9 } },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      ["antigravity", "--model", "Gemini 3.5 Flash (Low)", "--prompt", "hello", "--json", "--usage"],
+      {
+        env: {
+          ...process.env,
+          ANTIGRAVITY_CLI_BIN: binary,
+          HEADLESS_CAPTURE: captureFile,
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    assert.equal(code, 0);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(lines[0], "final answer");
+    assert.deepEqual(JSON.parse(lines[1]).usage, {
+      agent: "antigravity",
+      provider: "google",
+      model: "Gemini 3.5 Flash (Low)",
+      inputTokens: 1000,
+      cacheReadTokens: 200,
+      cacheWriteTokens: 0,
+      outputTokens: 50,
+      reasoningOutputTokens: 0,
+      totalTokens: 1250,
+      usageStatus: "reported",
+      cost: {
+        input: 0.0015,
+        cacheRead: 0.00003,
+        cacheWrite: 0,
+        output: 0.00045,
+        total: 0.00198,
+      },
+      costBasis: "api-list-price-estimate",
+      pricingSource: "models.dev",
+      pricingStatus: "priced",
+    });
+    const invocation = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.notEqual(invocation.home, home);
+    assert.equal(invocation.settings.statusLine.type, "command");
+    assert.deepEqual(JSON.parse(readFileSync(join(appDir, "settings.json"), "utf8")), {
+      statusLine: { type: "", command: "", enabled: true },
+      useG1Credits: true,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI cleans the Antigravity usage overlay when the parent receives SIGTERM", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const overlayPath = join(dir, "overlay-home.txt");
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`);
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+        "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 50));",
+        "setTimeout(() => process.kill(process.ppid, 'SIGTERM'), 100);",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        `import { runCli } from ${JSON.stringify(pathToFileURL(join(repoRoot, "src", "cli.ts")).href)};`,
+        "const code = await runCli(['antigravity', '--prompt', 'hello', '--json', '--usage']);",
+        "process.exitCode = code;",
+        "",
+      ].join("\n"),
+    );
+
+    const child = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(child.status, null, child.stderr);
+    assert.equal(child.signal, "SIGTERM", child.stderr);
+    assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI skips the Antigravity usage overlay on Windows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const overlayPath = join(dir, "overlay-home.txt");
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`);
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+        "process.stdout.write('antigravity final\\n');",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        "Object.defineProperty(process, 'platform', { value: 'win32' });",
+        `const { runCli } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "src", "cli.ts")).href)});`,
+        "const code = await runCli(['antigravity', '--prompt', 'hello', '--json', '--usage']);",
+        "process.exitCode = code;",
+        "",
+      ].join("\n"),
+    );
+
+    const child = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(readFileSync(overlayPath, "utf8"), home);
+    assert.deepEqual(JSON.parse(readFileSync(join(appDir, "settings.json"), "utf8")), {
+      statusLine: { type: "", command: "", enabled: true },
+    });
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI does not redeliver parent signals to embedded host listeners", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const signalCountPath = join(dir, "signal-count.txt");
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`);
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "process.on('SIGTERM', () => process.exit(0));",
+        "setTimeout(() => process.kill(process.ppid, 'SIGTERM'), 100);",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        "import { writeFileSync } from 'node:fs';",
+        `const signalCountPath = ${JSON.stringify(signalCountPath)};`,
+        "let signalCount = 0;",
+        "process.on('SIGTERM', () => writeFileSync(signalCountPath, String(++signalCount)));",
+        `const { runCli } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "src", "cli.ts")).href)});`,
+        "process.exitCode = await runCli(['antigravity', '--prompt', 'hello', '--json', '--usage']);",
+        "",
+      ].join("\n"),
+    );
+
+    const child = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(readFileSync(signalCountPath, "utf8"), "1");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI bounds Antigravity stdout drain after the direct child exits", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const grandchildPidPath = join(dir, "grandchild.pid");
+  const naturalExitPath = join(dir, "grandchild-natural-exit");
+  const grandchildSource = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(naturalExitPath)}, "done"), 4_000)`;
+  let grandchildPid: number | undefined;
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    const binDir = join(dir, "bin");
+    const overlayPath = join(dir, "overlay-home.txt");
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(binDir);
+    writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`);
+    const binary = join(binDir, "agy");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const { spawn } = require('node:child_process');",
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+        `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { stdio: ['ignore', 'inherit', 'inherit'] });`,
+        `writeFileSync(${JSON.stringify(grandchildPidPath)}, String(child.pid));`,
+        "child.unref();",
+        "process.stdout.write('antigravity final\\n');",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+
+    const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage", "--timeout", "60"], {
+      env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 0);
+    assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+    grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
+    await waitFor(() => !processIsAlive(grandchildPid as number));
+    assert.equal(existsSync(naturalExitPath), false);
+  } finally {
+    if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test(
+  "CLI kills Antigravity descendants that close inherited stdio",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+    const grandchildPidPath = join(dir, "grandchild.pid");
+    let grandchildPid: number | undefined;
+    try {
+      const home = join(dir, "home");
+      const appDir = join(home, ".gemini", "antigravity-cli");
+      const binDir = join(dir, "bin");
+      const overlayPath = join(dir, "overlay-home.txt");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(binDir);
+      writeFileSync(
+        join(appDir, "settings.json"),
+        `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`,
+      );
+      const binary = join(binDir, "agy");
+      writeFileSync(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          `writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+          "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: 'ignore' });",
+          `writeFileSync(${JSON.stringify(grandchildPidPath)}, String(child.pid));`,
+          "child.unref();",
+          "process.stdout.write('antigravity final\\n');",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(binary, 0o755);
+
+      const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage", "--timeout", "60"], {
+        env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: () => {},
+      });
+
+      assert.equal(code, 0);
+      assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+      grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    } finally {
+      if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "CLI preserves timeout status when Antigravity exits during drain",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+    const grandchildPidPath = join(dir, "grandchild.pid");
+    let grandchildPid: number | undefined;
+    try {
+      const home = join(dir, "home");
+      const appDir = join(home, ".gemini", "antigravity-cli");
+      const binDir = join(dir, "bin");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(binDir);
+      writeFileSync(
+        join(appDir, "settings.json"),
+        `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`,
+      );
+      const binary = join(binDir, "agy");
+      writeFileSync(
+        binary,
+        [
+          "#!/bin/sh",
+          "/bin/sh -c 'trap \"\" TERM; while :; do sleep 1; done' &",
+          `printf '%s' "$!" > ${JSON.stringify(grandchildPidPath)}`,
+          "sleep 4.2",
+          "printf 'antigravity final\\n'",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(binary, 0o755);
+
+      const stdout: string[] = [];
+      const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage", "--timeout", "5"], {
+        env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      });
+
+      assert.equal(code, 124);
+      assert.match(stdout.join(""), /antigravity final/);
+      grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    } finally {
+      if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
 
 test("CLI --usage prices Codex hard default model", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));

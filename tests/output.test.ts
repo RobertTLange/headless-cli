@@ -89,6 +89,52 @@ test("extracts Antigravity JSON-shaped plain text answers", () => {
   assert.equal(extractFinalMessage("antigravity", "[1,2,3]\n"), "[1,2,3]");
 });
 
+test("extracts the latest Antigravity response from mixed trace and plain output", () => {
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        "startup warning",
+        JSON.stringify({ type: "PLANNER_RESPONSE", status: "DONE", content: "native final" }),
+        "",
+      ].join("\n"),
+    ),
+    "native final",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }),
+        "first line",
+        "",
+        "  indented line",
+        "",
+      ].join("\n"),
+    ),
+    "first line\n\n  indented line",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      ["startup warning", JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }), ""].join("\n"),
+    ),
+    "",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }),
+        "plain final",
+        JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }),
+        "",
+      ].join("\n"),
+    ),
+    "plain final",
+  );
+});
+
 test("extracts Antigravity final message from native transcript records", () => {
   assert.equal(
     extractFinalMessage(
@@ -259,6 +305,90 @@ test("extracts Codex usage from turn completed trace and prices with models.dev 
   });
 });
 
+test("extracts Antigravity turn usage from the latest status payload and prices its API equivalent", () => {
+  const trace = [
+    JSON.stringify({
+      type: "headless.antigravity.usage",
+      model: { id: "Gemini 3.5 Flash (Low)" },
+      context_window: { total_input_tokens: 153, current_usage: {} },
+    }),
+    JSON.stringify({
+      type: "headless.antigravity.usage",
+      model: { id: "Gemini 3.5 Flash (Low)" },
+      context_window: {
+        total_input_tokens: 153,
+        current_usage: {
+          input_tokens: 1000,
+          output_tokens: 50,
+          cache_creation_input_tokens: 100,
+          cache_read_input_tokens: 200,
+        },
+      },
+    }),
+  ].join("\n");
+
+  const summary = priceUsageSummary(extractUsageSummary("antigravity", trace), {
+    google: {
+      models: {
+        "gemini-3.5-flash": {
+          cost: { input: 1.5, cache_read: 0.15, cache_write: 1.5, output: 9 },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(summary, {
+    agent: "antigravity",
+    provider: "google",
+    model: "Gemini 3.5 Flash (Low)",
+    inputTokens: 1000,
+    cacheReadTokens: 200,
+    cacheWriteTokens: 100,
+    outputTokens: 50,
+    reasoningOutputTokens: 0,
+    totalTokens: 1350,
+    usageStatus: "reported",
+    cost: {
+      input: 0.0015,
+      cacheRead: 0.00003,
+      cacheWrite: 0.00015,
+      output: 0.00045,
+      total: 0.00213,
+    },
+    costBasis: "api-list-price-estimate",
+    pricingSource: "models.dev",
+    pricingStatus: "priced",
+  });
+});
+
+test("does not guess an Antigravity API-equivalent price for an unmapped model", () => {
+  const trace = JSON.stringify({
+    type: "headless.antigravity.usage",
+    model: { id: "GPT-OSS 120B (Medium)" },
+    context_window: {
+      current_usage: {
+        input_tokens: 1000,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+  });
+  const summary = priceUsageSummary(extractUsageSummary("antigravity", trace), {
+    arbitraryGateway: {
+      models: {
+        "gpt-oss-120b": { name: "GPT OSS 120B", cost: { input: 1, output: 2 } },
+      },
+    },
+  });
+
+  assert.equal(summary.model, "GPT-OSS 120B (Medium)");
+  assert.equal(summary.provider, null);
+  assert.equal(summary.totalTokens, 1050);
+  assert.equal(summary.cost, null);
+  assert.equal(summary.pricingStatus, "missing");
+});
+
 test("extracts Claude usage and preserves native cost", () => {
   const trace = JSON.stringify({
     type: "result",
@@ -406,6 +536,7 @@ test("does not price missing usage as zero", () => {
 
 test("classifies malformed usage-shaped records as missing", () => {
   const cases: Array<[AgentName, unknown]> = [
+    ["antigravity", { type: "headless.antigravity.usage", context_window: { current_usage: { unexpected: true } } }],
     ["claude", { type: "result", usage: { unexpected: true } }],
     ["codex", { type: "turn.completed", usage: { unexpected: true } }],
     ["cursor", { type: "result", usage: { unexpected: true } }],

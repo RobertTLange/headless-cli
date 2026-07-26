@@ -16,6 +16,7 @@ const skippedItemTypes = new Set([
 const antigravityTraceTypes = new Set([
   "assistant response",
   "conversation history",
+  "headless.antigravity.usage",
   "planner response",
   "session meta",
   "system message",
@@ -228,6 +229,15 @@ function isAntigravityTraceValue(value: unknown): boolean {
   );
 }
 
+export function isAntigravityStructuredOutput(line: string): boolean {
+  try {
+    const value = JSON.parse(line) as unknown;
+    return collectCandidates(value, "antigravity").length > 0 || isAntigravityTraceValue(value);
+  } catch {
+    return false;
+  }
+}
+
 function flattenRecords(value: unknown): JsonRecord[] {
   if (Array.isArray(value)) {
     return value.flatMap((item) => flattenRecords(item));
@@ -283,14 +293,66 @@ function extractGeminiDeltaMessage(values: unknown[]): string {
   return latest.trim();
 }
 
-export function extractFinalMessage(agent: AgentName, stdout: string): string {
-  const values = parseJsonValues(stdout);
-  if (agent === "antigravity") {
-    const candidates = values.flatMap((value) => collectCandidates(value, agent));
-    if (candidates.length > 0) return candidates.at(-1)?.trim() ?? "";
-    return values.some(isAntigravityTraceValue) ? "" : stdout.trim();
+function extractAntigravityFinalMessage(stdout: string): string {
+  let latest = "";
+  let latestIsNativeResponse = false;
+  let sawNativeTrace = false;
+  let plainLines: string[] = [];
+  const finishPlainResponse = () => {
+    const response = plainLines.join("\n").trim();
+    if (response) {
+      latest = response;
+      latestIsNativeResponse = false;
+    }
+    plainLines = [];
+  };
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (plainLines.length > 0) plainLines.push("");
+      continue;
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(trimmed) as unknown;
+    } catch {
+      plainLines.push(line);
+      continue;
+    }
+
+    const candidates = collectCandidates(value, "antigravity");
+    if (candidates.length > 0) {
+      plainLines = [];
+      latest = candidates.at(-1)?.trim() ?? latest;
+      latestIsNativeResponse = true;
+      sawNativeTrace = true;
+      continue;
+    }
+    if (isAntigravityTraceValue(value)) {
+      if (sawNativeTrace) {
+        finishPlainResponse();
+      } else {
+        plainLines = [];
+        if (!latestIsNativeResponse) latest = "";
+      }
+      sawNativeTrace = true;
+      continue;
+    }
+    plainLines.push(line);
   }
 
+  finishPlainResponse();
+  return latest;
+}
+
+export function extractFinalMessage(agent: AgentName, stdout: string): string {
+  if (agent === "antigravity") {
+    return extractAntigravityFinalMessage(stdout);
+  }
+
+  const values = parseJsonValues(stdout);
   if (agent === "gemini") {
     const deltaMessage = extractGeminiDeltaMessage(values);
     if (deltaMessage) return deltaMessage;

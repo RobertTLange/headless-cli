@@ -33,6 +33,7 @@ import {
   listAgents,
   waitTierForAgent,
 } from "./agents.js";
+import { prepareAntigravityUsageCapture, type AntigravityUsageCapture } from "./antigravity-usage.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
@@ -63,6 +64,7 @@ import {
   extractNativeSessionId,
   extractUsageSummary,
   fetchModelsDevPricing,
+  isAntigravityStructuredOutput,
   priceUsageSummary,
 } from "./output.js";
 import {
@@ -890,6 +892,7 @@ function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): Ag
 interface ExecuteResult {
   code: number;
   stdout: string;
+  finalMessageTrace?: string;
   usageTrace?: string;
   stdoutReceived?: boolean;
   stdoutEndsWithNewline?: boolean;
@@ -1027,7 +1030,9 @@ interface ExecuteCommandOptions {
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
   timeoutSeconds?: number;
+  captureFinalMessageTrace?: boolean;
   captureRelevantTrace?: boolean;
+  cleanupBeforeParentSignalExit?: () => void;
 }
 
 interface WaitingSpinner {
@@ -1396,6 +1401,16 @@ function suppressKnownStderr(agent: AgentName, text: string): string {
     .join("");
 }
 
+function boundedUtf8Tail(text: string, maxBytes: number): string {
+  const encoded = Buffer.from(text, "utf8");
+  if (encoded.byteLength <= maxBytes) return text;
+  let start = encoded.byteLength - maxBytes;
+  while (start < encoded.byteLength && (encoded[start] & 0xc0) === 0x80) {
+    start += 1;
+  }
+  return encoded.subarray(start).toString("utf8");
+}
+
 async function executeCommand(
   agent: AgentName,
   command: BuiltCommand,
@@ -1425,15 +1440,19 @@ async function executeCommand(
       let traceRowDiscarded = false;
       const relevantTrace: string[] = [];
       let relevantTraceBytes = 0;
+      const finalMessageTrace: string[] = [];
+      let finalMessageTraceBytes = 0;
       let pinnedIdentityTrace = "";
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
       let termination: { code: number } | undefined;
       let forceKill: NodeJS.Timeout | undefined;
       let forceFinish: NodeJS.Timeout | undefined;
+      let forceDrain: NodeJS.Timeout | undefined;
       let removeParentSignalHandlers = () => {};
       const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
+      const maxFinalMessageTraceBytes = 64 * 1024;
       const maxCapturedTraceRowBytes = 4 * 1024 * 1024;
       const maxPinnedIdentityBytes = 16 * 1024;
       const relevantTracePattern =
@@ -1460,8 +1479,24 @@ async function executeCommand(
           relevantTraceBytes -= Buffer.byteLength(removed, "utf8");
         }
       };
+      const appendFinalMessageLine = (line: string) => {
+        let capturedLine = line;
+        let entryBytes = Buffer.byteLength(capturedLine, "utf8") + 1;
+        if (entryBytes > maxFinalMessageTraceBytes) {
+          if (isAntigravityStructuredOutput(capturedLine)) return;
+          capturedLine = boundedUtf8Tail(capturedLine, maxFinalMessageTraceBytes - 1);
+          entryBytes = Buffer.byteLength(capturedLine, "utf8") + 1;
+        }
+        const entry = `${capturedLine}\n`;
+        finalMessageTrace.push(entry);
+        finalMessageTraceBytes += entryBytes;
+        while (finalMessageTraceBytes > maxFinalMessageTraceBytes && finalMessageTrace.length > 1) {
+          const removed = finalMessageTrace.shift() ?? "";
+          finalMessageTraceBytes -= Buffer.byteLength(removed, "utf8");
+        }
+      };
       const captureRelevantChunk = (chunk: string) => {
-        if (!options.captureRelevantTrace) return;
+        if (!options.captureRelevantTrace && !options.captureFinalMessageTrace) return;
         const fragments = chunk.split("\n");
         for (let index = 0; index < fragments.length; index += 1) {
           if (!traceRowDiscarded) {
@@ -1474,15 +1509,22 @@ async function executeCommand(
           if (index < fragments.length - 1) {
             if (!traceRowDiscarded) {
               const line = traceBuffer.endsWith("\r") ? traceBuffer.slice(0, -1) : traceBuffer;
-              appendRelevantTrace(line);
+              if (options.captureRelevantTrace) appendRelevantTrace(line);
+              if (options.captureFinalMessageTrace) appendFinalMessageLine(line);
             }
             traceBuffer = "";
             traceRowDiscarded = false;
           }
         }
       };
+      const flushTraceBuffer = () => {
+        if (traceBuffer && !traceRowDiscarded) {
+          if (options.captureRelevantTrace) appendRelevantTrace(traceBuffer);
+          if (options.captureFinalMessageTrace) appendFinalMessageLine(traceBuffer);
+        }
+        traceBuffer = "";
+      };
       const readRelevantTrace = () => {
-        if (traceBuffer && !traceRowDiscarded) appendRelevantTrace(traceBuffer);
         const rollingTrace = relevantTrace.join("");
         return pinnedIdentityTrace && !rollingTrace.includes(pinnedIdentityTrace)
           ? `${pinnedIdentityTrace}${rollingTrace}`
@@ -1502,13 +1544,21 @@ async function executeCommand(
         if (forceFinish) {
           clearTimeout(forceFinish);
         }
+        if (forceDrain) {
+          clearTimeout(forceDrain);
+        }
         removeParentSignalHandlers();
+        flushTraceBuffer();
+        result.finalMessageTrace = finalMessageTrace.join("") || undefined;
         result.usageTrace = readRelevantTrace() || undefined;
         result.stdoutReceived = stdoutReceived;
         result.stdoutEndsWithNewline = stdoutEndsWithNewline;
         resolve(result);
       };
-      const ownsChildProcessGroup = process.platform !== "win32" && options.timeoutSeconds !== undefined;
+      const ownsChildProcessGroup =
+        process.platform !== "win32" &&
+        (options.timeoutSeconds !== undefined || options.cleanupBeforeParentSignalExit !== undefined);
+      const handlesParentSignals = ownsChildProcessGroup || options.cleanupBeforeParentSignalExit !== undefined;
       const child = spawn(command.command, command.args, {
         cwd,
         detached: ownsChildProcessGroup,
@@ -1528,33 +1578,46 @@ async function executeCommand(
         child.kill(signal);
       };
 
-      if (ownsChildProcessGroup) {
+      if (handlesParentSignals) {
         const handlers = new Map<NodeJS.Signals, () => void>();
         removeParentSignalHandlers = () => {
           for (const [signal, handler] of handlers) {
             process.off(signal, handler);
           }
         };
-        for (const signal of ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"] as NodeJS.Signals[]) {
+        const exitSignals: NodeJS.Signals[] =
+          process.platform === "win32"
+            ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+            : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
+        for (const signal of exitSignals) {
           const handler = () => {
+            const hasExternalListener = process.listeners(signal).some((listener) => listener !== handler);
             signalChildTree(signal);
-            removeParentSignalHandlers();
-            process.kill(process.pid, signal);
+            try {
+              options.cleanupBeforeParentSignalExit?.();
+            } finally {
+              removeParentSignalHandlers();
+              if (!hasExternalListener) {
+                process.kill(process.pid, signal);
+              }
+            }
           };
           handlers.set(signal, handler);
           process.once(signal, handler);
         }
-        const suspendHandler = () => {
-          signalChildTree("SIGTSTP");
-          process.kill(process.pid, "SIGSTOP");
-        };
-        const continueHandler = () => {
-          signalChildTree("SIGCONT");
-        };
-        handlers.set("SIGTSTP", suspendHandler);
-        handlers.set("SIGCONT", continueHandler);
-        process.on("SIGTSTP", suspendHandler);
-        process.on("SIGCONT", continueHandler);
+        if (ownsChildProcessGroup) {
+          const suspendHandler = () => {
+            signalChildTree("SIGTSTP");
+            process.kill(process.pid, "SIGSTOP");
+          };
+          const continueHandler = () => {
+            signalChildTree("SIGCONT");
+          };
+          handlers.set("SIGTSTP", suspendHandler);
+          handlers.set("SIGCONT", continueHandler);
+          process.on("SIGTSTP", suspendHandler);
+          process.on("SIGCONT", continueHandler);
+        }
       }
 
       const terminateChild = (code: number) => {
@@ -1621,7 +1684,28 @@ async function executeCommand(
         stderr(message);
         finish({ code: termination?.code ?? 127, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
+      child.on("exit", (code, signal) => {
+        if (options.cleanupBeforeParentSignalExit === undefined || termination !== undefined || settled) {
+          return;
+        }
+        forceDrain = setTimeout(() => {
+          if (settled || termination) return;
+          signalChildTree("SIGKILL");
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish({
+            code: signal ? 1 : (code ?? 1),
+            stdout: capturedStdout,
+            stdoutReceived,
+            stdoutEndsWithNewline,
+          });
+        }, terminationGraceMs);
+        forceDrain.unref();
+      });
       child.on("close", (code, signal) => {
+        if (ownsChildProcessGroup && options.cleanupBeforeParentSignalExit !== undefined) {
+          signalChildTree("SIGKILL");
+        }
         if (termination) {
           signalChildTree("SIGKILL");
         }
@@ -3689,14 +3773,31 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     statusReporter?.start();
     waitingSpinner?.start();
     let result: ExecuteResult | undefined;
-    try {
-      if (parsed.runId && parsed.role && nodeId) {
-        updateNodeStatus(env, parsed.runId, nodeId, "busy");
+    let antigravityUsageTrace = "";
+    let antigravityUsageCapture: AntigravityUsageCapture | undefined;
+    if (parsed.agent === "antigravity" && parsed.usage && !parsed.docker && !parsed.modal) {
+      try {
+        antigravityUsageCapture = prepareAntigravityUsageCapture(env, cwd);
+        if (antigravityUsageCapture) {
+          command = {
+            ...command,
+            env: { ...(command.env ?? {}), ...antigravityUsageCapture.commandEnv },
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        displayStderr(`headless: could not prepare Antigravity usage capture: ${message}\n`);
       }
-      const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
-      const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
-      result = parsed.modal
-        ? await executeModalAgent({
+    }
+    try {
+      try {
+        if (parsed.runId && parsed.role && nodeId) {
+          updateNodeStatus(env, parsed.runId, nodeId, "busy");
+        }
+        const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
+        const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
+        result = parsed.modal
+          ? await executeModalAgent({
             agent: parsed.agent,
             appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
             command,
@@ -3722,75 +3823,89 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             stdoutHandling,
             timeoutSeconds: modalTimeoutSeconds,
             workDir: cwd ?? process.cwd(),
-          })
-        : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
-            stdout,
-            stdoutHandling,
-            stdoutLog: commandStdoutLog,
-            stderr: commandStderr,
-            timeoutSeconds: commandTimeoutSeconds,
-            captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
-          });
-      if (parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
-        appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
+            })
+          : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
+              stdout,
+              stdoutHandling,
+              stdoutLog: commandStdoutLog,
+              stderr: commandStderr,
+              timeoutSeconds: commandTimeoutSeconds,
+              captureFinalMessageTrace: parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId),
+              captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
+              cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
+            });
+        if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
+          appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
+        }
+      } finally {
+        waitingSpinner?.stop();
+        antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
+        antigravityUsageCapture?.cleanup();
+      }
+
+      if (!result) {
+        throw new CliError("agent execution did not produce a result");
+      }
+      const commandTrace = result.stdout || result.finalMessageTrace || result.usageTrace || "";
+      const usageCommandTrace = result.stdout || result.usageTrace || result.finalMessageTrace || "";
+      const usageTrace = antigravityUsageTrace
+        ? `${usageCommandTrace}\n${antigravityUsageTrace}`
+        : usageCommandTrace;
+      if (result.code === 0 && sessionPlan) {
+        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
       }
       if (parsed.runId && parsed.role && nodeId) {
-        const commandTrace = result.stdout || result.usageTrace || "";
-        const finalMessage = extractFinalMessage(parsed.agent, commandTrace);
-        const metrics = extractRunNodeMetrics(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env));
+        const finalMessage =
+          extractFinalMessage(parsed.agent, commandTrace) ||
+          (result.usageTrace && result.usageTrace !== commandTrace
+            ? extractFinalMessage(parsed.agent, result.usageTrace)
+            : "");
+        const metrics = extractRunNodeMetrics(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env));
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
         }
       }
+      if (parsed.json) {
+        if (parsed.usage) {
+          const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
+          const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
+          if (stdoutReceived && !stdoutEndsWithNewline) {
+            stdout("\n");
+          }
+          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+        }
+        return result.code;
+      }
+
+      const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
+      if (finalMessage) {
+        if (parsed.debug) {
+          if (!result.stdout.endsWith("\n")) {
+            stdout("\n");
+          }
+          stdout(`--- final message ---\n${finalMessage}\n`);
+        } else {
+          stdout(`${finalMessage}\n`);
+        }
+        if (parsed.usage) {
+          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+        }
+        return result.code;
+      }
+      const agentError = extractAgentError(parsed.agent, result.stdout);
+      if (agentError) {
+        stderr(`headless: ${agentError}\n`);
+        return result.code === 0 ? 1 : result.code;
+      }
+      if (result.code === 0) {
+        stderr("headless: could not extract final message; rerun with --json for raw trace\n");
+        return 1;
+      }
+      return result.code;
     } finally {
-      waitingSpinner?.stop();
       statusReporter?.stop();
     }
-    if (!result) {
-      throw new CliError("agent execution did not produce a result");
-    }
-    const commandTrace = result.stdout || result.usageTrace || "";
-    if (result.code === 0 && sessionPlan) {
-      await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
-    }
-    if (parsed.json) {
-      if (parsed.usage) {
-        const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
-        const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
-        if (stdoutReceived && !stdoutEndsWithNewline) {
-          stdout("\n");
-        }
-        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
-      }
-      return result.code;
-    }
-
-    const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-    if (finalMessage) {
-      if (parsed.debug) {
-        if (!result.stdout.endsWith("\n")) {
-          stdout("\n");
-        }
-        stdout(`--- final message ---\n${finalMessage}\n`);
-      } else {
-        stdout(`${finalMessage}\n`);
-      }
-      if (parsed.usage) {
-        stdout(await buildUsageOutput(parsed.agent, commandTrace, usageContext(parsed.agent, configuredDefaults, env)));
-      }
-      return result.code;
-    }
-    const agentError = extractAgentError(parsed.agent, result.stdout);
-    if (agentError) {
-      stderr(`headless: ${agentError}\n`);
-      return result.code === 0 ? 1 : result.code;
-    }
-    if (result.code === 0) {
-      stderr("headless: could not extract final message; rerun with --json for raw trace\n");
-      return 1;
-    }
-    return result.code;
   } catch (error) {
     if (registeredRunNode) {
       try {

@@ -212,6 +212,63 @@ function extractProvider(records: JsonRecord[], context: { provider?: string; mo
   return defaultProvider(agent);
 }
 
+function antigravityPricingModel(model: string): { provider?: string; model?: string } {
+  const baseModel = model.replace(/\s+\((?:low|medium|high|thinking)\)$/i, "").trim();
+  const normalized = baseModel.toLowerCase();
+  if (normalized === "gemini 3.5 flash") return { provider: "google", model: "gemini-3.5-flash" };
+  if (normalized === "gemini 3.1 pro") return { provider: "google", model: "gemini-3.1-pro-preview" };
+  if (normalized === "claude sonnet 4.6") return { provider: "anthropic", model: "claude-sonnet-4-6" };
+  if (normalized === "claude opus 4.6") return { provider: "anthropic", model: "claude-opus-4-6" };
+  return {};
+}
+
+function extractAntigravityUsage(
+  records: JsonRecord[],
+  context: { provider?: string; model?: string },
+): UsageSummary | undefined {
+  const record = latestRecordWith(records, (item) => {
+    if (asString(item.type) !== "headless.antigravity.usage") return false;
+    const usage = asRecord(asRecord(item.context_window).current_usage);
+    return hasNumericField(usage, [
+      "input_tokens",
+      "output_tokens",
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+    ]);
+  });
+  if (!record) return undefined;
+
+  const usage = asRecord(asRecord(record.context_window).current_usage);
+  const statusModel = asRecord(record.model);
+  const model =
+    asString(statusModel.display_name).trim() || asString(statusModel.id).trim() || requestedProviderModel(context).model;
+  const pricingModel = antigravityPricingModel(model ?? "");
+  const inputTokens = asNumber(usage.input_tokens);
+  const cacheReadTokens = asNumber(usage.cache_read_input_tokens);
+  const cacheWriteTokens = asNumber(usage.cache_creation_input_tokens);
+  const outputTokens = asNumber(usage.output_tokens);
+
+  return summarizeUsage({
+    agent: "antigravity",
+    provider: pricingModel.provider,
+    model,
+    inputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    outputTokens,
+    modelBreakdowns: [
+      {
+        provider: pricingModel.provider,
+        model: pricingModel.model,
+        inputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        outputTokens,
+      },
+    ],
+  });
+}
+
 function extractClaudeUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) =>
     hasNumericField(asRecord(item.usage), [
@@ -400,17 +457,19 @@ export function extractUsageSummary(
 ): UsageSummary {
   const records = parseJsonValues(stdout).flatMap(flattenRecords);
   const summary =
-    agent === "claude"
-      ? extractClaudeUsage(records, context)
-      : agent === "codex"
-        ? extractCodexUsage(records, context)
-        : agent === "cursor"
-          ? extractCursorUsage(records, context)
-          : agent === "gemini"
-            ? extractGeminiUsage(records, context)
-            : agent === "opencode"
-              ? extractOpencodeUsage(records, context)
-              : extractPiUsage(records, context);
+    agent === "antigravity"
+      ? extractAntigravityUsage(records, context)
+      : agent === "claude"
+        ? extractClaudeUsage(records, context)
+        : agent === "codex"
+          ? extractCodexUsage(records, context)
+          : agent === "cursor"
+            ? extractCursorUsage(records, context)
+            : agent === "gemini"
+              ? extractGeminiUsage(records, context)
+              : agent === "opencode"
+                ? extractOpencodeUsage(records, context)
+                : extractPiUsage(records, context);
 
   return (
     summary ??
