@@ -2,16 +2,20 @@
 
 ## TBD
 
-- Added a typed Python SDK with synchronous and asynchronous clients, structured streaming, CLI namespace coverage, subprocess cancellation and process-tree cleanup, and a raw invocation escape hatch.
-- Added a versioned JSON/NDJSON SDK protocol for stable machine-readable CLI results, errors, traces, capability discovery, and structured session, run, cron, config, and diagnostic output.
-- Added Python 3.10 and 3.14 CI coverage plus guarded PyPI trusted publishing for the `headless-cli` package.
-- Added durable Docker sessions with `--docker --session <name>`, persisting each native agent home under `~/.headless/docker-sessions` for multi-turn conversations while keeping the default Docker mode ephemeral.
+- Added a typed Python SDK with synchronous and asynchronous clients, structured streaming, CLI namespace coverage, subprocess cancellation and process-tree cleanup, and a raw invocation escape hatch (#22).
+- Added a versioned JSON/NDJSON SDK protocol for stable machine-readable CLI results, errors, traces, capability discovery, and structured session, run, cron, config, and diagnostic output (#22).
+- Added Python 3.10 and 3.14 CI coverage plus guarded PyPI trusted publishing for the `headless-cli` package (#22).
+- Fixed structured SDK errors to preserve actionable public messages without exposing forwarded environment values, filesystem paths, malformed configuration contents, or external command stderr (#22).
+- Fixed SDK NDJSON streaming to honor output backpressure across local and Modal execution, including bounded Modal chunks, cancellable drain waits, timeout termination, and Antigravity descendant cleanup (#22).
+- Fixed Python SDK protocol validation to reject boolean and floating-point versions in envelopes and sync/async capability negotiation (#22).
+- Updated the transitive `protobufjs` dependency to its patched 7.6.5 release (#22).
+- Added durable Docker sessions with `--docker --session <name>`, persisting each native agent home under `~/.headless/docker-sessions` for multi-turn conversations while keeping the default Docker mode ephemeral (#21).
 - Thanks to Anant Garg (@anantgar) for contributing durable Docker sessions.
-- Changed Docker auth seeding for Antigravity to mount only credential and settings files instead of copying its conversation and brain history into each container.
+- Changed Docker auth seeding for Antigravity to mount only credential and settings files instead of copying its conversation and brain history into each container (#20).
 - Thanks to Anant Garg (@anantgar) for contributing safer Antigravity Docker credential seeding.
-- Added combined `--json --usage` output for one-shot runs: Headless streams the native trace unchanged, appends normalized usage after the native process exits, and does not require an extractable final assistant message.
-- Clarified accounting provenance with `usageStatus` and `costBasis`: missing usage stays unknown instead of becoming a priced zero, and native-reported costs are distinguished from API list-price estimates calculated from token counts and `models.dev` pricing.
-- Fixed local Antigravity `--usage` output to collect input, cache-read, cache-write, and output tokens from the documented status-line payload and price known models with API-equivalent models.dev rates, without modifying the user's Antigravity settings.
+- Added combined `--json --usage` output for one-shot runs: Headless streams the native trace unchanged, appends normalized usage after the native process exits, and does not require an extractable final assistant message (#18).
+- Clarified accounting provenance with `usageStatus` and `costBasis`: missing usage stays unknown instead of becoming a priced zero, and native-reported costs are distinguished from API list-price estimates calculated from token counts and `models.dev` pricing (#18).
+- Fixed local Antigravity `--usage` output to collect input, cache-read, cache-write, and output tokens from the documented status-line payload and price known models with API-equivalent models.dev rates, without modifying the user's Antigravity settings (#19).
 - Thanks to Anant Garg (@anantgar) for contributing combined JSON traces with usage accounting.
 
 ## 0.4.0 - 2026-06-18
