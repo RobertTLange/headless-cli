@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -220,6 +220,79 @@ test("mounts only selected Antigravity credential files from its state directory
     assert.ok(!command.args.some((arg) => arg.includes("conversation_summaries.db")));
     assert.ok(!command.args.some((arg) => arg.includes("/antigravity-cli:/tmp/headless-host-home")));
     assert.ok(!command.args.some((arg) => arg.includes(`${configDir}:`)));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("mounts a resolved symlinked Antigravity credential file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const antigravityDir = join(home, ".gemini", "antigravity-cli");
+    const workDir = join(dir, "project");
+    const tokenFile = join(dir, "secrets", "antigravity-oauth-token");
+    mkdirSync(antigravityDir, { recursive: true });
+    mkdirSync(join(dir, "secrets"), { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(tokenFile, "token");
+    symlinkSync(tokenFile, join(antigravityDir, "antigravity-oauth-token"));
+
+    const command = buildDockerAgentCommand({
+      agent: "antigravity",
+      command: {
+        command: "agy",
+        args: ["--prompt", "hello"],
+      },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { HOME: home },
+      hostUser: "501:20",
+      image: DEFAULT_DOCKER_IMAGE,
+      workDir,
+    });
+
+    assert.ok(
+      command.args.includes(
+        `${realpathSync(tokenFile)}:/tmp/headless-host-home/.gemini/antigravity-cli/antigravity-oauth-token:ro`,
+      ),
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("does not mount a symlinked Antigravity credential with a directory target", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const antigravityDir = join(home, ".gemini", "antigravity-cli");
+    const workDir = join(dir, "project");
+    const tokenDirectory = join(dir, "secrets");
+    mkdirSync(antigravityDir, { recursive: true });
+    mkdirSync(tokenDirectory, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    symlinkSync(tokenDirectory, join(antigravityDir, "antigravity-oauth-token"));
+
+    const command = buildDockerAgentCommand({
+      agent: "antigravity",
+      command: {
+        command: "agy",
+        args: ["--prompt", "hello"],
+      },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { HOME: home },
+      hostUser: "501:20",
+      image: DEFAULT_DOCKER_IMAGE,
+      workDir,
+    });
+
+    assert.ok(
+      !command.args.some((arg) =>
+        arg.endsWith(":/tmp/headless-host-home/.gemini/antigravity-cli/antigravity-oauth-token:ro"),
+      ),
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

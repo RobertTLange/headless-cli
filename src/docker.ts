@@ -94,10 +94,14 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
     if (selectedFiles && statSync(hostPath).isDirectory()) {
       for (const fileName of selectedFiles) {
         const hostFile = join(hostPath, fileName);
-        if (!existsSync(hostFile) || !lstatSync(hostFile).isFile()) {
+        if (!existsSync(hostFile)) {
           continue;
         }
-        args.push("--volume", `${hostFile}:${join(hostHomeMountRoot, relPath, fileName)}:ro`);
+        const mountSource = lstatSync(hostFile).isSymbolicLink() ? realpathSync(hostFile) : hostFile;
+        if (!statSync(mountSource).isFile()) {
+          continue;
+        }
+        args.push("--volume", `${mountSource}:${join(hostHomeMountRoot, relPath, fileName)}:ro`);
       }
       mounted.add(hostPath);
       break;
