@@ -77,6 +77,7 @@ import {
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
 import { acquireLaunchLock } from "./launch-lock.js";
+import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
 import { runCronDaemon } from "./cron.js";
@@ -1420,6 +1421,7 @@ async function executeCommand(
       let stdoutReceived = false;
       let stdoutEndsWithNewline = false;
       let traceBuffer = "";
+      let traceRowDiscarded = false;
       const relevantTrace: string[] = [];
       let relevantTraceBytes = 0;
       let pinnedIdentityTrace = "";
@@ -1431,19 +1433,25 @@ async function executeCommand(
       let removeParentSignalHandlers = () => {};
       const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
+      const maxCapturedTraceRowBytes = 4 * 1024 * 1024;
       const maxPinnedIdentityBytes = 16 * 1024;
       const relevantTracePattern =
         /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text|planner_response|assistant_response)"|"role"\s*:\s*"assistant"/i;
       const codexIdentityPattern = /"type"\s*:\s*"thread\.started"/;
       const appendRelevantTrace = (line: string) => {
-        const trimmed = line.trim();
+        let trimmed = line.trim();
         if (!trimmed || !relevantTracePattern.test(trimmed)) return;
+        let entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
+        if (entryBytes > maxRelevantTraceBytes) {
+          trimmed = compactOversizedTraceLine(agent, trimmed);
+          if (!trimmed || !relevantTracePattern.test(trimmed)) return;
+          entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
+        }
+        if (entryBytes > maxRelevantTraceBytes) return;
         const entry = `${trimmed}\n`;
-        const entryBytes = Buffer.byteLength(entry, "utf8");
         if (agent === "codex" && codexIdentityPattern.test(trimmed) && entryBytes <= maxPinnedIdentityBytes) {
           pinnedIdentityTrace = entry;
         }
-        if (entryBytes > maxRelevantTraceBytes) return;
         relevantTrace.push(entry);
         relevantTraceBytes += entryBytes;
         while (relevantTraceBytes > maxRelevantTraceBytes && relevantTrace.length > 1) {
@@ -1453,16 +1461,27 @@ async function executeCommand(
       };
       const captureRelevantChunk = (chunk: string) => {
         if (!options.captureRelevantTrace) return;
-        traceBuffer += chunk;
-        if (Buffer.byteLength(traceBuffer, "utf8") > maxRelevantTraceBytes) {
-          traceBuffer = traceBuffer.slice(-maxRelevantTraceBytes);
+        const fragments = chunk.split("\n");
+        for (let index = 0; index < fragments.length; index += 1) {
+          if (!traceRowDiscarded) {
+            traceBuffer += fragments[index] ?? "";
+            if (Buffer.byteLength(traceBuffer, "utf8") > maxCapturedTraceRowBytes) {
+              traceBuffer = "";
+              traceRowDiscarded = true;
+            }
+          }
+          if (index < fragments.length - 1) {
+            if (!traceRowDiscarded) {
+              const line = traceBuffer.endsWith("\r") ? traceBuffer.slice(0, -1) : traceBuffer;
+              appendRelevantTrace(line);
+            }
+            traceBuffer = "";
+            traceRowDiscarded = false;
+          }
         }
-        const lines = traceBuffer.split(/\r?\n/);
-        traceBuffer = lines.pop() ?? "";
-        for (const line of lines) appendRelevantTrace(line);
       };
       const readRelevantTrace = () => {
-        if (traceBuffer) appendRelevantTrace(traceBuffer);
+        if (traceBuffer && !traceRowDiscarded) appendRelevantTrace(traceBuffer);
         const rollingTrace = relevantTrace.join("");
         return pinnedIdentityTrace && !rollingTrace.includes(pinnedIdentityTrace)
           ? `${pinnedIdentityTrace}${rollingTrace}`

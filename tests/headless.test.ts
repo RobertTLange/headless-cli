@@ -1479,6 +1479,107 @@ test("CLI --json --usage keeps usage accounting bounded around a large native tr
   }
 });
 
+test("CLI --json --usage preserves terminal usage from oversized JSON rows", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+    const cases: Array<{
+      agent: "claude" | "cursor" | "opencode" | "pi";
+      binaryName: string;
+      row: Record<string, unknown>;
+      expectedTotalTokens: number;
+      expectedCost?: number;
+    }> = [
+      {
+        agent: "claude",
+        binaryName: "claude",
+        row: {
+          type: "result",
+          total_cost_usd: 0.25,
+          usage: { input_tokens: 10, cache_read_input_tokens: 3, output_tokens: 2 },
+        },
+        expectedTotalTokens: 15,
+        expectedCost: 0.25,
+      },
+      {
+        agent: "cursor",
+        binaryName: "agent",
+        row: {
+          type: "result",
+          usage: { inputTokens: 10, cacheReadTokens: 3, outputTokens: 2 },
+        },
+        expectedTotalTokens: 15,
+      },
+      {
+        agent: "opencode",
+        binaryName: "opencode",
+        row: {
+          type: "step_finish",
+          part: { cost: 0.2, tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 3 } } },
+        },
+        expectedTotalTokens: 16,
+        expectedCost: 0.2,
+      },
+      {
+        agent: "pi",
+        binaryName: "pi",
+        row: {
+          type: "message_end",
+          message: {
+            model: "gpt-test",
+            provider: "openai",
+            usage: { input: 10, cacheRead: 3, output: 2, cost: { total: 0.15 } },
+          },
+        },
+        expectedTotalTokens: 15,
+        expectedCost: 0.15,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+      try {
+        const binDir = join(dir, "bin");
+        await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+          await mkdir(binDir);
+          const binary = join(binDir, testCase.binaryName);
+          await writeFile(
+            binary,
+            [
+              "#!/usr/bin/env node",
+              `const metadata = ${JSON.stringify(testCase.row)};`,
+              "const row = { type: metadata.type, result: 'x'.repeat(300_000), ...metadata };",
+              "process.stdout.write(JSON.stringify(row) + '\\n');",
+              "",
+            ].join("\n"),
+          );
+          await chmod(binary, 0o755);
+        });
+
+        const stdout: string[] = [];
+        const code = await runCli([testCase.agent, "--prompt", "hello", "--json", "--usage"], {
+          env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+          stdout: (text) => stdout.push(text),
+        });
+
+        assert.equal(code, 0);
+        assert.ok(stdout.join("").length > 300_000);
+        const usage = JSON.parse(stdout.join("").trim().split("\n").at(-1) ?? "").usage;
+        assert.equal(usage.totalTokens, testCase.expectedTotalTokens);
+        assert.equal(usage.usageStatus, "reported");
+        if (testCase.expectedCost !== undefined) {
+          assert.equal(usage.cost.total, testCase.expectedCost);
+          assert.equal(usage.costBasis, "native-reported");
+        }
+      } finally {
+        rmSync(dir, { force: true, recursive: true });
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("CLI --json --usage preserves Codex session identity across a large relevant trace", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;
