@@ -41,6 +41,17 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /ENV AGY_CLI_DISABLE_AUTO_UPDATE=true/);
 });
 
+test("Docker image workflow publishes the pinned image for both host architectures", () => {
+  const workflow = readFileSync(".github/workflows/docker-image.yml", "utf8");
+
+  assert.match(workflow, /packages:\s+write/);
+  assert.match(workflow, /ghcr\.io\/roberttlange\/headless/);
+  assert.match(workflow, /platforms:\s+linux\/amd64,linux\/arm64/);
+  assert.match(workflow, /docker\/build-push-action@v6/);
+  assert.match(workflow, /provenance: mode=max/);
+  assert.match(workflow, /sbom: true/);
+});
+
 test("wraps stdin-based agent command in docker with workdir, user, env, and config mounts", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {
