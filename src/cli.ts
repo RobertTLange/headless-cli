@@ -52,6 +52,7 @@ import {
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
   ensureDockerSessionHome,
+  ensureDockerSessionStoreDirectory,
   readDockerCursorSessionId,
 } from "./docker.js";
 import {
@@ -101,7 +102,14 @@ import {
   validateRunId,
   type RunNode,
 } from "./runs.js";
-import { readStoredSession, sessionStorePath, writeStoredSession, writeStoredTmuxSession, type StoredTmuxWaitStrategy } from "./sessions.js";
+import {
+  readStoredSession,
+  SECURE_SESSION_STORE_ENV,
+  sessionStorePath,
+  writeStoredSession,
+  writeStoredTmuxSession,
+  type StoredTmuxWaitStrategy,
+} from "./sessions.js";
 import { quoteCommand } from "./shell.js";
 import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
@@ -1279,6 +1287,9 @@ async function persistSessionPlan(
     (await discoverNativeSessionId(agent, stdout, cwd, discoveryEnv, plan.startedAt, Boolean(dockerSessionHome)));
   if (!nativeId) {
     throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
+  }
+  if (dockerSessionHome) {
+    ensureDockerSessionStoreDirectory(dockerSessionHome);
   }
   writeStoredSession(env, {
     agent,
@@ -3775,7 +3786,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
     }
     dockerSessionLock = dockerSessionHome ? await acquireDockerSessionLock(dockerSessionHome) : undefined;
-    const sessionEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
+    if (dockerSessionHome) {
+      dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+      ensureDockerSessionStoreDirectory(dockerSessionHome);
+    }
+    const sessionEnv = dockerSessionHome
+      ? { ...env, HOME: dockerSessionHome, [SECURE_SESSION_STORE_ENV]: "1" }
+      : env;
     let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
@@ -4003,6 +4020,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return result.code;
     } finally {
       statusReporter?.stop();
+      if (dockerSessionHome) {
+        dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+        ensureDockerSessionStoreDirectory(dockerSessionHome);
+      }
     }
   } catch (error) {
     if (registeredRunNode) {

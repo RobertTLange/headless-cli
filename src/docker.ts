@@ -94,6 +94,10 @@ export function ensureDockerSessionHome(path: string): string {
   return realSessionHome;
 }
 
+export function ensureDockerSessionStoreDirectory(sessionHome: string): void {
+  ensurePrivateOwnedDirectory(join(sessionHome, ".headless"));
+}
+
 function ensureDockerSessionRoot(path: string): string {
   const created = mkdirSync(path, { recursive: true, mode: 0o700 }) !== undefined;
   return validateOwnedDirectory(path, created, false);

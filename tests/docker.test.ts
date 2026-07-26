@@ -10,6 +10,7 @@ import {
   dockerSessionHomePath,
   dockerSessionNativeId,
   ensureDockerSessionHome,
+  ensureDockerSessionStoreDirectory,
   DEFAULT_DOCKER_IMAGE,
   readDockerCursorSessionId,
 } from "../src/docker.ts";
@@ -493,6 +494,23 @@ test("rejects permissive macOS ACLs on Docker session roots", { skip: process.pl
       /permissive access ACL/,
     );
     assert.equal(existsSync(join(root, "codex")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("rejects symlinked Docker session metadata directories", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const sessionHome = ensureDockerSessionHome(join(dir, "sessions", "codex", "work"));
+    const external = join(dir, "external");
+    mkdirSync(external);
+    symlinkSync(external, join(sessionHome, ".headless"));
+
+    assert.throws(
+      () => ensureDockerSessionStoreDirectory(sessionHome),
+      /symbolic link/,
+    );
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
