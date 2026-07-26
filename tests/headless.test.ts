@@ -2197,6 +2197,59 @@ test("CLI --docker --session persists a durable home across turns", async () => 
   }
 });
 
+test("CLI revalidates Docker session storage before persisting container state", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    const externalStore = join(dir, "external-store");
+    mkdirSync(binDir);
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    mkdirSync(externalStore);
+    const docker = join(binDir, "docker");
+    writeFileSync(
+      docker,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "const volume = args.find((arg) => arg.endsWith(':/headless-home:rw'));",
+        "if (!volume) process.exit(11);",
+        "const sessionHome = volume.slice(0, -':/headless-home:rw'.length);",
+        "const store = path.join(sessionHome, '.headless');",
+        "fs.rmSync(store, { force: true, recursive: true });",
+        "fs.symlinkSync(process.env.HEADLESS_EXTERNAL_STORE, store);",
+        "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'untrusted-thread' }));",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'done' }));",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(docker, 0o755);
+
+    const stderr: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--docker", "--session", "work", "--prompt", "hello", "--work-dir", projectDir], {
+        env: {
+          ...process.env,
+          HEADLESS_EXTERNAL_STORE: externalStore,
+          HOME: homeDir,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stderr: (text) => stderr.push(text),
+        stdout: () => {},
+      }),
+      2,
+    );
+    assert.match(stderr.join(""), /symbolic link/);
+    assert.equal(existsSync(join(externalStore, "sessions.json")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI serializes concurrent turns for the same durable Docker session", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

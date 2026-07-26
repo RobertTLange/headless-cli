@@ -3974,6 +3974,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         antigravityUsageCapture?.cleanup();
       }
 
+      if (dockerSessionHome) {
+        dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+        ensureDockerSessionStoreDirectory(dockerSessionHome);
+      }
       if (!result) {
         throw new CliError("agent execution did not produce a result");
       }
@@ -4036,10 +4040,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return result.code;
     } finally {
       statusReporter?.stop();
-      if (dockerSessionHome) {
-        dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
-        ensureDockerSessionStoreDirectory(dockerSessionHome);
-      }
     }
   } catch (error) {
     if (registeredRunNode) {
