@@ -1,5 +1,19 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
 import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
@@ -7,16 +21,23 @@ import type { AgentName, BuiltCommand, Env } from "./types.js";
 
 export const DEFAULT_DOCKER_IMAGE = "ghcr.io/roberttlange/headless:latest";
 export const LOCAL_DOCKER_IMAGE = "headless-local:dev";
+export const DOCKER_SESSION_ROOT_ENV = "HEADLESS_DOCKER_SESSION_ROOT";
 const containerHome = "/headless-home";
 const hostHomeMountRoot = "/tmp/headless-host-home";
-const bootstrapScript = [
-  "set -eu",
-  `mkdir -p "${containerHome}"`,
-  `if [ -d "${hostHomeMountRoot}" ]; then cp -R "${hostHomeMountRoot}/." "$HOME"/; fi`,
-  'exec "$@"',
-].join("; ");
 
 type DockerEnvEntry = ForwardedEnvEntry;
+type DockerSessionBootstrap = "initialize-cursor";
+
+const dockerSessionAgentHomeVariables = {
+  acp: [],
+  antigravity: ["AGY_HOME", "ANTIGRAVITY_HOME"],
+  claude: ["CLAUDE_CONFIG_DIR"],
+  codex: ["CODEX_HOME"],
+  cursor: ["CURSOR_HOME"],
+  gemini: ["GEMINI_HOME"],
+  opencode: ["OPENCODE_DATA_HOME"],
+  pi: ["PI_CODING_AGENT_HOME"],
+} satisfies Record<AgentName, readonly string[]>;
 
 export interface DockerAgentCommandOptions {
   agent: AgentName;
@@ -26,8 +47,10 @@ export interface DockerAgentCommandOptions {
   env: Env;
   hostUser?: string;
   image: string;
+  persistentHome?: string;
   runDirHost?: string;
   runId?: string;
+  sessionBootstrap?: DockerSessionBootstrap;
   workDir: string;
 }
 
@@ -38,12 +61,267 @@ export function detectDockerHostUser(): string | undefined {
   return `${process.getuid()}:${process.getgid()}`;
 }
 
+export function dockerSessionHomePath(agent: AgentName, alias: string, env: Env): string | undefined {
+  const configuredRoot = env[DOCKER_SESSION_ROOT_ENV]?.trim();
+  if (configuredRoot && !isAbsolute(configuredRoot)) {
+    throw new Error(`${DOCKER_SESSION_ROOT_ENV} must be an absolute path`);
+  }
+  const root =
+    configuredRoot || (env.HOME ? join(env.HOME, ".headless", "docker-sessions") : undefined);
+  return root ? resolve(root, agent, dockerSessionDirectoryName(alias)) : undefined;
+}
+
+function dockerSessionDirectoryName(alias: string): string {
+  const digest = createHash("sha256").update(alias).digest("hex");
+  return `${alias.slice(0, 100)}-${digest}`;
+}
+
+export function ensureDockerSessionHome(path: string): string {
+  if (process.platform === "win32") {
+    throw new Error(
+      "durable Docker sessions are not supported on Windows because private directory ACLs cannot be validated",
+    );
+  }
+  const sessionHome = resolve(path);
+  const agentRoot = dirname(sessionHome);
+  const sessionRoot = dirname(agentRoot);
+  if (dirname(sessionRoot) === sessionRoot) {
+    throw new Error("Docker session root cannot be the filesystem root");
+  }
+  let realSessionRoot = ensureDockerSessionRoot(sessionRoot);
+  assertTrustedDirectoryAncestors(dirname(realSessionRoot));
+  realSessionRoot = validateOwnedDirectory(realSessionRoot, false, true);
+  const realAgentRoot = ensurePrivateOwnedDirectory(join(realSessionRoot, basename(agentRoot)));
+  const realSessionHome = ensurePrivateOwnedDirectory(join(realAgentRoot, basename(sessionHome)));
+  const relativeHome = relative(realSessionRoot, realSessionHome);
+  if (!isContainedRelativePath(relativeHome)) {
+    throw new Error("Docker session home escapes its configured root");
+  }
+  return realSessionHome;
+}
+
+export function ensureDockerSessionStoreDirectory(sessionHome: string): void {
+  ensurePrivateOwnedDirectory(join(sessionHome, ".headless"));
+}
+
+export function validateDockerSessionRootWorkDir(sessionHome: string, workDir: string): void {
+  validateDockerWorkDir(workDir);
+  const sessionRoot = canonicalProspectivePath(dirname(dirname(resolve(sessionHome))));
+  const canonicalWorkDir = realpathSync(workDir);
+  if (pathsOverlap(sessionRoot, canonicalWorkDir)) {
+    throw new Error("Docker session root must not overlap the work dir");
+  }
+}
+
+export function validateDockerWorkDir(workDir: string): void {
+  const requestedWorkDir = resolve(workDir);
+  if (pathsOverlap(containerHome, requestedWorkDir)) {
+    throw new Error(`Docker work dir must not overlap the container home ${containerHome}`);
+  }
+  const canonicalWorkDir = realpathSync(workDir);
+  if (pathsOverlap(containerHome, canonicalWorkDir)) {
+    throw new Error(`Docker work dir must not overlap the container home ${containerHome}`);
+  }
+}
+
+function canonicalProspectivePath(path: string): string {
+  let existingPath = resolve(path);
+  const missingSegments: string[] = [];
+  while (!existsSync(existingPath)) {
+    missingSegments.unshift(basename(existingPath));
+    const parent = dirname(existingPath);
+    if (parent === existingPath) break;
+    existingPath = parent;
+  }
+  return resolve(realpathSync(existingPath), ...missingSegments);
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+  return isSameOrContained(first, second) || isSameOrContained(second, first);
+}
+
+function isSameOrContained(root: string, candidate: string): boolean {
+  const relativePath = relative(root, candidate);
+  return relativePath === "" || isContainedRelativePath(relativePath);
+}
+
+function ensureDockerSessionRoot(path: string): string {
+  const created = mkdirSync(path, { recursive: true, mode: 0o700 }) !== undefined;
+  return validateOwnedDirectory(path, created, false);
+}
+
+function ensurePrivateOwnedDirectory(path: string): string {
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  return validateOwnedDirectory(path, true, true);
+}
+
+function validateOwnedDirectory(path: string, hardenPermissions: boolean, validateAcl: boolean): string {
+  const pathStats = lstatSync(path);
+  if (pathStats.isSymbolicLink()) {
+    throw new Error(`Docker session path contains a symbolic link: ${path}`);
+  }
+  if (!pathStats.isDirectory()) {
+    throw new Error(`Docker session path is not a directory: ${path}`);
+  }
+  assertCurrentUserOwnsDirectory(path, pathStats.uid);
+
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const descriptorStats = fstatSync(descriptor);
+    assertCurrentUserOwnsDirectory(path, descriptorStats.uid);
+    if (descriptorStats.dev !== pathStats.dev || descriptorStats.ino !== pathStats.ino) {
+      throw new Error(`Docker session path changed while validating: ${path}`);
+    }
+    if (!hardenPermissions && (descriptorStats.mode & 0o022) !== 0) {
+      throw new Error(`Docker session root must not be group- or world-writable: ${path}`);
+    }
+    if (hardenPermissions) {
+      fchmodSync(descriptor, 0o700);
+    }
+    assertDirectoryIdentity(path, descriptorStats);
+    const realPath = realpathSync(path);
+    assertDirectoryIdentity(realPath, descriptorStats);
+    if (validateAcl) {
+      assertNoUnsafeMacAcl(realPath);
+      assertDirectoryIdentity(realPath, descriptorStats);
+    }
+    return realPath;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function assertTrustedDirectoryAncestors(path: string): void {
+  const currentUserId = process.getuid?.();
+  let currentPath = realpathSync(path);
+  const ancestors: string[] = [];
+  while (true) {
+    ancestors.push(currentPath);
+    const parentPath = dirname(currentPath);
+    if (parentPath === currentPath) break;
+    currentPath = parentPath;
+  }
+  for (const ancestor of ancestors.reverse()) {
+    const pathStats = lstatSync(ancestor);
+    const descriptor = openSync(ancestor, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const stats = fstatSync(descriptor);
+      if (
+        !pathStats.isDirectory() ||
+        stats.dev !== pathStats.dev ||
+        stats.ino !== pathStats.ino
+      ) {
+        throw new Error(`Docker session root ancestor changed while validating: ${ancestor}`);
+      }
+      if (currentUserId !== undefined && stats.uid !== currentUserId && stats.uid !== 0) {
+        throw new Error(`Docker session root ancestor is owned by an untrusted user: ${ancestor}`);
+      }
+      const writableByOthers = (stats.mode & 0o022) !== 0;
+      const sticky = (stats.mode & 0o1000) !== 0;
+      if (writableByOthers && !sticky) {
+        throw new Error(`Docker session root ancestor is writable by other users: ${ancestor}`);
+      }
+      assertNoUnsafeMacAcl(ancestor);
+      assertDirectoryIdentity(ancestor, stats);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+}
+
+function assertDirectoryIdentity(path: string, expected: ReturnType<typeof fstatSync>): void {
+  const stats = lstatSync(path);
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    stats.dev !== expected.dev ||
+    stats.ino !== expected.ino
+  ) {
+    throw new Error(`Docker session path changed while validating: ${path}`);
+  }
+}
+
+function assertNoUnsafeMacAcl(path: string): void {
+  if (process.platform !== "darwin") return;
+  const result = spawnSync("/bin/ls", ["-lde", "--", path], {
+    encoding: "utf8",
+    env: { LC_ALL: "C" },
+    maxBuffer: 64 * 1024,
+    timeout: 2_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`could not validate Docker session path ACL: ${path}`);
+  }
+  if (/^\s*\d+:.*\ballow\b/im.test(result.stdout)) {
+    throw new Error(`Docker session path has a permissive access ACL: ${path}`);
+  }
+}
+
+function assertCurrentUserOwnsDirectory(path: string, ownerId: number): void {
+  if (typeof process.getuid === "function" && ownerId !== process.getuid()) {
+    throw new Error(`Docker session path is not owned by the current user: ${path}`);
+  }
+}
+
+export function dockerSessionAgentHomeEnvNames(agent: AgentName): readonly string[] {
+  return dockerSessionAgentHomeVariables[agent];
+}
+
+export function readDockerCursorSessionId(persistentHome: string): string {
+  const path = join(persistentHome, ".headless-cursor-session-id");
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile() || stats.size > 256) {
+      return "";
+    }
+    const nativeId = readFileSync(descriptor, "utf8").trim();
+    return /^[A-Za-z0-9_.:-]{1,256}$/.test(nativeId) ? nativeId : "";
+  } catch {
+    return "";
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
+  }
+}
+
+export function dockerSessionNativeId(agent: AgentName, nativeId: string | undefined, persistentHome: string): string | undefined {
+  if (!nativeId || agent !== "pi") {
+    return nativeId;
+  }
+  let resolvedNativeId = resolve(nativeId);
+  try {
+    resolvedNativeId = realpathSync(resolvedNativeId);
+  } catch {
+    // Retain the original value when a previously stored transcript no longer exists.
+  }
+  const relativePath = relative(resolve(persistentHome), resolvedNativeId);
+  if (!isContainedRelativePath(relativePath)) {
+    return nativeId;
+  }
+  return join(containerHome, relativePath);
+}
+
+function isContainedRelativePath(path: string): boolean {
+  return path !== "" && path !== ".." && !path.startsWith("../") && !path.startsWith("..\\") && !isAbsolute(path);
+}
+
 export function buildDockerAgentCommand(options: DockerAgentCommandOptions): BuiltCommand {
   const args = ["run", "--rm"];
   if (options.command.stdinText !== undefined || options.command.stdinFile !== undefined) {
     args.push("--interactive");
   }
-  args.push("--tmpfs", `${containerHome}:rw,mode=1777`);
+  if (options.persistentHome) {
+    args.push("--volume", `${options.persistentHome}:${containerHome}:rw`);
+  } else {
+    args.push("--tmpfs", `${containerHome}:rw,mode=1777`);
+  }
   if (options.hostUser) {
     args.push("--user", options.hostUser);
   }
@@ -59,7 +337,15 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
   args.push(...dockerEnvArgs(dockerEnvEntries));
   args.push(...options.dockerArgs);
-  args.push(options.image, "sh", "-lc", bootstrapScript, "headless-agent", options.command.command, ...options.command.args);
+  args.push(
+    options.image,
+    "sh",
+    "-lc",
+    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap),
+    "headless-agent",
+    options.command.command,
+    ...options.command.args,
+  );
 
   const dockerCommand: BuiltCommand = { command: "docker", args };
   if (options.command.env) {
@@ -72,6 +358,37 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     dockerCommand.stdinText = options.command.stdinText;
   }
   return dockerCommand;
+}
+
+function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBootstrap?: DockerSessionBootstrap): string {
+  const copyFlags = persistentHome ? "-R -n" : "-R";
+  const commands = [
+    "set -eu",
+    `export HOME="${containerHome}"`,
+    `mkdir -p "${containerHome}"`,
+    `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
+  ];
+  if (persistentHome) {
+    const agentHomeVariables = dockerSessionAgentHomeEnvNames(agent);
+    if (agentHomeVariables.length > 0) {
+      commands.push(`unset ${agentHomeVariables.join(" ")}`);
+    }
+  }
+  if (sessionBootstrap === "initialize-cursor") {
+    commands.push(
+      'cursor_session_id="$("$1" create-chat)"',
+      'if [ -z "$cursor_session_id" ]; then echo "Cursor did not return a session id" >&2; exit 1; fi',
+      'cursor_session_id_tmp="$(mktemp "$HOME/.headless-cursor-session-id.XXXXXX")"',
+      `printf '%s\\n' "$cursor_session_id" > "$cursor_session_id_tmp"`,
+      'mv -f "$cursor_session_id_tmp" "$HOME/.headless-cursor-session-id"',
+      'cursor_command="$1"',
+      "shift",
+      'exec "$cursor_command" --resume "$cursor_session_id" "$@"',
+    );
+  } else {
+    commands.push('exec "$@"');
+  }
+  return commands.join("; ");
 }
 
 function agentConfigMountArgs(agent: AgentName, env: Env): string[] {

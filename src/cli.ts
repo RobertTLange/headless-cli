@@ -46,8 +46,16 @@ import {
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
+  dockerSessionAgentHomeEnvNames,
+  dockerSessionNativeId,
+  dockerSessionHomePath,
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
+  ensureDockerSessionHome,
+  ensureDockerSessionStoreDirectory,
+  readDockerCursorSessionId,
+  validateDockerSessionRootWorkDir,
+  validateDockerWorkDir,
 } from "./docker.js";
 import {
   buildModalRunSummary,
@@ -78,7 +86,11 @@ import {
   resolveOpencodeTranscriptByTitle,
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
-import { acquireLaunchLock } from "./launch-lock.js";
+import {
+  acquireDockerSessionLock,
+  acquireLaunchLock,
+  isDockerSessionLockSignalListener,
+} from "./launch-lock.js";
 import { forceKillWindowsProcessTree } from "./process-tree.js";
 import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
@@ -96,7 +108,14 @@ import {
   validateRunId,
   type RunNode,
 } from "./runs.js";
-import { readStoredSession, sessionStorePath, writeStoredSession, writeStoredTmuxSession, type StoredTmuxWaitStrategy } from "./sessions.js";
+import {
+  readStoredSession,
+  SECURE_SESSION_STORE_ENV,
+  sessionStorePath,
+  writeStoredSession,
+  writeStoredTmuxSession,
+  type StoredTmuxWaitStrategy,
+} from "./sessions.js";
 import { quoteCommand } from "./shell.js";
 import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
@@ -231,7 +250,7 @@ function usage(): string {
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
-    "  --docker             Run the agent inside Docker.",
+    "  --docker             Run the agent inside Docker; use --session for durable turns.",
     "  --docker-image <img> Docker image. Defaults to ghcr.io/roberttlange/headless:latest.",
     "  --docker-arg <arg>   Extra docker run argument. Repeat for multiple args.",
     "  --docker-env <env>   Pass env into Docker as NAME or NAME=value. Repeatable.",
@@ -1033,6 +1052,7 @@ interface ExecuteCommandOptions {
   captureFinalMessageTrace?: boolean;
   captureRelevantTrace?: boolean;
   cleanupBeforeParentSignalExit?: () => void;
+  inheritedSignalListeners?: ReadonlyMap<NodeJS.Signals, ReadonlySet<NodeJS.SignalsListener>>;
 }
 
 interface WaitingSpinner {
@@ -1070,6 +1090,12 @@ const waitingSpinnerVerbs = [
   "path tracing",
   "output polishing",
 ];
+
+function parentExitSignals(): NodeJS.Signals[] {
+  return process.platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+    : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
+}
 
 function randomWaitingSpinnerVerb(): string {
   return waitingSpinnerVerbs[Math.floor(Math.random() * waitingSpinnerVerbs.length)] ?? waitingSpinnerVerbs[0];
@@ -1184,11 +1210,13 @@ interface SessionPlan {
   startedAt?: string;
 }
 
+type SessionExecution = "docker" | "local";
+
 function validateSessionAlias(alias: string | undefined): string | undefined {
   if (alias === undefined) {
     return undefined;
   }
-  if (!/^[A-Za-z0-9_.-]+$/.test(alias)) {
+  if (alias === "." || alias === ".." || !/^[A-Za-z0-9_.-]+$/.test(alias)) {
     throw new CliError("invalid session name; use letters, numbers, dots, dashes, or underscores");
   }
   return alias;
@@ -1218,11 +1246,12 @@ async function prepareSessionPlan(
   plan: SessionPlan | undefined,
   cwd: string | undefined,
   env: Env,
+  execution: SessionExecution,
 ): Promise<SessionPlan | undefined> {
   if (!plan || plan.mode !== "new") {
     return plan;
   }
-  if (agent === "cursor" && !plan.nativeId) {
+  if (agent === "cursor" && !plan.nativeId && execution === "local") {
     return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
   }
   if (agent === "antigravity" && !plan.nativeId) {
@@ -1260,13 +1289,20 @@ async function persistSessionPlan(
   stdout: string,
   cwd: string | undefined,
   env: Env,
+  dockerSessionHome?: string,
 ): Promise<void> {
   if (!plan) {
     return;
   }
-  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env, plan.startedAt));
+  const discoveryEnv = dockerSessionHome ? dockerSessionDiscoveryEnv(agent, env, dockerSessionHome) : env;
+  const nativeId =
+    plan.nativeId ||
+    (await discoverNativeSessionId(agent, stdout, cwd, discoveryEnv, plan.startedAt, Boolean(dockerSessionHome)));
   if (!nativeId) {
     throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
+  }
+  if (dockerSessionHome) {
+    ensureDockerSessionStoreDirectory(dockerSessionHome);
   }
   writeStoredSession(env, {
     agent,
@@ -1276,27 +1312,75 @@ async function persistSessionPlan(
   });
 }
 
+function dockerSessionDiscoveryEnv(agent: AgentName, env: Env, dockerSessionHome: string): Env {
+  const discoveryEnv: Env = { ...env, HOME: dockerSessionHome };
+  for (const name of dockerSessionAgentHomeEnvNames(agent)) {
+    delete discoveryEnv[name];
+  }
+  return discoveryEnv;
+}
+
+function validateDockerSessionEnv(agent: AgentName, dockerEnv: string[]): void {
+  const agentHomeVariables = new Set<string>(dockerSessionAgentHomeEnvNames(agent));
+  const override = dockerEnv.find((item) => agentHomeVariables.has(item.split("=", 1)[0] ?? ""));
+  if (override) {
+    const name = override.split("=", 1)[0];
+    throw new CliError(`${name} cannot be overridden with --docker-env when using --docker --session`);
+  }
+}
+
 async function discoverNativeSessionId(
   agent: AgentName,
   stdout: string,
   cwd: string | undefined,
   env: Env,
   startedAt?: string,
+  dockerSession: boolean = false,
 ): Promise<string> {
   const fromTrace = extractNativeSessionId(agent, stdout);
   if (fromTrace) {
     return fromTrace;
   }
   if (agent === "gemini") {
+    if (dockerSession) {
+      return resolveLatestNativeTranscript(
+        "gemini",
+        cwd,
+        env,
+        startedAt ? { startedAt } : {},
+        { dockerSessionRoot: env.HOME },
+      )?.sessionId ?? "";
+    }
     return await newestGeminiSessionId(cwd, env);
   }
   if (agent === "antigravity") {
-    return newestAntigravitySessionId(cwd, env, startedAt);
+    return newestAntigravitySessionId(cwd, env, startedAt, dockerSession);
+  }
+  if (agent === "cursor" && dockerSession) {
+    return env.HOME ? readDockerCursorSessionId(env.HOME) : "";
   }
   if (agent === "opencode") {
+    if (dockerSession) {
+      return resolveLatestNativeTranscript(
+        "opencode",
+        cwd,
+        env,
+        startedAt ? { startedAt } : {},
+        { dockerSessionRoot: env.HOME },
+      )?.sessionId ?? "";
+    }
     return await newestOpenCodeSessionId(cwd, env);
   }
   if (agent === "pi") {
+    if (dockerSession) {
+      return resolveLatestNativeTranscript(
+        "pi",
+        cwd,
+        env,
+        startedAt ? { startedAt } : {},
+        { dockerSessionRoot: env.HOME },
+      )?.path ?? "";
+    }
     return newestPiSessionFile(cwd, env);
   }
   return "";
@@ -1315,8 +1399,19 @@ async function newestGeminiSessionId(cwd: string | undefined, env: Env): Promise
   return matches.at(-1)?.[1] ?? "";
 }
 
-function newestAntigravitySessionId(cwd: string | undefined, env: Env, startedAt: string | undefined): string {
-  return resolveLatestNativeTranscript("antigravity", cwd ?? process.cwd(), env, startedAt ? { startedAt } : {})?.sessionId ?? "";
+function newestAntigravitySessionId(
+  cwd: string | undefined,
+  env: Env,
+  startedAt: string | undefined,
+  dockerSession: boolean,
+): string {
+  return resolveLatestNativeTranscript(
+    "antigravity",
+    cwd ?? process.cwd(),
+    env,
+    startedAt ? { startedAt } : {},
+    dockerSession ? { dockerSessionRoot: env.HOME } : {},
+  )?.sessionId ?? "";
 }
 
 async function newestOpenCodeSessionId(cwd: string | undefined, env: Env): Promise<string> {
@@ -1585,13 +1680,12 @@ async function executeCommand(
             process.off(signal, handler);
           }
         };
-        const exitSignals: NodeJS.Signals[] =
-          process.platform === "win32"
-            ? ["SIGINT", "SIGTERM", "SIGBREAK"]
-            : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
-        for (const signal of exitSignals) {
+        for (const signal of parentExitSignals()) {
           const handler = () => {
-            const hasExternalListener = process.listeners(signal).some((listener) => listener !== handler);
+            const inheritedListeners = options.inheritedSignalListeners?.get(signal);
+            const hasExternalListener = inheritedListeners
+              ? process.listeners(signal).some((listener) => inheritedListeners.has(listener))
+              : process.listeners(signal).some((listener) => listener !== handler);
             signalChildTree(signal);
             try {
               options.cleanupBeforeParentSignalExit?.();
@@ -2829,7 +2923,15 @@ async function executeStoredNode(
     { baseInstructionPrompt: defaults.baseInstructionPrompt },
   );
   const sessionPlan =
-    node.coordination === "session" ? await prepareSessionPlan(node.agent, buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env), node.workDir, env) : undefined;
+    node.coordination === "session"
+      ? await prepareSessionPlan(
+          node.agent,
+          buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env),
+          node.workDir,
+          env,
+          "local",
+        )
+      : undefined;
   const command = withRunEnvironment(
     buildAgentCommand(
       node.agent,
@@ -2867,7 +2969,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env: Env = { ...(deps.env ?? process.env) };
+  const inheritedSignalListeners = new Map(
+    parentExitSignals().map((signal) => [
+      signal,
+      new Set(process.listeners(signal).filter((listener) => !isDockerSessionLockSignalListener(listener))),
+    ] as const),
+  );
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
+  let dockerSessionLock: { release: () => Promise<Error | undefined> } | undefined;
 
   if (argv[0] === "acp-stdio") {
     await runAcpStdioAgent();
@@ -3365,14 +3474,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.sessionAlias !== undefined && parsed.tmuxName !== undefined) {
       throw new CliError("--session cannot be used with --name");
     }
-    if (parsed.sessionAlias !== undefined && parsed.docker) {
-      throw new CliError("--session cannot be used with --docker");
-    }
     if (parsed.sessionAlias !== undefined && parsed.modal) {
       throw new CliError("--session cannot be used with --modal");
     }
     validateSessionAlias(parsed.sessionAlias);
     const coordination = effectiveCoordination(parsed, config.general.coordination);
+    if (
+      parsed.docker &&
+      parsed.runId &&
+      parsed.role &&
+      (coordination === "session" || parsed.sessionAlias !== undefined)
+    ) {
+      throw new CliError("Docker run nodes do not support durable sessions; use oneshot coordination without --session");
+    }
     const nodeId = nodeIdForRole(parsed.role, parsed.nodeId);
     if (parsed.runId !== undefined && parsed.role === undefined) {
       throw new CliError("--run requires --role");
@@ -3420,6 +3534,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const commandTimeoutSeconds = parsed.timeoutSeconds ?? config.general.timeoutSeconds;
     const modalTimeoutSeconds = parsed.modalTimeoutSeconds ?? commandTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS;
     const cwd = validateWorkDir(parsed.workDir);
+    if (parsed.docker) {
+      validateDockerWorkDir(cwd ?? process.cwd());
+    }
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
@@ -3680,16 +3797,41 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
 
-    let sessionPlan = buildSessionPlan(parsed.agent, parsed.sessionAlias, env);
+    let sessionAlias = parsed.sessionAlias;
     if (parsed.runId && parsed.role && coordination === "session" && !parsed.sessionAlias) {
-      sessionPlan = buildSessionPlan(parsed.agent, nodeId, env);
+      sessionAlias = nodeId;
     }
     if (parsed.runId && parsed.role && coordination === "oneshot") {
-      sessionPlan = undefined;
+      sessionAlias = undefined;
     }
+    let dockerSessionHome = parsed.docker && sessionAlias
+      ? dockerSessionHomePath(parsed.agent, sessionAlias, env)
+      : undefined;
+    if (parsed.docker && sessionAlias && !dockerSessionHome) {
+      throw new CliError("HOME is required for --session");
+    }
+    if (dockerSessionHome) {
+      validateDockerSessionEnv(parsed.agent, parsed.dockerEnv);
+      validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
+      dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+      validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
+    }
+    dockerSessionLock = dockerSessionHome ? await acquireDockerSessionLock(dockerSessionHome) : undefined;
+    if (dockerSessionHome) {
+      dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+      validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
+      ensureDockerSessionStoreDirectory(dockerSessionHome);
+    }
+    const sessionEnv = dockerSessionHome
+      ? { ...env, HOME: dockerSessionHome, [SECURE_SESSION_STORE_ENV]: "1" }
+      : env;
+    let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
     if (!parsed.printCommand) {
-      sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env);
+      sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
     }
+    const commandSessionPlan = dockerSessionHome && sessionPlan
+      ? { ...sessionPlan, nativeId: dockerSessionNativeId(parsed.agent, sessionPlan.nativeId, dockerSessionHome) }
+      : sessionPlan;
     let command = withRunEnvironment(buildAgentCommand(
       parsed.agent,
       applySessionPlan({
@@ -3699,7 +3841,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
-      }, sessionPlan),
+      }, commandSessionPlan),
       env,
     ), parsed.runId, nodeId);
     const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
@@ -3715,8 +3857,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         env,
         hostUser: detectDockerHostUser(),
         image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
+        persistentHome: dockerSessionHome,
         runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
         runId: parsed.runId,
+        sessionBootstrap:
+          parsed.agent === "cursor" && sessionPlan?.mode === "new" && dockerSessionHome
+            ? "initialize-cursor"
+            : undefined,
         workDir: cwd ?? process.cwd(),
       });
     }
@@ -3833,6 +3980,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               captureFinalMessageTrace: parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId),
               captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
               cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
+              inheritedSignalListeners,
             });
         if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
           appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
@@ -3843,6 +3991,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         antigravityUsageCapture?.cleanup();
       }
 
+      if (dockerSessionHome) {
+        dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+        ensureDockerSessionStoreDirectory(dockerSessionHome);
+      }
       if (!result) {
         throw new CliError("agent execution did not produce a result");
       }
@@ -3852,7 +4004,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
         : usageCommandTrace;
       if (result.code === 0 && sessionPlan) {
-        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
+        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, sessionEnv, dockerSessionHome);
       }
       if (parsed.runId && parsed.role && nodeId) {
         const finalMessage =
@@ -3925,6 +4077,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 2;
     }
     throw error;
+  } finally {
+    const releaseError = await dockerSessionLock?.release();
+    if (releaseError) {
+      stderr(`headless: Docker session lock release failed: ${releaseError.message}\n`);
+    }
   }
 }
 
