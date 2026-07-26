@@ -3293,7 +3293,7 @@ test("CLI bounds Antigravity stdout drain after the direct child exits", async (
     );
     chmodSync(binary, 0o755);
 
-    const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage"], {
+    const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage", "--timeout", "60"], {
       env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
       stdout: () => {},
     });
@@ -3351,6 +3351,54 @@ test(
 
       assert.equal(code, 0);
       assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+      grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    } finally {
+      if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "CLI preserves timeout status when Antigravity exits during drain",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+    const grandchildPidPath = join(dir, "grandchild.pid");
+    let grandchildPid: number | undefined;
+    try {
+      const home = join(dir, "home");
+      const appDir = join(home, ".gemini", "antigravity-cli");
+      const binDir = join(dir, "bin");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(binDir);
+      writeFileSync(
+        join(appDir, "settings.json"),
+        `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`,
+      );
+      const binary = join(binDir, "agy");
+      writeFileSync(
+        binary,
+        [
+          "#!/bin/sh",
+          "/bin/sh -c 'trap \"\" TERM; while :; do sleep 1; done' &",
+          `printf '%s' "$!" > ${JSON.stringify(grandchildPidPath)}`,
+          "sleep 4.2",
+          "printf 'antigravity final\\n'",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(binary, 0o755);
+
+      const stdout: string[] = [];
+      const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage", "--timeout", "5"], {
+        env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      });
+
+      assert.equal(code, 124);
+      assert.match(stdout.join(""), /antigravity final/);
       grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
       await waitFor(() => !processIsAlive(grandchildPid as number));
     } finally {

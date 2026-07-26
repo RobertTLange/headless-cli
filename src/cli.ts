@@ -1685,11 +1685,11 @@ async function executeCommand(
         finish({ code: termination?.code ?? 127, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
       child.on("exit", (code, signal) => {
-        if (options.cleanupBeforeParentSignalExit === undefined || options.timeoutSeconds !== undefined || settled) {
+        if (options.cleanupBeforeParentSignalExit === undefined || termination !== undefined || settled) {
           return;
         }
         forceDrain = setTimeout(() => {
-          if (settled) return;
+          if (settled || termination) return;
           signalChildTree("SIGKILL");
           child.stdout?.destroy();
           child.stderr?.destroy();
