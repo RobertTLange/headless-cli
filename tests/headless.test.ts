@@ -3165,7 +3165,7 @@ test("CLI cleans the Antigravity usage overlay when the parent receives SIGTERM"
   }
 });
 
-test("CLI cleans the Antigravity usage overlay for simulated Windows signals", async () => {
+test("CLI skips the Antigravity usage overlay on Windows", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
     const home = join(dir, "home");
@@ -3182,9 +3182,7 @@ test("CLI cleans the Antigravity usage overlay for simulated Windows signals", a
         "#!/usr/bin/env node",
         "const fs = require('node:fs');",
         `fs.writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
-        "process.on('SIGTERM', () => process.exit(0));",
-        "setTimeout(() => { process.kill(process.ppid, 'SIGTERM'); setTimeout(() => process.exit(0), 500); }, 100);",
-        "setInterval(() => {}, 1000);",
+        "process.stdout.write('antigravity final\\n');",
         "",
       ].join("\n"),
     );
@@ -3206,9 +3204,11 @@ test("CLI cleans the Antigravity usage overlay for simulated Windows signals", a
       encoding: "utf8",
       env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
     });
-    assert.equal(child.status, null, child.stderr);
-    assert.equal(child.signal, "SIGTERM", child.stderr);
-    assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(readFileSync(overlayPath, "utf8"), home);
+    assert.deepEqual(JSON.parse(readFileSync(join(appDir, "settings.json"), "utf8")), {
+      statusLine: { type: "", command: "", enabled: true },
+    });
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

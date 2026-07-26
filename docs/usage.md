@@ -97,7 +97,7 @@ headless codex --prompt "Summarize this repo" --model gpt-5 --usage
 headless codex --prompt "Summarize this repo" --model gpt-5 --json --usage
 ```
 
-For local Antigravity one-shot runs, Headless collects Antigravity's [documented `context_window.current_usage` status payload](https://antigravity.google/docs/cli-statusline) because `agy -p` does not print token counts. It gives `agy` a temporary overlay home that preserves the real home and Antigravity data through symlinks while replacing only the child process's status-line command. The real `~/.gemini/antigravity-cli/settings.json` is not changed, existing custom status-line output is preserved, and the temporary payload excludes account fields such as email and plan tier. Antigravity Docker and Modal usage capture is not yet available.
+For local Antigravity one-shot runs on macOS and Linux, Headless collects Antigravity's [documented `context_window.current_usage` status payload](https://antigravity.google/docs/cli-statusline) because `agy -p` does not print token counts. It gives `agy` a temporary overlay home that preserves the real home and Antigravity data through symlinks while replacing only the child process's status-line command. The real `~/.gemini/antigravity-cli/settings.json` is not changed, existing custom status-line output is preserved, and the temporary payload excludes account fields such as email and plan tier. Antigravity usage capture is not yet available on Windows, Docker, or Modal.
 
 ## Cron Jobs
 

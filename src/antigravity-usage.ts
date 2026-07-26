@@ -128,6 +128,7 @@ function readSettings(path: string): AntigravitySettings {
 }
 
 export function prepareAntigravityUsageCapture(env: Env, cwd?: string): AntigravityUsageCapture | undefined {
+  if (process.platform === "win32") return undefined;
   if (!env.HOME) return undefined;
   const baseDir = cwd ?? process.cwd();
   const realHome = resolve(baseDir, env.HOME);
