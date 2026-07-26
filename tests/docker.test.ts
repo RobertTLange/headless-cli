@@ -176,6 +176,51 @@ test("uses a writable container home while keeping host agent config read-only",
   }
 });
 
+test("mounts only selected Antigravity credential files from its state directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const antigravityDir = join(home, ".gemini", "antigravity-cli");
+    const workDir = join(dir, "project");
+    mkdirSync(antigravityDir, { recursive: true });
+    mkdirSync(join(antigravityDir, "brain"), { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(join(antigravityDir, "antigravity-oauth-token"), "token");
+    writeFileSync(join(antigravityDir, "settings.json"), "{}");
+    writeFileSync(join(antigravityDir, "conversation_summaries.db"), "large state");
+    writeFileSync(join(antigravityDir, "brain", "transcript.jsonl"), "history");
+
+    const command = buildDockerAgentCommand({
+      agent: "antigravity",
+      command: {
+        command: "agy",
+        args: ["--prompt", "hello"],
+      },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { HOME: home },
+      hostUser: "501:20",
+      image: DEFAULT_DOCKER_IMAGE,
+      workDir,
+    });
+
+    assert.ok(
+      command.args.includes(
+        `${join(antigravityDir, "antigravity-oauth-token")}:/tmp/headless-host-home/.gemini/antigravity-cli/antigravity-oauth-token:ro`,
+      ),
+    );
+    assert.ok(
+      command.args.includes(
+        `${join(antigravityDir, "settings.json")}:/tmp/headless-host-home/.gemini/antigravity-cli/settings.json:ro`,
+      ),
+    );
+    assert.ok(!command.args.some((arg) => arg.includes("conversation_summaries.db")));
+    assert.ok(!command.args.some((arg) => arg.includes("/antigravity-cli:/tmp/headless-host-home")));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("preserves prompt-file stdin through docker for print-command output", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {

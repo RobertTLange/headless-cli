@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
@@ -80,13 +80,29 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
     return [];
   }
 
+  const config = getAgentConfig(agent);
+  const dockerSeedFiles = config.dockerSeedFiles ?? {};
   const mounted = new Set<string>();
   const args: string[] = [];
-  for (const relPath of getAgentConfig(agent).seedPaths) {
+  for (const relPath of config.seedPaths) {
     const hostPath = join(home, relPath);
     if (!existsSync(hostPath) || mounted.has(hostPath)) {
       continue;
     }
+
+    const selectedFiles = dockerSeedFiles[relPath];
+    if (selectedFiles && statSync(hostPath).isDirectory()) {
+      for (const fileName of selectedFiles) {
+        const hostFile = join(hostPath, fileName);
+        if (!existsSync(hostFile) || !lstatSync(hostFile).isFile()) {
+          continue;
+        }
+        args.push("--volume", `${hostFile}:${join(hostHomeMountRoot, relPath, fileName)}:ro`);
+      }
+      mounted.add(hostPath);
+      continue;
+    }
+
     mounted.add(hostPath);
     args.push("--volume", `${hostPath}:${join(hostHomeMountRoot, relPath)}:ro`);
     if (statSync(hostPath).isDirectory()) {

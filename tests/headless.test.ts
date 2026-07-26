@@ -874,6 +874,14 @@ test("exposes config metadata", () => {
     configRelDir: ".gemini/antigravity-cli",
     workspaceConfigRelDir: ".agents",
     seedPaths: [".gemini/antigravity-cli", ".gemini/config"],
+    dockerSeedFiles: {
+      ".gemini/antigravity-cli": [
+        "antigravity-oauth-token",
+        "settings.json",
+        "installation_id",
+        "jetski_state.pbtxt",
+      ],
+    },
   });
 });
 

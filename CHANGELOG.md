@@ -2,6 +2,8 @@
 
 ## TBD
 
+- Changed Docker auth seeding for Antigravity to mount only credential and settings files instead of copying its conversation and brain history into each container.
+
 ## 0.4.0 - 2026-06-18
 
 - Added Antigravity CLI (`agy`) harness support for one-shot prompts, model selection, read-only sandbox mode, native session aliases, tmux launches, `--tmux --wait`, transcript final-message extraction, setup checks, Docker packaging, and README/config documentation.

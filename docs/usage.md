@@ -163,7 +163,7 @@ Use `headless attach` without a session name to attach to the most recently acti
 
 ## Docker
 
-Docker mode wraps one-shot headless execution in `docker run --rm`. It mounts the target workdir at the same absolute path inside the container, mounts existing agent config/auth seed paths read-only, passes curated credential environment variables, and runs the selected agent from `ghcr.io/roberttlange/headless:latest` by default.
+Docker mode wraps one-shot headless execution in `docker run --rm`. It mounts the target workdir at the same absolute path inside the container, mounts existing agent config/auth seed paths read-only, passes curated credential environment variables, and runs the selected agent from `ghcr.io/roberttlange/headless:latest` by default. For Antigravity, Docker mounts only the credential files needed for authentication and settings; it does not copy the conversation and brain history stored alongside them into the container home.
 
 ```bash
 headless codex --prompt "Fix the failing tests" --docker

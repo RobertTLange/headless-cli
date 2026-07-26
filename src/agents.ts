@@ -527,6 +527,14 @@ const harnesses: Record<AgentName, AgentHarness> = {
     configRelDir: ".gemini/antigravity-cli",
     workspaceConfigRelDir: ".agents",
     seedPaths: [".gemini/antigravity-cli", ".gemini/config"],
+    dockerSeedFiles: {
+      ".gemini/antigravity-cli": [
+        "antigravity-oauth-token",
+        "settings.json",
+        "installation_id",
+        "jetski_state.pbtxt",
+      ],
+    },
     buildCommand: buildAntigravity,
     buildInteractiveCommand: buildInteractiveAntigravity,
   },
@@ -619,7 +627,17 @@ export function getAgentConfig(name: AgentName): AgentConfig {
     buildInteractiveCommand: _buildInteractiveCommand,
     ...config
   } = harnesses[name];
-  return { ...config, seedPaths: [...config.seedPaths] };
+  return {
+    ...config,
+    seedPaths: [...config.seedPaths],
+    ...(config.dockerSeedFiles
+      ? {
+          dockerSeedFiles: Object.fromEntries(
+            Object.entries(config.dockerSeedFiles).map(([path, files]) => [path, [...files]]),
+          ),
+        }
+      : {}),
+  };
 }
 
 export function buildAgentCommand(name: AgentName, options: BuildOptions, env: Env = process.env): BuiltCommand {
