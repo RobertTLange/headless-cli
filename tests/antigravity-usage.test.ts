@@ -261,3 +261,73 @@ test("Antigravity usage capture preserves original status command signals", () =
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("Antigravity usage capture keeps only one bounded latest record", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-bounded-capture-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "settings.json"), "{}\n");
+    const capture = prepareAntigravityUsageCapture({ HOME: home });
+    assert.ok(capture);
+    const overlaySettings = JSON.parse(
+      readFileSync(join(capture.commandEnv.HOME ?? "", ".gemini", "antigravity-cli", "settings.json"), "utf8"),
+    );
+
+    for (const index of [1, 2, 3]) {
+      const status = spawnSync("/bin/sh", ["-c", overlaySettings.statusLine.command], {
+        encoding: "utf8",
+        env: { ...process.env, ...capture.commandEnv },
+        input: JSON.stringify({
+          conversation_id: `conversation-${index}`,
+          model: { id: index === 3 ? "x".repeat(100_000) : `model-${index}` },
+          context_window: { current_usage: { input_tokens: index } },
+        }),
+      });
+      assert.equal(status.status, 0);
+    }
+
+    const content = capture.read();
+    const records = content
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].conversation_id, "conversation-3");
+    assert.equal(Buffer.byteLength(content, "utf8") < 64 * 1024, true);
+    capture.cleanup();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Antigravity usage capture removes temporary files after replacement failures", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-capture-failure-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "settings.json"), "{}\n");
+    const capture = prepareAntigravityUsageCapture({ HOME: home });
+    assert.ok(capture);
+    const overlaySettings = JSON.parse(
+      readFileSync(join(capture.commandEnv.HOME ?? "", ".gemini", "antigravity-cli", "settings.json"), "utf8"),
+    );
+    const capturePath = capture.commandEnv.HEADLESS_ANTIGRAVITY_USAGE_FILE ?? "";
+    rmSync(capturePath);
+    mkdirSync(capturePath);
+
+    const status = spawnSync("/bin/sh", ["-c", overlaySettings.statusLine.command], {
+      encoding: "utf8",
+      env: { ...process.env, ...capture.commandEnv },
+      input: "{}",
+    });
+
+    assert.equal(status.status, 0);
+    assert.equal(existsSync(`${capturePath}.${status.pid}.tmp`), false);
+    capture.cleanup();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});

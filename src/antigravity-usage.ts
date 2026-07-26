@@ -34,7 +34,7 @@ export interface AntigravityUsageCapture {
 }
 
 const captureScript = `#!/usr/bin/env node
-import { appendFileSync, readFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,7 @@ for await (const chunk of process.stdin) input += chunk;
 
 try {
   const value = JSON.parse(input);
+  const boundedString = (candidate) => typeof candidate === "string" ? candidate.slice(0, 1024) : "";
   const model = value?.model && typeof value.model === "object" ? value.model : {};
   const contextWindow = value?.context_window && typeof value.context_window === "object" ? value.context_window : {};
   const usage = contextWindow.current_usage && typeof contextWindow.current_usage === "object"
@@ -51,10 +52,10 @@ try {
     : {};
   const record = {
     type: "headless.antigravity.usage",
-    conversation_id: typeof value?.conversation_id === "string" ? value.conversation_id : "",
+    conversation_id: boundedString(value?.conversation_id),
     model: {
-      id: typeof model.id === "string" ? model.id : "",
-      display_name: typeof model.display_name === "string" ? model.display_name : "",
+      id: boundedString(model.id),
+      display_name: boundedString(model.display_name),
     },
     context_window: {
       current_usage: {
@@ -69,7 +70,14 @@ try {
       },
     },
   };
-  appendFileSync(process.env.HEADLESS_ANTIGRAVITY_USAGE_FILE, JSON.stringify(record) + "\\n", { mode: 0o600 });
+  const capturePath = process.env.HEADLESS_ANTIGRAVITY_USAGE_FILE;
+  const temporaryPath = capturePath + "." + process.pid + ".tmp";
+  try {
+    writeFileSync(temporaryPath, JSON.stringify(record) + "\\n", { mode: 0o600 });
+    renameSync(temporaryPath, capturePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
 } catch {
   // Usage collection must never interfere with the agent run.
 }
