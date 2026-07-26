@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import Mock
@@ -168,6 +169,51 @@ def test_run_preserves_tmux_mode_without_sdk_format(
         "--delete",
         "--name",
         "task",
+    ]
+    assert result.final_message == ""
+    assert result.sdk is None
+
+
+def test_run_preserves_tmux_coordination_without_sdk_format(
+    fake_headless: tuple[Path, Path],
+) -> None:
+    binary, record = fake_headless
+    client = Headless(binary=binary, env={"FAKE_HEADLESS_RECORD": str(record)})
+
+    result = client.run("codex", prompt="review", coordination="tmux")
+
+    assert read_record(record)["argv"] == [
+        "codex",
+        "--coordination",
+        "tmux",
+    ]
+    assert result.final_message == ""
+    assert result.sdk is None
+
+
+@pytest.mark.parametrize("check", [True, False])
+def test_run_retries_raw_mode_for_config_default_tmux(
+    fake_headless: tuple[Path, Path],
+    check: bool,
+) -> None:
+    binary, record = fake_headless
+    history = record.with_name("history.json")
+    client = Headless(
+        binary=binary,
+        env={
+            "FAKE_HEADLESS_RECORD": str(record),
+            "FAKE_HEADLESS_DEFAULT_TMUX": "1",
+            "FAKE_HEADLESS_HISTORY": str(history),
+        },
+    )
+
+    result = client.run("codex", prompt="review", check=check)
+
+    assert read_record(record)["argv"] == ["codex"]
+    assert json.loads(history.read_text()) == [
+        ["capabilities", "--sdk-format", "json"],
+        ["codex", "--sdk-format", "json"],
+        ["codex"],
     ]
     assert result.final_message == ""
     assert result.sdk is None
@@ -426,9 +472,10 @@ def test_structured_diagnostics_and_capabilities(
     client = Headless(binary=binary, env={"FAKE_HEADLESS_RECORD": str(record)})
 
     assert client.check().command == "check"
-    config = client.show_config()
+    config = client.show_config(allow="yolo")
     assert isinstance(config, SdkResult)
     assert config.data["agent"] == "codex"
+    assert config.data["allow"] == "yolo"
     assert client.capabilities().data["protocolVersion"] == 1
     assert read_record(record)["argv"] == ["capabilities", "--sdk-format", "json"]
 

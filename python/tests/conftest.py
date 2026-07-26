@@ -41,6 +41,12 @@ record.write_text(json.dumps({
     "env": os.environ.get("SDK_TEST_ENV"),
     "stdin": stdin,
 }))
+history_path = os.environ.get("FAKE_HEADLESS_HISTORY")
+if history_path:
+    history = pathlib.Path(history_path)
+    calls = json.loads(history.read_text()) if history.exists() else []
+    calls.append(sys.argv[1:])
+    history.write_text(json.dumps(calls))
 if "--sleep" in sys.argv:
     time.sleep(10)
 if "--large-fail" in sys.argv:
@@ -64,6 +70,14 @@ if "--sdk-format" in sys.argv:
             **values,
         }
         print(json.dumps(payload))
+    if os.environ.get("FAKE_HEADLESS_DEFAULT_TMUX") == "1" and "capabilities" not in sys.argv:
+        envelope(
+            "error",
+            "invoke",
+            exitCode=2,
+            error={"message": "--sdk-format cannot be used with --tmux"},
+        )
+        raise SystemExit(2)
     if "--fail" in sys.argv:
         envelope("error", "cli", exitCode=7, error={"message": "safe failure"})
         raise SystemExit(7)
@@ -89,7 +103,8 @@ if "--sdk-format" in sys.argv:
     elif "--check" in sys.argv:
         envelope("result", "check", data={"agents": [], "docker": {}})
     elif "--show-config" in sys.argv:
-        envelope("result", "config.show", data={"agent": "codex"})
+        allow = sys.argv[sys.argv.index("--allow") + 1] if "--allow" in sys.argv else None
+        envelope("result", "config.show", data={"agent": "codex", "allow": allow})
     elif "--list" in sys.argv:
         envelope("result", "sessions.list", data={"sessions": []})
     elif sys.argv[1:3] == ["run", "list"]:

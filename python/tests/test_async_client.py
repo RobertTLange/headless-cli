@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+import pytest
 from conftest import read_record
 
 from headless_cli import AsyncHeadless
@@ -204,3 +206,57 @@ def test_async_session_launch_names_tmux_and_has_no_final_message(
         "--name",
         "bughunt",
     ]
+
+
+def test_async_run_preserves_tmux_coordination_without_sdk_format(
+    fake_headless: tuple[Path, Path],
+) -> None:
+    binary, record = fake_headless
+    client = AsyncHeadless(
+        binary=binary,
+        env={"FAKE_HEADLESS_RECORD": str(record)},
+    )
+
+    async def exercise() -> None:
+        result = await client.run("codex", prompt="review", coordination="tmux")
+
+        assert read_record(record)["argv"] == [
+            "codex",
+            "--coordination",
+            "tmux",
+        ]
+        assert result.final_message == ""
+        assert result.sdk is None
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("check", [True, False])
+def test_async_run_retries_raw_mode_for_config_default_tmux(
+    fake_headless: tuple[Path, Path],
+    check: bool,
+) -> None:
+    binary, record = fake_headless
+    history = record.with_name("history.json")
+    client = AsyncHeadless(
+        binary=binary,
+        env={
+            "FAKE_HEADLESS_RECORD": str(record),
+            "FAKE_HEADLESS_DEFAULT_TMUX": "1",
+            "FAKE_HEADLESS_HISTORY": str(history),
+        },
+    )
+
+    async def exercise() -> None:
+        result = await client.run("codex", prompt="review", check=check)
+
+        assert read_record(record)["argv"] == ["codex"]
+        assert json.loads(history.read_text()) == [
+            ["capabilities", "--sdk-format", "json"],
+            ["codex", "--sdk-format", "json"],
+            ["codex"],
+        ]
+        assert result.final_message == ""
+        assert result.sdk is None
+
+    asyncio.run(exercise())

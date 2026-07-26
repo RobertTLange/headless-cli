@@ -7,6 +7,7 @@ from typing import Any, cast
 from .async_namespaces import AsyncCron, AsyncDocker, AsyncRuns, AsyncSessions
 from .client import (
     _command_result,
+    _is_tmux_sdk_rejection,
     _optional_string,
     _required_data_string,
     _run_data,
@@ -190,7 +191,8 @@ class AsyncHeadless:
             name=name,
             print_command=print_command,
         )
-        if json or debug or tmux or print_command:
+
+        async def raw_result() -> RunResult:
             command = await self.invoke(
                 args,
                 input=input_text,
@@ -205,14 +207,30 @@ class AsyncHeadless:
                 sdk=None,
                 agent=str(agent or ""),
             )
-        sdk = await self._invoke_sdk(
-            args,
-            input=input_text,
-            cwd=cwd,
-            env=env,
-            process_timeout_seconds=process_timeout_seconds,
-            check=check,
-        )
+
+        if json or debug or tmux or coordination == "tmux" or print_command:
+            return await raw_result()
+        try:
+            sdk = await self._invoke_sdk(
+                args,
+                input=input_text,
+                cwd=cwd,
+                env=env,
+                process_timeout_seconds=process_timeout_seconds,
+                check=check,
+            )
+        except HeadlessVersionError:
+            raise
+        except HeadlessError as error:
+            if coordination is not None or not _is_tmux_sdk_rejection(error.result):
+                raise
+            return await raw_result()
+        if (
+            coordination is None
+            and isinstance(sdk, SdkError)
+            and _is_tmux_sdk_rejection(_command_result(sdk))
+        ):
+            return await raw_result()
         if isinstance(sdk, SdkError):
             return RunResult(
                 final_message="",

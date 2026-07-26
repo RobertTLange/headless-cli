@@ -3,12 +3,81 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from headless_cli import AsyncHeadless, Headless
+from headless_cli.client import _is_tmux_sdk_rejection
 from headless_cli.errors import HeadlessError, HeadlessVersionError
-from headless_cli.models import SdkError
+from headless_cli.models import CommandResult, SdkError
+
+
+@pytest.mark.parametrize(
+    ("returncode", "command", "exit_code", "message", "expected"),
+    [
+        (2, "invoke", 2, "--sdk-format cannot be used with --tmux", True),
+        (0, "invoke", 2, "--sdk-format cannot be used with --tmux", False),
+        (2, "cli", 2, "--sdk-format cannot be used with --tmux", False),
+        (2, "invoke", 1, "--sdk-format cannot be used with --tmux", False),
+        (2, "invoke", 2, "--sdk-format cannot be used with --tmux.", False),
+    ],
+)
+def test_tmux_sdk_fallback_requires_exact_pre_execution_error(
+    returncode: int,
+    command: str,
+    exit_code: int,
+    message: str,
+    expected: bool,
+) -> None:
+    result = CommandResult(
+        returncode=returncode,
+        stdout=json.dumps(
+            {
+                "protocolVersion": 1,
+                "type": "error",
+                "command": command,
+                "exitCode": exit_code,
+                "error": {"message": message},
+            }
+        ),
+        stderr="",
+        argv=("headless",),
+    )
+
+    assert _is_tmux_sdk_rejection(result) is expected
+
+
+def test_tmux_sdk_fallback_does_not_retry_version_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = CommandResult(
+        returncode=2,
+        stdout=json.dumps(
+            {
+                "protocolVersion": 1,
+                "type": "error",
+                "command": "invoke",
+                "exitCode": 2,
+                "error": {"message": "--sdk-format cannot be used with --tmux"},
+            }
+        ),
+        stderr="",
+        argv=("headless",),
+    )
+    client = Headless(binary="headless")
+    raw_invoke = Mock()
+    monkeypatch.setattr(
+        client,
+        "_invoke_sdk",
+        Mock(side_effect=HeadlessVersionError("upgrade required", result)),
+    )
+    monkeypatch.setattr(client, "invoke", raw_invoke)
+
+    with pytest.raises(HeadlessVersionError):
+        client.run("codex", prompt="review")
+
+    raw_invoke.assert_not_called()
 
 
 def test_protocol_compatibility_is_lazy_and_cached(tmp_path: Path) -> None:

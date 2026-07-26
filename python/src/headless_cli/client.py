@@ -183,7 +183,8 @@ class Headless:
             name=name,
             print_command=print_command,
         )
-        if json or debug or tmux or print_command:
+
+        def raw_result() -> RunResult:
             command = self.invoke(
                 args,
                 input=input_text,
@@ -198,14 +199,30 @@ class Headless:
                 sdk=None,
                 agent=str(agent or ""),
             )
-        sdk = self._invoke_sdk(
-            args,
-            input=input_text,
-            cwd=cwd,
-            env=env,
-            process_timeout_seconds=process_timeout_seconds,
-            check=check,
-        )
+
+        if json or debug or tmux or coordination == "tmux" or print_command:
+            return raw_result()
+        try:
+            sdk = self._invoke_sdk(
+                args,
+                input=input_text,
+                cwd=cwd,
+                env=env,
+                process_timeout_seconds=process_timeout_seconds,
+                check=check,
+            )
+        except HeadlessVersionError:
+            raise
+        except HeadlessError as error:
+            if coordination is not None or not _is_tmux_sdk_rejection(error.result):
+                raise
+            return raw_result()
+        if (
+            coordination is None
+            and isinstance(sdk, SdkError)
+            and _is_tmux_sdk_rejection(_command_result(sdk))
+        ):
+            return raw_result()
         if isinstance(sdk, SdkError):
             return RunResult(
                 final_message="",
@@ -432,4 +449,19 @@ def _version_error(command: CommandResult) -> HeadlessVersionError:
             "`npm install -g @roberttlange/headless@latest`."
         ),
         command,
+    )
+
+
+def _is_tmux_sdk_rejection(command: CommandResult) -> bool:
+    if command.returncode != 2:
+        return False
+    try:
+        envelope = parse_sdk_result(command.stdout)
+    except HeadlessProtocolError:
+        return False
+    return (
+        isinstance(envelope, SdkError)
+        and envelope.command == "invoke"
+        and envelope.exit_code == 2
+        and envelope.message == "--sdk-format cannot be used with --tmux"
     )
