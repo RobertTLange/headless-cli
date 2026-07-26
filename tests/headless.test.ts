@@ -1278,6 +1278,8 @@ test("CLI waits for timed-out child stdout to drain before appending usage", asy
 test("CLI bounds timeout drain when a descendant retains stdout", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const pidFile = join(dir, "grandchild.pid");
+  const naturalExitFile = join(dir, "grandchild-natural-exit");
+  const grandchildSource = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(naturalExitFile)}, "done"), 4_000)`;
   let grandchildPid: number | undefined;
   try {
     const binDir = join(dir, "bin");
@@ -1291,7 +1293,7 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
           "const { spawn } = require('node:child_process');",
           "const { writeFileSync } = require('node:fs');",
           "process.on('SIGTERM', () => {",
-          "  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+          `  const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { stdio: ['ignore', 'inherit', 'inherit'] });`,
           "  writeFileSync(process.env.HEADLESS_TEST_GRANDCHILD_PID, String(child.pid));",
           "  child.unref();",
           "  process.exit(0);",
@@ -1303,7 +1305,6 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
       await chmod(binary, 0o755);
     });
 
-    const startedAt = Date.now();
     const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
       env: {
         ...process.env,
@@ -1314,11 +1315,12 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
     });
 
     assert.equal(code, 124);
-    assert.ok(Date.now() - startedAt < 4_000, "timeout drain should finish before the descendant exits");
+    assert.equal(existsSync(naturalExitFile), false);
     grandchildPid = Number(readFileSync(pidFile, "utf8"));
     assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
     if (process.platform !== "win32") {
       await waitFor(() => !processIsAlive(grandchildPid as number));
+      assert.equal(existsSync(naturalExitFile), false);
     }
   } finally {
     try {
@@ -3262,6 +3264,8 @@ test("CLI does not redeliver parent signals to embedded host listeners", async (
 test("CLI bounds Antigravity stdout drain after the direct child exits", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const grandchildPidPath = join(dir, "grandchild.pid");
+  const naturalExitPath = join(dir, "grandchild-natural-exit");
+  const grandchildSource = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(naturalExitPath)}, "done"), 4_000)`;
   let grandchildPid: number | undefined;
   try {
     const home = join(dir, "home");
@@ -3279,7 +3283,7 @@ test("CLI bounds Antigravity stdout drain after the direct child exits", async (
         "const { spawn } = require('node:child_process');",
         "const { writeFileSync } = require('node:fs');",
         `writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
-        "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 4_000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+        `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { stdio: ['ignore', 'inherit', 'inherit'] });`,
         `writeFileSync(${JSON.stringify(grandchildPidPath)}, String(child.pid));`,
         "child.unref();",
         "process.stdout.write('antigravity final\\n');",
@@ -3288,17 +3292,16 @@ test("CLI bounds Antigravity stdout drain after the direct child exits", async (
     );
     chmodSync(binary, 0o755);
 
-    const startedAt = Date.now();
     const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage"], {
       env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
       stdout: () => {},
     });
 
     assert.equal(code, 0);
-    assert.ok(Date.now() - startedAt < 3_000);
     assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
     grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
     await waitFor(() => !processIsAlive(grandchildPid as number));
+    assert.equal(existsSync(naturalExitPath), false);
   } finally {
     if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
     rmSync(dir, { force: true, recursive: true });
