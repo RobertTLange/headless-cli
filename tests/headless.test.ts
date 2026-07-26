@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -32,6 +32,15 @@ async function waitFor(assertion: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(assertion(), true);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test("lists all supported agents", () => {
@@ -1262,6 +1271,172 @@ test("CLI waits for timed-out child stdout to drain before appending usage", asy
     assert.equal(JSON.parse(lines[1] ?? "").usage.usageStatus, "reported");
   } finally {
     globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI bounds timeout drain when a descendant retains stdout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const pidFile = join(dir, "grandchild.pid");
+  let grandchildPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "process.on('SIGTERM', () => {",
+          "  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+          "  writeFileSync(process.env.HEADLESS_TEST_GRANDCHILD_PID, String(child.pid));",
+          "  child.unref();",
+          "  process.exit(0);",
+          "});",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const startedAt = Date.now();
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+      env: {
+        ...process.env,
+        HEADLESS_TEST_GRANDCHILD_PID: pidFile,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 124);
+    assert.ok(Date.now() - startedAt < 4_000, "timeout drain should finish before the descendant exits");
+    grandchildPid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+    if (process.platform !== "win32") {
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    }
+  } finally {
+    try {
+      grandchildPid = Number(readFileSync(pidFile, "utf8"));
+      if (Number.isInteger(grandchildPid) && grandchildPid > 0) process.kill(grandchildPid, "SIGKILL");
+    } catch {
+      // The child may fail before creating its descendant.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI kills timeout descendants after the direct child closes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const pidFile = join(dir, "grandchild.pid");
+  let grandchildPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "process.on('SIGTERM', () => {",
+          "  const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 10_000)\"], { stdio: 'ignore' });",
+          "  writeFileSync(process.env.HEADLESS_TEST_GRANDCHILD_PID, String(child.pid));",
+          "  child.unref();",
+          "  process.exit(0);",
+          "});",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--timeout", "1"], {
+      env: {
+        ...process.env,
+        HEADLESS_TEST_GRANDCHILD_PID: pidFile,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 124);
+    grandchildPid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+    if (process.platform !== "win32") {
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    }
+  } finally {
+    if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI forwards parent signals to timeout-enabled agents", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const agentPidFile = join(dir, "agent.pid");
+  const signalFile = join(dir, "signal.txt");
+  let agentPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { writeFileSync } = require('node:fs');",
+          "writeFileSync(process.env.HEADLESS_TEST_AGENT_PID, String(process.pid));",
+          "process.on('SIGINT', () => {",
+          "  writeFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGINT');",
+          "  process.exit(130);",
+          "});",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const headless = spawn(
+      process.execPath,
+      ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "codex", "--prompt", "hello", "--json", "--timeout", "30"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TEST_AGENT_PID: agentPidFile,
+          HEADLESS_TEST_SIGNAL_FILE: signalFile,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(agentPidFile));
+
+    headless.kill("SIGINT");
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      headless.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+
+    assert.deepEqual(exit, { code: null, signal: "SIGINT" });
+    await waitFor(() => existsSync(signalFile));
+    assert.equal(readFileSync(signalFile, "utf8"), "SIGINT");
+  } finally {
+    try {
+      agentPid = Number(readFileSync(agentPidFile, "utf8"));
+      if (Number.isInteger(agentPid) && agentPid > 0 && processIsAlive(agentPid)) process.kill(agentPid, "SIGKILL");
+    } catch {
+      // The wrapper may fail before launching its agent.
+    }
     rmSync(dir, { force: true, recursive: true });
   }
 });

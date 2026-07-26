@@ -1426,6 +1426,9 @@ async function executeCommand(
       let timeout: NodeJS.Timeout | undefined;
       let termination: { code: number } | undefined;
       let forceKill: NodeJS.Timeout | undefined;
+      let forceFinish: NodeJS.Timeout | undefined;
+      let removeParentSignalHandlers = () => {};
+      const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
       const relevantTracePattern =
         /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text)"|"role"\s*:\s*"assistant"/;
@@ -1467,24 +1470,69 @@ async function executeCommand(
         if (forceKill) {
           clearTimeout(forceKill);
         }
+        if (forceFinish) {
+          clearTimeout(forceFinish);
+        }
+        removeParentSignalHandlers();
         result.usageTrace = readRelevantTrace() || undefined;
         result.stdoutReceived = stdoutReceived;
         result.stdoutEndsWithNewline = stdoutEndsWithNewline;
         resolve(result);
       };
+      const ownsChildProcessGroup = process.platform !== "win32" && options.timeoutSeconds !== undefined;
       const child = spawn(command.command, command.args, {
         cwd,
+        detached: ownsChildProcessGroup,
         env: commandEnv(env, command) as NodeJS.ProcessEnv,
         stdio,
       });
 
+      const signalChildTree = (signal: NodeJS.Signals) => {
+        if (ownsChildProcessGroup && child.pid) {
+          try {
+            process.kill(-child.pid, signal);
+            return;
+          } catch {
+            // Fall back to the direct child when the process group has already exited.
+          }
+        }
+        child.kill(signal);
+      };
+
+      if (ownsChildProcessGroup) {
+        const parentSignals: NodeJS.Signals[] = ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
+        const handlers = new Map<NodeJS.Signals, () => void>();
+        removeParentSignalHandlers = () => {
+          for (const [signal, handler] of handlers) {
+            process.off(signal, handler);
+          }
+        };
+        for (const signal of parentSignals) {
+          const handler = () => {
+            signalChildTree(signal);
+            removeParentSignalHandlers();
+            process.kill(process.pid, signal);
+          };
+          handlers.set(signal, handler);
+          process.once(signal, handler);
+        }
+      }
+
       const terminateChild = (code: number) => {
         if (settled || termination) return;
         termination = { code };
-        child.kill("SIGTERM");
+        signalChildTree("SIGTERM");
         forceKill = setTimeout(() => {
-          if (!settled) child.kill("SIGKILL");
-        }, 1000);
+          if (settled) return;
+          signalChildTree("SIGKILL");
+          forceFinish = setTimeout(() => {
+            if (settled) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish({ code, stdout: capturedStdout });
+          }, terminationGraceMs);
+          forceFinish.unref();
+        }, terminationGraceMs);
         forceKill.unref();
       };
 
@@ -1527,6 +1575,9 @@ async function executeCommand(
         finish({ code: termination?.code ?? 127, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
       child.on("close", (code, signal) => {
+        if (termination) {
+          signalChildTree("SIGKILL");
+        }
         if (signal) {
           finish({ code: termination?.code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
           return;
