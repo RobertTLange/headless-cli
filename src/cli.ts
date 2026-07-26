@@ -3461,6 +3461,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     validateSessionAlias(parsed.sessionAlias);
     const coordination = effectiveCoordination(parsed, config.general.coordination);
+    if (
+      parsed.docker &&
+      parsed.runId &&
+      parsed.role &&
+      (coordination === "session" || parsed.sessionAlias !== undefined)
+    ) {
+      throw new CliError("Docker run nodes do not support durable sessions; use oneshot coordination without --session");
+    }
     const nodeId = nodeIdForRole(parsed.role, parsed.nodeId);
     if (parsed.runId !== undefined && parsed.role === undefined) {
       throw new CliError("--run requires --role");

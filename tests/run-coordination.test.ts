@@ -1327,3 +1327,59 @@ test("Docker run coordination mounts the host run directory", async () => {
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("Docker run nodes reject unsupported durable sessions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home") };
+    const stderr: string[] = [];
+    assert.equal(
+      await runCli(
+        [
+          "codex",
+          "--role",
+          "worker",
+          "--run",
+          "auth",
+          "--node",
+          "worker-1",
+          "--coordination",
+          "session",
+          "--prompt",
+          "hello",
+          "--docker",
+        ],
+        { env, stderr: (text) => stderr.push(text) },
+      ),
+      2,
+    );
+    assert.match(stderr.join(""), /Docker run nodes do not support durable sessions/);
+    assert.equal(readRun(env, "auth"), undefined);
+
+    stderr.length = 0;
+    assert.equal(
+      await runCli(
+        [
+          "codex",
+          "--role",
+          "worker",
+          "--run",
+          "auth",
+          "--node",
+          "worker-1",
+          "--session",
+          "work",
+          "--prompt",
+          "hello",
+          "--docker",
+        ],
+        { env, stderr: (text) => stderr.push(text) },
+      ),
+      2,
+    );
+    assert.match(stderr.join(""), /Docker run nodes do not support durable sessions/);
+    assert.equal(readRun(env, "auth"), undefined);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
