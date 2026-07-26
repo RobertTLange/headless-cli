@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   buildDockerAgentCommand,
+  dockerSessionHomePath,
   dockerSessionNativeId,
   DEFAULT_DOCKER_IMAGE,
   readDockerCursorSessionId,
@@ -338,6 +339,24 @@ test("uses a persistent host home for durable Docker sessions", () => {
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
+});
+
+test("requires an absolute configured Docker session root", () => {
+  assert.throws(
+    () =>
+      dockerSessionHomePath("codex", "work", {
+        HEADLESS_DOCKER_SESSION_ROOT: ".headless/docker-sessions",
+        HOME: "/home/test",
+      }),
+    /HEADLESS_DOCKER_SESSION_ROOT must be an absolute path/,
+  );
+  assert.equal(
+    dockerSessionHomePath("codex", "work", {
+      HEADLESS_DOCKER_SESSION_ROOT: "/var/lib/headless-sessions",
+      HOME: "/home/test",
+    }),
+    "/var/lib/headless-sessions/codex/work",
+  );
 });
 
 test("reads regular Docker Cursor session IDs and rejects symlinks", () => {

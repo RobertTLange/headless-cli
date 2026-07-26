@@ -48,8 +48,12 @@ export function detectDockerHostUser(): string | undefined {
 }
 
 export function dockerSessionHomePath(agent: AgentName, alias: string, env: Env): string | undefined {
+  const configuredRoot = env[DOCKER_SESSION_ROOT_ENV]?.trim();
+  if (configuredRoot && !isAbsolute(configuredRoot)) {
+    throw new Error(`${DOCKER_SESSION_ROOT_ENV} must be an absolute path`);
+  }
   const root =
-    env[DOCKER_SESSION_ROOT_ENV]?.trim() || (env.HOME ? join(env.HOME, ".headless", "docker-sessions") : undefined);
+    configuredRoot || (env.HOME ? join(env.HOME, ".headless", "docker-sessions") : undefined);
   return root ? resolve(root, agent, alias) : undefined;
 }
 
