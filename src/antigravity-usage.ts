@@ -81,9 +81,23 @@ try {
   // The user's status command is optional.
 }
 if (originalCommand) {
-  const child = spawnSync("/bin/sh", ["-c", originalCommand], { input, encoding: "utf8" });
+  const environment = { ...process.env };
+  try {
+    const originalEnvironment = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "status-environment.json"), "utf8"),
+    );
+    for (const [key, value] of Object.entries(originalEnvironment)) {
+      if (typeof value === "string") environment[key] = value;
+      else delete environment[key];
+    }
+  } catch {
+    // Fall back to the wrapper environment if the snapshot is unavailable.
+  }
+  const child = spawnSync("/bin/sh", ["-c", originalCommand], { input, encoding: "utf8", env: environment });
   if (child.stdout) process.stdout.write(child.stdout);
   if (child.stderr) process.stderr.write(child.stderr);
+  if (child.signal) process.kill(process.pid, child.signal);
+  else process.exitCode = child.status ?? 1;
 }
 `;
 
@@ -125,6 +139,7 @@ export function prepareAntigravityUsageCapture(env: Env, cwd?: string): Antigrav
     const capturePath = join(root, "usage.jsonl");
     const scriptPath = join(root, "capture.mjs");
     const statusCommandPath = join(root, "status-command");
+    const statusEnvironmentPath = join(root, "status-environment.json");
 
     for (const stateRoot of ["brain", "cache"]) {
       mkdirSync(join(realAppDir, stateRoot), { recursive: true, mode: 0o700 });
@@ -144,6 +159,16 @@ export function prepareAntigravityUsageCapture(env: Env, cwd?: string): Antigrav
 
     writeFileSync(capturePath, "", { mode: 0o600 });
     writeFileSync(statusCommandPath, originalCommand ?? "", { mode: 0o600 });
+    writeFileSync(
+      statusEnvironmentPath,
+      JSON.stringify({
+        HOME: env.HOME ?? null,
+        ANTIGRAVITY_HOME: env.ANTIGRAVITY_HOME ?? null,
+        AGY_HOME: env.AGY_HOME ?? null,
+        HEADLESS_ANTIGRAVITY_USAGE_FILE: env.HEADLESS_ANTIGRAVITY_USAGE_FILE ?? null,
+      }),
+      { mode: 0o600 },
+    );
     writeFileSync(scriptPath, captureScript, { mode: 0o700 });
     chmodSync(scriptPath, 0o700);
     writeFileSync(

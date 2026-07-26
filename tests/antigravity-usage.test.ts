@@ -188,3 +188,76 @@ test("Antigravity usage capture ignores empty preferred profile roots", () => {
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("Antigravity usage capture preserves the original status command environment and exit code", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-status-command-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(dir, "profile");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, "settings.json"),
+      `${JSON.stringify({
+        statusLine: {
+          type: "command",
+          command: "printf '%s|%s|%s' \"$HOME\" \"$ANTIGRAVITY_HOME\" \"$AGY_HOME\"; exit 23",
+          enabled: true,
+        },
+      })}\n`,
+    );
+    const originalEnv = {
+      HOME: home,
+      ANTIGRAVITY_HOME: appDir,
+      AGY_HOME: appDir,
+    };
+    const capture = prepareAntigravityUsageCapture(originalEnv);
+    assert.ok(capture);
+    const overlaySettings = JSON.parse(
+      readFileSync(join(capture.commandEnv.ANTIGRAVITY_HOME ?? "", "settings.json"), "utf8"),
+    );
+    const status = spawnSync("/bin/sh", ["-c", overlaySettings.statusLine.command], {
+      encoding: "utf8",
+      env: { ...process.env, ...originalEnv, ...capture.commandEnv },
+      input: "{}",
+    });
+
+    assert.equal(status.status, 23);
+    assert.equal(status.stdout, `${home}|${appDir}|${appDir}`);
+    assert.equal(capture.read().trim().length > 0, true);
+    capture.cleanup();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Antigravity usage capture preserves original status command signals", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-status-signal-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, "settings.json"),
+      `${JSON.stringify({
+        statusLine: { type: "command", command: "kill -TERM $$", enabled: true },
+      })}\n`,
+    );
+    const capture = prepareAntigravityUsageCapture({ HOME: home });
+    assert.ok(capture);
+    const overlaySettings = JSON.parse(
+      readFileSync(join(capture.commandEnv.HOME ?? "", ".gemini", "antigravity-cli", "settings.json"), "utf8"),
+    );
+    const status = spawnSync("/bin/sh", ["-c", overlaySettings.statusLine.command], {
+      encoding: "utf8",
+      env: { ...process.env, ...capture.commandEnv },
+      input: "{}",
+    });
+
+    assert.equal(status.status, null);
+    assert.equal(status.signal, "SIGTERM");
+    assert.equal(capture.read().trim().length > 0, true);
+    capture.cleanup();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
