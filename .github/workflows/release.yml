@@ -57,3 +57,126 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  build-python:
+    name: Build and verify Python SDK
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.pypi-version.outputs.published }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build Headless CLI
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python/pyproject.toml
+
+      - name: Install Python SDK
+        run: python -m pip install -e "./python[test]"
+
+      - name: Verify Python SDK
+        working-directory: python
+        run: |
+          python -m ruff format --check src tests
+          python -m ruff check src tests
+          python -m mypy src tests
+          python -m coverage run -m pytest
+          python -m coverage report --fail-under=80
+
+      - name: Build Python package
+        run: python -m build --outdir python/dist python
+
+      - name: Smoke test built distributions
+        env:
+          HEADLESS_CLI_BIN: ${{ github.workspace }}/dist/cli.js
+        run: |
+          python -m venv "${{ runner.temp }}/wheel-smoke"
+          "${{ runner.temp }}/wheel-smoke/bin/python" -m pip install python/dist/*.whl
+          "${{ runner.temp }}/wheel-smoke/bin/python" -c "from headless_cli import Headless; print(Headless().version())"
+          python -m venv "${{ runner.temp }}/sdist-smoke"
+          "${{ runner.temp }}/sdist-smoke/bin/python" -m pip install python/dist/*.tar.gz
+          "${{ runner.temp }}/sdist-smoke/bin/python" -c "from headless_cli import Headless; print(Headless().version())"
+
+      - name: Read package version
+        id: package-version
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("python/pyproject.toml").read_text())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"version={data['project']['version']}", file=output)
+          PY
+
+      - name: Check PyPI package version
+        id: pypi-version
+        env:
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import urllib.error
+          import urllib.request
+
+          version = os.environ["PACKAGE_VERSION"]
+          url = f"https://pypi.org/pypi/headless-cli/{version}/json"
+          try:
+              with urllib.request.urlopen(url) as response:
+                  published = response.status == 200
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              published = False
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"published={str(published).lower()}", file=output)
+          PY
+
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: python/dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish Python SDK to PyPI
+    needs:
+      - publish-npm
+      - build-python
+    if: github.event_name == 'release' && needs.build-python.outputs.published != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/headless-cli/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download Python distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: python/dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist

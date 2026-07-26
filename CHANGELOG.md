@@ -2,6 +2,9 @@
 
 ## TBD
 
+- Added a typed Python SDK with synchronous and asynchronous clients, structured streaming, CLI namespace coverage, subprocess cancellation and process-tree cleanup, and a raw invocation escape hatch.
+- Added a versioned JSON/NDJSON SDK protocol for stable machine-readable CLI results, errors, traces, capability discovery, and structured session, run, cron, config, and diagnostic output.
+- Added Python 3.10 and 3.14 CI coverage plus guarded PyPI trusted publishing for the `headless-cli` package.
 - Added durable Docker sessions with `--docker --session <name>`, persisting each native agent home under `~/.headless/docker-sessions` for multi-turn conversations while keeping the default Docker mode ephemeral.
 - Thanks to Anant Garg (@anantgar) for contributing durable Docker sessions.
 - Changed Docker auth seeding for Antigravity to mount only credential and settings files instead of copying its conversation and brain history into each container.
