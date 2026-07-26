@@ -14,12 +14,11 @@ import {
 import { hostname } from "node:os";
 import { dirname, join, win32 } from "node:path";
 
-import { lock as lockFile } from "proper-lockfile";
-
 import type { AgentName, Env } from "./types.js";
 
 const privateDirMode = 0o700;
 const privateFileMode = 0o600;
+const dockerSessionLockSignalListeners = new Set<NodeJS.SignalsListener>();
 
 export interface LaunchLock {
   release: () => void;
@@ -72,6 +71,21 @@ export function launchLockPath(env: Env, agent: AgentName, workspace: string): s
 }
 
 export async function acquireDockerSessionLock(persistentHome: string): Promise<DockerSessionLock> {
+  const signals: NodeJS.Signals[] =
+    process.platform === "win32"
+      ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+      : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
+  const listenersBeforeImport = new Map(
+    signals.map((signal) => [signal, new Set(process.listeners(signal))] as const),
+  );
+  const { lock: lockFile } = await import("proper-lockfile");
+  for (const signal of signals) {
+    for (const listener of process.listeners(signal)) {
+      if (!listenersBeforeImport.get(signal)?.has(listener)) {
+        dockerSessionLockSignalListeners.add(listener);
+      }
+    }
+  }
   const lockPath = dockerSessionLockPath(persistentHome);
   const ownerPath = `${lockPath}.owner`;
   ensurePrivateDir(dirname(lockPath));
@@ -142,6 +156,10 @@ export async function acquireDockerSessionLock(persistentHome: string): Promise<
       return compromisedError ?? cleanupError;
     },
   };
+}
+
+export function isDockerSessionLockSignalListener(listener: NodeJS.SignalsListener): boolean {
+  return dockerSessionLockSignalListeners.has(listener);
 }
 
 export function dockerSessionLockPath(persistentHome: string): string {

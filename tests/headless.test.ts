@@ -1464,6 +1464,130 @@ test("CLI forwards parent signals to timeout-enabled agents", async () => {
   }
 });
 
+test("CLI forwards parent signals while holding a durable Docker session lock", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const dockerPidFile = join(dir, "docker.pid");
+  const signalFile = join(dir, "signal.txt");
+  let dockerPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    mkdirSync(binDir);
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    const docker = join(binDir, "docker");
+    writeFileSync(
+      docker,
+      [
+        "#!/usr/bin/env node",
+        "const { writeFileSync } = require('node:fs');",
+        "writeFileSync(process.env.HEADLESS_TEST_DOCKER_PID, String(process.pid));",
+        "process.on('SIGINT', () => {",
+        "  writeFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGINT');",
+        "  process.exit(130);",
+        "});",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(docker, 0o755);
+
+    const headless = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(repoRoot, "src", "cli.ts"),
+        "codex",
+        "--docker",
+        "--session",
+        "work",
+        "--prompt",
+        "hello",
+        "--timeout",
+        "30",
+        "--work-dir",
+        projectDir,
+      ],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TEST_DOCKER_PID: dockerPidFile,
+          HEADLESS_TEST_SIGNAL_FILE: signalFile,
+          HOME: homeDir,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(dockerPidFile));
+
+    headless.kill("SIGINT");
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      headless.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+
+    assert.deepEqual(exit, { code: null, signal: "SIGINT" });
+    await waitFor(() => existsSync(signalFile));
+    assert.equal(readFileSync(signalFile, "utf8"), "SIGINT");
+  } finally {
+    try {
+      dockerPid = Number(readFileSync(dockerPidFile, "utf8"));
+      if (Number.isInteger(dockerPid) && dockerPid > 0 && processIsAlive(dockerPid)) process.kill(dockerPid, "SIGKILL");
+    } catch {
+      // The wrapper may fail before launching Docker.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI ignores durable lock signal listeners left by an earlier invocation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const homeDir = join(dir, "home");
+    const lockHome = join(dir, "docker-sessions", "codex", "work");
+    mkdirSync(binDir);
+    mkdirSync(homeDir);
+    mkdirSync(lockHome, { recursive: true });
+    const binary = join(binDir, "codex");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "setTimeout(() => process.kill(process.ppid, 'SIGTERM'), 100);",
+        "process.on('SIGTERM', () => process.exit(0));",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const runner = join(dir, "runner.mjs");
+    writeFileSync(
+      runner,
+      [
+        `const { acquireDockerSessionLock } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "src", "launch-lock.ts")).href)});`,
+        `const lock = await acquireDockerSessionLock(${JSON.stringify(lockHome)});`,
+        "await lock.release();",
+        `const { runCli } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "src", "cli.ts")).href)});`,
+        "process.exitCode = await runCli(['codex', '--prompt', 'hello', '--json', '--timeout', '30']);",
+        "",
+      ].join("\n"),
+    );
+
+    const child = spawnSync(process.execPath, ["--import", "tsx", runner], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, HOME: homeDir, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(child.status, null, child.stderr);
+    assert.equal(child.signal, "SIGTERM");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI forwards suspend and continue signals to timeout-enabled agents", { skip: process.platform === "win32" }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const agentPidFile = join(dir, "agent.pid");

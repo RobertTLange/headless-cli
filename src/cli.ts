@@ -86,7 +86,11 @@ import {
   resolveOpencodeTranscriptByTitle,
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
-import { acquireDockerSessionLock, acquireLaunchLock } from "./launch-lock.js";
+import {
+  acquireDockerSessionLock,
+  acquireLaunchLock,
+  isDockerSessionLockSignalListener,
+} from "./launch-lock.js";
 import { forceKillWindowsProcessTree } from "./process-tree.js";
 import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
@@ -1048,6 +1052,7 @@ interface ExecuteCommandOptions {
   captureFinalMessageTrace?: boolean;
   captureRelevantTrace?: boolean;
   cleanupBeforeParentSignalExit?: () => void;
+  inheritedSignalListeners?: ReadonlyMap<NodeJS.Signals, ReadonlySet<NodeJS.SignalsListener>>;
 }
 
 interface WaitingSpinner {
@@ -1085,6 +1090,12 @@ const waitingSpinnerVerbs = [
   "path tracing",
   "output polishing",
 ];
+
+function parentExitSignals(): NodeJS.Signals[] {
+  return process.platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+    : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
+}
 
 function randomWaitingSpinnerVerb(): string {
   return waitingSpinnerVerbs[Math.floor(Math.random() * waitingSpinnerVerbs.length)] ?? waitingSpinnerVerbs[0];
@@ -1669,13 +1680,12 @@ async function executeCommand(
             process.off(signal, handler);
           }
         };
-        const exitSignals: NodeJS.Signals[] =
-          process.platform === "win32"
-            ? ["SIGINT", "SIGTERM", "SIGBREAK"]
-            : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
-        for (const signal of exitSignals) {
+        for (const signal of parentExitSignals()) {
           const handler = () => {
-            const hasExternalListener = process.listeners(signal).some((listener) => listener !== handler);
+            const inheritedListeners = options.inheritedSignalListeners?.get(signal);
+            const hasExternalListener = inheritedListeners
+              ? process.listeners(signal).some((listener) => inheritedListeners.has(listener))
+              : process.listeners(signal).some((listener) => listener !== handler);
             signalChildTree(signal);
             try {
               options.cleanupBeforeParentSignalExit?.();
@@ -2959,6 +2969,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env: Env = { ...(deps.env ?? process.env) };
+  const inheritedSignalListeners = new Map(
+    parentExitSignals().map((signal) => [
+      signal,
+      new Set(process.listeners(signal).filter((listener) => !isDockerSessionLockSignalListener(listener))),
+    ] as const),
+  );
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
   let dockerSessionLock: { release: () => Promise<Error | undefined> } | undefined;
 
@@ -3964,6 +3980,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               captureFinalMessageTrace: parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId),
               captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
               cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
+              inheritedSignalListeners,
             });
         if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
           appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
