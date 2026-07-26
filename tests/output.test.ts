@@ -89,6 +89,52 @@ test("extracts Antigravity JSON-shaped plain text answers", () => {
   assert.equal(extractFinalMessage("antigravity", "[1,2,3]\n"), "[1,2,3]");
 });
 
+test("extracts the latest Antigravity response from mixed trace and plain output", () => {
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        "startup warning",
+        JSON.stringify({ type: "PLANNER_RESPONSE", status: "DONE", content: "native final" }),
+        "",
+      ].join("\n"),
+    ),
+    "native final",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }),
+        "first line",
+        "",
+        "  indented line",
+        "",
+      ].join("\n"),
+    ),
+    "first line\n\n  indented line",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      ["startup warning", JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }), ""].join("\n"),
+    ),
+    "",
+  );
+  assert.equal(
+    extractFinalMessage(
+      "antigravity",
+      [
+        JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }),
+        "plain final",
+        JSON.stringify({ type: "SESSION_META", conversation_id: "agy-run" }),
+        "",
+      ].join("\n"),
+    ),
+    "plain final",
+  );
+});
+
 test("extracts Antigravity final message from native transcript records", () => {
   assert.equal(
     extractFinalMessage(

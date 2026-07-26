@@ -64,6 +64,7 @@ import {
   extractNativeSessionId,
   extractUsageSummary,
   fetchModelsDevPricing,
+  isAntigravityStructuredOutput,
   priceUsageSummary,
 } from "./output.js";
 import {
@@ -891,6 +892,7 @@ function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): Ag
 interface ExecuteResult {
   code: number;
   stdout: string;
+  finalMessageTrace?: string;
   usageTrace?: string;
   stdoutReceived?: boolean;
   stdoutEndsWithNewline?: boolean;
@@ -1028,6 +1030,7 @@ interface ExecuteCommandOptions {
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
   timeoutSeconds?: number;
+  captureFinalMessageTrace?: boolean;
   captureRelevantTrace?: boolean;
   cleanupBeforeParentSignalExit?: () => void;
 }
@@ -1398,6 +1401,16 @@ function suppressKnownStderr(agent: AgentName, text: string): string {
     .join("");
 }
 
+function boundedUtf8Tail(text: string, maxBytes: number): string {
+  const encoded = Buffer.from(text, "utf8");
+  if (encoded.byteLength <= maxBytes) return text;
+  let start = encoded.byteLength - maxBytes;
+  while (start < encoded.byteLength && (encoded[start] & 0xc0) === 0x80) {
+    start += 1;
+  }
+  return encoded.subarray(start).toString("utf8");
+}
+
 async function executeCommand(
   agent: AgentName,
   command: BuiltCommand,
@@ -1427,6 +1440,8 @@ async function executeCommand(
       let traceRowDiscarded = false;
       const relevantTrace: string[] = [];
       let relevantTraceBytes = 0;
+      const finalMessageTrace: string[] = [];
+      let finalMessageTraceBytes = 0;
       let pinnedIdentityTrace = "";
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
@@ -1437,6 +1452,7 @@ async function executeCommand(
       let removeParentSignalHandlers = () => {};
       const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
+      const maxFinalMessageTraceBytes = 64 * 1024;
       const maxCapturedTraceRowBytes = 4 * 1024 * 1024;
       const maxPinnedIdentityBytes = 16 * 1024;
       const relevantTracePattern =
@@ -1463,8 +1479,24 @@ async function executeCommand(
           relevantTraceBytes -= Buffer.byteLength(removed, "utf8");
         }
       };
+      const appendFinalMessageLine = (line: string) => {
+        let capturedLine = line;
+        let entryBytes = Buffer.byteLength(capturedLine, "utf8") + 1;
+        if (entryBytes > maxFinalMessageTraceBytes) {
+          if (isAntigravityStructuredOutput(capturedLine)) return;
+          capturedLine = boundedUtf8Tail(capturedLine, maxFinalMessageTraceBytes - 1);
+          entryBytes = Buffer.byteLength(capturedLine, "utf8") + 1;
+        }
+        const entry = `${capturedLine}\n`;
+        finalMessageTrace.push(entry);
+        finalMessageTraceBytes += entryBytes;
+        while (finalMessageTraceBytes > maxFinalMessageTraceBytes && finalMessageTrace.length > 1) {
+          const removed = finalMessageTrace.shift() ?? "";
+          finalMessageTraceBytes -= Buffer.byteLength(removed, "utf8");
+        }
+      };
       const captureRelevantChunk = (chunk: string) => {
-        if (!options.captureRelevantTrace) return;
+        if (!options.captureRelevantTrace && !options.captureFinalMessageTrace) return;
         const fragments = chunk.split("\n");
         for (let index = 0; index < fragments.length; index += 1) {
           if (!traceRowDiscarded) {
@@ -1477,15 +1509,22 @@ async function executeCommand(
           if (index < fragments.length - 1) {
             if (!traceRowDiscarded) {
               const line = traceBuffer.endsWith("\r") ? traceBuffer.slice(0, -1) : traceBuffer;
-              appendRelevantTrace(line);
+              if (options.captureRelevantTrace) appendRelevantTrace(line);
+              if (options.captureFinalMessageTrace) appendFinalMessageLine(line);
             }
             traceBuffer = "";
             traceRowDiscarded = false;
           }
         }
       };
+      const flushTraceBuffer = () => {
+        if (traceBuffer && !traceRowDiscarded) {
+          if (options.captureRelevantTrace) appendRelevantTrace(traceBuffer);
+          if (options.captureFinalMessageTrace) appendFinalMessageLine(traceBuffer);
+        }
+        traceBuffer = "";
+      };
       const readRelevantTrace = () => {
-        if (traceBuffer && !traceRowDiscarded) appendRelevantTrace(traceBuffer);
         const rollingTrace = relevantTrace.join("");
         return pinnedIdentityTrace && !rollingTrace.includes(pinnedIdentityTrace)
           ? `${pinnedIdentityTrace}${rollingTrace}`
@@ -1509,6 +1548,8 @@ async function executeCommand(
           clearTimeout(forceDrain);
         }
         removeParentSignalHandlers();
+        flushTraceBuffer();
+        result.finalMessageTrace = finalMessageTrace.join("") || undefined;
         result.usageTrace = readRelevantTrace() || undefined;
         result.stdoutReceived = stdoutReceived;
         result.stdoutEndsWithNewline = stdoutEndsWithNewline;
@@ -3786,6 +3827,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               stdoutLog: commandStdoutLog,
               stderr: commandStderr,
               timeoutSeconds: commandTimeoutSeconds,
+              captureFinalMessageTrace: parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId),
               captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
               cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
             });
@@ -3801,13 +3843,20 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (!result) {
         throw new CliError("agent execution did not produce a result");
       }
-      const commandTrace = result.stdout || result.usageTrace || "";
-      const usageTrace = antigravityUsageTrace ? `${commandTrace}\n${antigravityUsageTrace}` : commandTrace;
+      const commandTrace = result.stdout || result.finalMessageTrace || result.usageTrace || "";
+      const usageCommandTrace = result.stdout || result.usageTrace || result.finalMessageTrace || "";
+      const usageTrace = antigravityUsageTrace
+        ? `${usageCommandTrace}\n${antigravityUsageTrace}`
+        : usageCommandTrace;
       if (result.code === 0 && sessionPlan) {
         await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
       }
       if (parsed.runId && parsed.role && nodeId) {
-        const finalMessage = extractFinalMessage(parsed.agent, usageTrace);
+        const finalMessage =
+          extractFinalMessage(parsed.agent, commandTrace) ||
+          (result.usageTrace && result.usageTrace !== commandTrace
+            ? extractFinalMessage(parsed.agent, result.usageTrace)
+            : "");
         const metrics = extractRunNodeMetrics(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env));
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {

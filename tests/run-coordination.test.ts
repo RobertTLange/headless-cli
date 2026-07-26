@@ -403,7 +403,8 @@ test("json Antigravity usage is included in persisted run-node metrics", async (
         "const payload = { conversation_id: 'agy-run', model: { id: 'Gemini 3.5 Flash (Low)', display_name: 'Gemini 3.5 Flash (Low)' }, context_window: { current_usage: { input_tokens: 11, output_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 2 } } };",
         "const status = spawnSync('/bin/sh', ['-c', settings.statusLine.command], { input: JSON.stringify(payload), env: process.env, encoding: 'utf8' });",
         "if (status.status !== 0) { process.stderr.write(status.stderr); process.exit(status.status ?? 1); }",
-        "process.stdout.write(JSON.stringify({ type: 'assistant', content: 'antigravity done' }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', content: 'antigravity done ' + 'x'.repeat(70 * 1024) }) + '\\n');",
+        "process.stdout.write(JSON.stringify({ type: 'SESSION_META', conversation_id: 'agy-run' }) + '\\n');",
         "",
       ].join("\n"),
     );
@@ -442,8 +443,58 @@ test("json Antigravity usage is included in persisted run-node metrics", async (
     assert.equal(node?.metrics?.cacheReadTokens, 2);
     assert.equal(node?.metrics?.outputTokens, 3);
     assert.equal(node?.metrics?.totalTokens, 16);
+    assert.equal(node?.lastMessage?.startsWith("antigravity done "), true);
+    assert.equal(node?.lastMessage?.length, "antigravity done ".length + 70 * 1024);
   } finally {
     globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Antigravity json run nodes preserve multiline plain responses after native trace rows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "agy"),
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ type: 'session_meta', conversation_id: 'agy-run' }));",
+        "process.stdout.write('first line\\n\\n  indented line\\n');",
+        "",
+      ].join("\n"),
+    );
+
+    const env = {
+      ...process.env,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(
+      [
+        "antigravity",
+        "--role",
+        "worker",
+        "--run",
+        "agy-run",
+        "--node",
+        "worker",
+        "--coordination",
+        "oneshot",
+        "--prompt",
+        "hello",
+        "--json",
+      ],
+      { env, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
+    );
+
+    assert.equal(code, 0, stderr.join(""));
+    assert.equal(readRun(env, "agy-run")?.nodes.worker.lastMessage, "first line\n\n  indented line");
+  } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
