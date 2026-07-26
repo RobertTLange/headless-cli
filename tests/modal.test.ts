@@ -7,6 +7,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
+  BoundedTextCapture,
   buildModalRunSummary,
   collectModalEnv,
   DEFAULT_MODAL_APP,
@@ -25,6 +26,24 @@ import {
   type ModalWriteStreamLike,
 } from "../src/modal.ts";
 import { quoteCommand } from "../src/shell.ts";
+
+test("bounded Modal capture trims large and highly fragmented streams", () => {
+  const large = new BoundedTextCapture(16);
+  large.append(`${"x".repeat(1024 * 1024)}tail`);
+  assert.equal(large.text(), "xxxxxxxxxxxxtail");
+
+  const fragmented = new BoundedTextCapture(16);
+  for (let index = 0; index < 10_000; index += 1) {
+    fragmented.append(String(index % 10));
+  }
+  assert.equal(fragmented.text(), "4567890123456789");
+
+  const evicted = new BoundedTextCapture(4 * 1024 * 1024);
+  for (let index = 0; index < 6; index += 1) {
+    evicted.append(String(index).repeat(3 * 1024 * 1024));
+  }
+  assert.equal(evicted.text(), `${"4".repeat(1024 * 1024)}${"5".repeat(3 * 1024 * 1024)}`);
+});
 
 test("builds a printable Modal sandbox summary command", () => {
   const summary = buildModalRunSummary({

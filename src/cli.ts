@@ -117,6 +117,13 @@ import {
   type StoredTmuxWaitStrategy,
 } from "./sessions.js";
 import { quoteCommand } from "./shell.js";
+import {
+  SDK_PROTOCOL_VERSION,
+  SdkTraceWriter,
+  renderSdkError,
+  renderSdkResult,
+  type SdkFormat,
+} from "./sdk.js";
 import { cell, renderTable as renderBoxTable, type TableCell } from "./table.js";
 import {
   composeRolePrompt,
@@ -133,6 +140,7 @@ import { expandTeamSpecs } from "./teams.js";
 import type { AgentName, AllowMode, BuildOptions, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
+  capabilities: boolean;
   attach: boolean;
   attachSession?: string;
   attachAll: boolean;
@@ -187,6 +195,7 @@ interface ParsedArgs {
   modalTimeoutSeconds?: number;
   timeoutSeconds?: number;
   json: boolean;
+  sdkFormat?: SdkFormat;
   debug: boolean;
   usage: boolean;
   wait: boolean;
@@ -199,6 +208,18 @@ interface ParsedArgs {
   help: boolean;
   version: boolean;
 }
+
+interface DisplayedConfig {
+  agent: AgentName;
+  allow: AllowMode | null;
+  configDir: string;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  seedPaths: string[];
+  workspaceConfigDir: string;
+}
+
+const sdkCaptureLimitBytes = 4 * 1024 * 1024;
 
 interface CliDeps {
   env?: Env;
@@ -226,6 +247,7 @@ function usage(): string {
     "       headless rename <session-name> <new-name> [options]",
     "       headless run <list|view|mark|message|wait> [args] [options]",
     "       headless cron <add|list|view|pause|resume|kill|rm|start|stop> [args] [options]",
+    "       headless capabilities [--sdk-format json]",
     "",
     "Headless gives coding-agent CLIs one shared interface for prompts, models, reasoning effort, output modes, sessions, and work directories.",
     "It runs supported agents locally, in tmux, in Docker, or in Modal while preserving each backend's native execution behavior.",
@@ -266,6 +288,7 @@ function usage(): string {
     "  --modal-include-git Include .git metadata in Modal uploads.",
     "  --timeout <s>        One-shot command timeout in seconds.",
     "  --json               Stream raw agent JSON trace output.",
+    "  --sdk-format <fmt>   Versioned SDK output: json or ndjson.",
     "  --debug              Stream raw trace and print extracted final message.",
     "  --usage              Append normalized token and API-equivalent cost JSON.",
     "  --tmux               Launch an interactive agent in a tmux session.",
@@ -295,6 +318,7 @@ function usage(): string {
     "  --list               List active headless tmux sessions.",
     "  --print-command      Print the command without executing it. Combine with --json for identity metadata.",
     "  --show-config        Print harness config paths and auth seed paths.",
+    "  capabilities         Print the machine-protocol capabilities.",
     "  -v, --version        Print the Headless CLI version.",
     "  -h, --help           Show this help.",
     "",
@@ -305,6 +329,7 @@ function usage(): string {
 
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
+    capabilities: false,
     attach: false,
     attachAll: false,
     send: false,
@@ -347,13 +372,17 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
   if (first === "-v" || first === "--version") {
     parsed.version = true;
-    return parsed;
+    if (args[0] !== "--sdk-format") {
+      return parsed;
+    }
   }
   if (first === undefined) {
     parsed.help = true;
     return parsed;
   }
-  if (first === "attach") {
+  if (first === "-v" || first === "--version") {
+    // Continue so versioned SDK output can be requested after --version.
+  } else if (first === "attach") {
     parsed.attach = true;
   } else if (first === "send") {
     parsed.send = true;
@@ -365,6 +394,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     parsed.cronCommand = parseCronCommand(args.shift());
   } else if (first === "docker") {
     parsed.dockerCommand = parseDockerCommand(args.shift());
+  } else if (first === "capabilities") {
+    parsed.capabilities = true;
   } else if (isAgentName(first)) {
     parsed.agent = first;
   } else if (first.startsWith("-")) {
@@ -491,6 +522,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         parsed.json = true;
+        break;
+      case "--sdk-format":
+        parsed.sdkFormat = parseSdkFormat(takeValue(args, arg));
         break;
       case "--debug":
         parsed.debug = true;
@@ -669,6 +703,80 @@ function parseReasoningEffort(value: string): ReasoningEffort {
   throw new CliError(`unsupported reasoning effort: ${value}`);
 }
 
+function parseSdkFormat(value: string): SdkFormat {
+  if (value === "json" || value === "ndjson") {
+    return value;
+  }
+  throw new CliError(`unsupported SDK format: ${value}`);
+}
+
+function requestsSdkOutput(argv: string[]): boolean {
+  const valueOptions = new Set([
+    "--prompt",
+    "-p",
+    "--prompt-file",
+    "--every",
+    "--schedule",
+    "--model",
+    "--agent-model",
+    "--reasoning-effort",
+    "--effort",
+    "--allow",
+    "--acp-agent",
+    "--acp-command",
+    "--acp-registry",
+    "--acp-registry-file",
+    "--role",
+    "--coordination",
+    "--run",
+    "--node",
+    "--depends-on",
+    "--team",
+    "--work-dir",
+    "-C",
+    "--docker-image",
+    "--docker-arg",
+    "--docker-env",
+    "--modal-app",
+    "--modal-cpu",
+    "--modal-env",
+    "--modal-image",
+    "--modal-image-secret",
+    "--modal-memory",
+    "--modal-secret",
+    "--modal-timeout",
+    "--timeout",
+    "--name",
+    "--session",
+    "--status",
+  ]);
+  for (let index = 0; index < argv.length; index += 1) {
+    if (valueOptions.has(argv[index] ?? "")) {
+      index += 1;
+      continue;
+    }
+    if (argv[index] === "--sdk-format") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sdkCommandFor(parsed: ParsedArgs): string {
+  if (parsed.version) return "version";
+  if (parsed.capabilities) return "capabilities";
+  if (parsed.check) return "check";
+  if (parsed.list) return "sessions.list";
+  if (parsed.showConfig) return "config.show";
+  if (parsed.runCommand) return `runs.${parsed.runCommand}`;
+  if (parsed.cronCommand) return `cron.${parsed.cronCommand}`;
+  if (parsed.dockerCommand) return `docker.${parsed.dockerCommand}`;
+  if (parsed.attach) return "sessions.attach";
+  if (parsed.send) return "sessions.send";
+  if (parsed.rename) return "sessions.rename";
+  return "invoke";
+}
+
 function parseDockerEnv(value: string): string {
   return parseForwardedEnv(value, "docker");
 }
@@ -766,16 +874,29 @@ function renderConfig(
   defaults: InvocationDefaults,
   env: Env,
 ): string {
-  const config = getAgentConfig(agent);
+  const config = displayedConfig(agent, defaults);
   const rows: Array<[string, string | TableCell]> = [
-    ["Agent", cell(config.name, "magenta")],
-    ["Model", valueCell(defaults.model, "magenta")],
-    ["Effort", valueCell(defaults.reasoningEffort, "yellow")],
-    ["Config dir", cell(config.configRelDir, "cyan")],
-    ["Workspace config dir", cell(config.workspaceConfigRelDir, "cyan")],
+    ["Agent", cell(config.agent, "magenta")],
+    ["Model", valueCell(config.model ?? undefined, "magenta")],
+    ["Effort", valueCell(config.reasoningEffort ?? undefined, "yellow")],
+    ["Config dir", cell(config.configDir, "cyan")],
+    ["Workspace config dir", cell(config.workspaceConfigDir, "cyan")],
     ...config.seedPaths.map((path): [string, TableCell] => ["Seed path", cell(path, "cyan")]),
   ];
   return renderBoxTable({ columns: ["Field", "Value"], rows }, { env });
+}
+
+function displayedConfig(agent: AgentName, defaults: InvocationDefaults): DisplayedConfig {
+  const config = getAgentConfig(agent);
+  return {
+    agent,
+    model: defaults.model ?? null,
+    reasoningEffort: defaults.reasoningEffort ?? null,
+    allow: defaults.allow ?? null,
+    configDir: config.configRelDir,
+    workspaceConfigDir: config.workspaceConfigRelDir,
+    seedPaths: config.seedPaths,
+  };
 }
 
 function valueCell(value: string | undefined, color: "magenta" | "yellow"): TableCell {
@@ -808,6 +929,27 @@ function packageVersion(): string {
     throw new CliError("package version not found");
   }
   return packageJson.version;
+}
+
+function sdkCapabilities(): Record<string, unknown> {
+  return {
+    cliVersion: packageVersion(),
+    protocolVersion: SDK_PROTOCOL_VERSION,
+    sdkFormats: ["json", "ndjson"],
+    agents: listAgents(),
+    commands: [
+      "invoke",
+      "capabilities",
+      "sessions.list",
+      "runs.list",
+      "runs.view",
+      "cron.list",
+      "cron.view",
+      "check",
+      "config.show",
+      "version",
+    ],
+  };
 }
 
 function dockerfilePath(): string {
@@ -953,15 +1095,23 @@ function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env):
 }
 
 async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
+  return `${JSON.stringify({ usage: await buildUsageReport(agent, stdout, context) })}\n`;
+}
+
+async function buildUsageReport(
+  agent: AgentName,
+  stdout: string,
+  context: { provider?: string; model?: string },
+): Promise<ReturnType<typeof priceUsageSummary>> {
   const summary = extractUsageSummary(agent, stdout, context);
   if (summary.usageStatus === "missing" || summary.pricingStatus === "native") {
-    return `${JSON.stringify({ usage: priceUsageSummary(summary, {}) })}\n`;
+    return priceUsageSummary(summary, {});
   }
   try {
     const pricing = await fetchModelsDevPricing();
-    return `${JSON.stringify({ usage: priceUsageSummary(summary, pricing) })}\n`;
+    return priceUsageSummary(summary, pricing);
   } catch {
-    return `${JSON.stringify({ usage: priceUsageSummary(summary, {}) })}\n`;
+    return priceUsageSummary(summary, {});
   }
 }
 
@@ -1051,6 +1201,7 @@ interface ExecuteCommandOptions {
   timeoutSeconds?: number;
   captureFinalMessageTrace?: boolean;
   captureRelevantTrace?: boolean;
+  maxFinalMessageTraceBytes?: number;
   cleanupBeforeParentSignalExit?: () => void;
   inheritedSignalListeners?: ReadonlyMap<NodeJS.Signals, ReadonlySet<NodeJS.SignalsListener>>;
 }
@@ -1547,7 +1698,7 @@ async function executeCommand(
       let removeParentSignalHandlers = () => {};
       const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
-      const maxFinalMessageTraceBytes = 64 * 1024;
+      const maxFinalMessageTraceBytes = options.maxFinalMessageTraceBytes ?? 64 * 1024;
       const maxCapturedTraceRowBytes = 4 * 1024 * 1024;
       const maxPinnedIdentityBytes = 16 * 1024;
       const relevantTracePattern =
@@ -2969,6 +3120,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env: Env = { ...(deps.env ?? process.env) };
+  const requestedSdkOutput = requestsSdkOutput(argv);
+  let activeSdkCommand = "cli";
   const inheritedSignalListeners = new Map(
     parentExitSignals().map((signal) => [
       signal,
@@ -3007,6 +3160,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
 
   try {
     const parsed = parseArgs(argv);
+    if (parsed.sdkFormat && parsed.json) {
+      throw new CliError("--json cannot be used with --sdk-format");
+    }
+    if (parsed.sdkFormat && parsed.debug) {
+      throw new CliError("--debug cannot be used with --sdk-format");
+    }
+    if (parsed.sdkFormat && parsed.printCommand) {
+      throw new CliError("--print-command cannot be used with --sdk-format");
+    }
+    activeSdkCommand = sdkCommandFor(parsed);
     if (parsed.acpAgent) env.HEADLESS_ACP_AGENT = parsed.acpAgent;
     if (parsed.acpCommand) env.HEADLESS_ACP_COMMAND = parsed.acpCommand;
     if (parsed.acpRegistryFile) env.HEADLESS_ACP_REGISTRY_FILE = parsed.acpRegistryFile;
@@ -3017,7 +3180,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 0;
     }
     if (parsed.version) {
-      stdout(`${packageVersion()}\n`);
+      stdout(
+        parsed.sdkFormat
+          ? renderSdkResult("version", { version: packageVersion() })
+          : `${packageVersion()}\n`,
+      );
+      return 0;
+    }
+    if (parsed.capabilities) {
+      stdout(
+        parsed.sdkFormat
+          ? renderSdkResult("capabilities", sdkCapabilities())
+          : `${JSON.stringify(sdkCapabilities(), undefined, 2)}\n`,
+      );
       return 0;
     }
     let config: HeadlessConfig;
@@ -3027,6 +3202,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError(error instanceof Error ? error.message : String(error));
     }
     if (parsed.cronCommand) {
+      if (parsed.sdkFormat && parsed.cronCommand !== "list" && parsed.cronCommand !== "view") {
+        throw new CliError(`--sdk-format cannot be used with cron ${parsed.cronCommand}`);
+      }
       validateCronCliOptions(parsed);
       try {
         return await handleCronCommandImpl(
@@ -3061,6 +3239,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             debug: parsed.debug,
             usage: parsed.usage,
             force: parsed.cronForce,
+            sdkFormat: parsed.sdkFormat,
           },
           { env, stdout, stderr },
         );
@@ -3069,6 +3248,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
     }
     if (parsed.runCommand) {
+      if (parsed.sdkFormat && parsed.runCommand !== "list" && parsed.runCommand !== "view") {
+        throw new CliError(`--sdk-format cannot be used with run ${parsed.runCommand}`);
+      }
       if (parsed.timeoutSeconds !== undefined) {
         throw new CliError("--timeout cannot be used with run commands");
       }
@@ -3081,6 +3263,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             status: parsed.runCommandStatus,
             async: parsed.runCommandAsync,
             printCommand: parsed.printCommand,
+            sdkFormat: parsed.sdkFormat,
           },
           {
             env,
@@ -3106,6 +3289,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
     }
     if (parsed.dockerCommand) {
+      if (parsed.sdkFormat) {
+        throw new CliError(`--sdk-format cannot be used with docker ${parsed.dockerCommand}`);
+      }
       if (parsed.prompt !== undefined || parsed.promptFile !== undefined) {
         throw new CliError(`--prompt and --prompt-file cannot be used with docker ${parsed.dockerCommand}`);
       }
@@ -3151,6 +3337,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return await executeSimpleCommand(command, undefined, env, stderr, stdout);
     }
     if (parsed.attach) {
+      if (parsed.sdkFormat) {
+        throw new CliError("--sdk-format cannot be used with attach");
+      }
       if (parsed.docker) {
         throw new CliError("--docker cannot be used with attach");
       }
@@ -3267,6 +3456,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("--all can only be used with attach");
     }
     if (parsed.rename) {
+      if (parsed.sdkFormat) {
+        throw new CliError("--sdk-format cannot be used with rename");
+      }
       if (parsed.docker) {
         throw new CliError("--docker cannot be used with rename");
       }
@@ -3319,6 +3511,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
     if (parsed.send) {
+      if (parsed.sdkFormat) {
+        throw new CliError("--sdk-format cannot be used with send");
+      }
       if (parsed.docker) {
         throw new CliError("--docker cannot be used with send");
       }
@@ -3384,11 +3579,17 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         throw new CliError("--session cannot be used with --check");
       }
       try {
-        stdout(renderAgentChecks(await checkAgents(env)));
+        const agents = await checkAgents(env);
+        const docker = await checkDocker(env, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE);
+        if (parsed.sdkFormat) {
+          stdout(renderSdkResult("check", { agents, docker }));
+          return 0;
+        }
+        stdout(renderAgentChecks(agents));
+        stdout(renderDockerCheck(docker));
       } catch (error) {
         throw new CliError(error instanceof Error ? error.message : String(error));
       }
-      stdout(renderDockerCheck(await checkDocker(env, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE)));
       return 0;
     }
     if (parsed.list && parsed.docker) {
@@ -3410,7 +3611,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (parsed.sessionAlias !== undefined) {
         throw new CliError("--session cannot be used with --list");
       }
-      stdout(await listHeadlessTmuxSessions(parsed.agent, env, config.general.listWaitingAfterMs));
+      if (parsed.sdkFormat) {
+        const sessions = await listHeadlessTmuxSessionDetails(
+          parsed.agent,
+          env,
+          config.general.listWaitingAfterMs,
+        );
+        stdout(renderSdkResult("sessions.list", { sessions }));
+      } else {
+        stdout(await listHeadlessTmuxSessions(parsed.agent, env, config.general.listWaitingAfterMs));
+      }
       return 0;
     }
     if (
@@ -3444,6 +3654,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.tmux && parsed.json) {
       throw new CliError("--json cannot be used with --tmux");
+    }
+    if (parsed.tmux && parsed.sdkFormat) {
+      throw new CliError("--sdk-format cannot be used with --tmux");
     }
     if (parsed.tmux && parsed.timeoutSeconds !== undefined) {
       if (!parsed.wait) {
@@ -3512,7 +3725,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           env,
           config,
         );
-        stdout(renderConfig(parsed.agent, defaults, env));
+        stdout(
+          parsed.sdkFormat
+            ? renderSdkResult("config.show", displayedConfig(parsed.agent, defaults))
+            : renderConfig(parsed.agent, defaults, env),
+        );
       } catch (error) {
         throw new CliError(error instanceof Error ? error.message : String(error));
       }
@@ -3889,7 +4106,21 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       throw new CliError("docker not found on PATH");
     }
 
-    const stdoutHandling: StdoutHandling = parsed.json
+    const sdkTraceWriter =
+      parsed.sdkFormat
+        ? new SdkTraceWriter(
+            parsed.agent,
+            parsed.sdkFormat === "ndjson" ? stdout : undefined,
+          )
+        : undefined;
+    const commandStdout = sdkTraceWriter
+      ? (text: string) => sdkTraceWriter.write(text)
+      : parsed.sdkFormat
+        ? () => undefined
+        : stdout;
+    const stdoutHandling: StdoutHandling = parsed.sdkFormat
+      ? "stream"
+      : parsed.json
       ? parsed.usage
         ? "stream"
         : parsed.sessionAlias || parsed.runId
@@ -3910,7 +4141,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         })
       : undefined;
     const waitingSpinner =
-      stdoutHandling === "capture" && stderrIsTTY && !statusReporter
+      stdoutHandling === "capture" && stderrIsTTY && !statusReporter && !parsed.sdkFormat
         ? createWaitingSpinner(waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined), stderr)
         : undefined;
     const displayStderr = (text: string) => {
@@ -3956,6 +4187,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
             modalEnv: parsed.modalEnv,
             modalSecrets: parsed.modalSecrets,
+            maxCapturedStdoutBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
             stderr: (text) => {
               commandStderr?.(text);
               const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
@@ -3965,20 +4197,25 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             },
             stdout: (text) => {
               commandStdoutLog?.(text);
-              stdout(text);
+              commandStdout(text);
             },
             stdoutHandling,
             timeoutSeconds: modalTimeoutSeconds,
             workDir: cwd ?? process.cwd(),
             })
           : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
-              stdout,
+              stdout: commandStdout,
               stdoutHandling,
               stdoutLog: commandStdoutLog,
               stderr: commandStderr,
               timeoutSeconds: commandTimeoutSeconds,
-              captureFinalMessageTrace: parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId),
-              captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
+              captureFinalMessageTrace:
+                Boolean(parsed.sdkFormat) ||
+                (parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId)),
+              captureRelevantTrace:
+                Boolean(parsed.sdkFormat) ||
+                (parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias))),
+              maxFinalMessageTraceBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
               cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
               inheritedSignalListeners,
             });
@@ -4003,6 +4240,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const usageTrace = antigravityUsageTrace
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
         : usageCommandTrace;
+      sdkTraceWriter?.flush();
       if (result.code === 0 && sessionPlan) {
         await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, sessionEnv, dockerSessionHome);
       }
@@ -4017,6 +4255,43 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
         }
+      }
+      if (parsed.sdkFormat) {
+        const finalMessage =
+          extractFinalMessage(parsed.agent, commandTrace) ||
+          sdkTraceWriter?.finalMessage;
+        const agentError = extractAgentError(parsed.agent, commandTrace);
+        if (!finalMessage) {
+          const exitCode = result.code || 1;
+          stdout(
+            renderSdkError(
+              agentError ||
+                (sdkTraceWriter?.oversizedRecord
+                  ? `agent output record exceeded the ${sdkCaptureLimitBytes}-byte SDK limit`
+                  : `agent exited with code ${exitCode}`),
+              exitCode,
+              "invoke",
+            ),
+          );
+          return exitCode;
+        }
+        const context = usageContext(parsed.agent, configuredDefaults, env);
+        stdout(
+          renderSdkResult("invoke", {
+            agent: parsed.agent,
+            provider: context.provider,
+            model: context.model,
+            reasoningEffort: configuredDefaults.reasoningEffort,
+            finalMessage,
+            nativeSessionId:
+              sdkTraceWriter?.nativeSessionId ||
+              extractNativeSessionId(parsed.agent, result.usageTrace ?? commandTrace),
+            ...(parsed.usage
+              ? { usage: await buildUsageReport(parsed.agent, usageTrace, context) }
+              : {}),
+          }, result.code),
+        );
+        return result.code;
       }
       if (parsed.json) {
         if (parsed.usage) {
@@ -4073,7 +4348,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
     }
     if (error instanceof CliError || error instanceof Error) {
-      stderr(`headless: ${error.message}\n`);
+      if (requestedSdkOutput) {
+        stdout(renderSdkError(error.message, 2, activeSdkCommand));
+      } else {
+        stderr(`headless: ${error.message}\n`);
+      }
       return 2;
     }
     throw error;

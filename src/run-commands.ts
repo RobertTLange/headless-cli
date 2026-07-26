@@ -16,8 +16,10 @@ import {
   runDirectory,
   updateNodeStatus,
   type RunNode,
+  type RunRecord,
 } from "./runs.js";
 import { quoteCommand } from "./shell.js";
+import { renderSdkResult, type SdkFormat } from "./sdk.js";
 import type { AgentName, Env } from "./types.js";
 import type { RunStatus } from "./roles.js";
 
@@ -28,6 +30,7 @@ export interface RunCommandInput {
   status?: RunStatus;
   async: boolean;
   printCommand: boolean;
+  sdkFormat?: SdkFormat;
 }
 
 export interface ResolvedPrompt {
@@ -46,7 +49,12 @@ export interface RunCommandHandlers {
 
 export async function handleRunCommand(input: RunCommandInput, handlers: RunCommandHandlers): Promise<number> {
   if (input.command === "list") {
-    handlers.stdout(renderRunList(listRuns(handlers.env)));
+    const runs = listRuns(handlers.env);
+    handlers.stdout(
+      input.sdkFormat
+        ? renderSdkResult("runs.list", { runs: runs.map(sdkRunSummary) })
+        : renderRunList(runs),
+    );
     return 0;
   }
   const runId = requireValue(input.runId, "run");
@@ -56,7 +64,11 @@ export async function handleRunCommand(input: RunCommandInput, handlers: RunComm
     if (!run) {
       throw new Error(`unknown run: ${runId}`);
     }
-    handlers.stdout(renderRunView(run));
+    handlers.stdout(
+      input.sdkFormat
+        ? renderSdkResult("runs.view", { run: sdkRunView(run) })
+        : renderRunView(run),
+    );
     return 0;
   }
   if (input.command === "mark") {
@@ -77,6 +89,80 @@ export async function handleRunCommand(input: RunCommandInput, handlers: RunComm
     return await handleRunMessage(input, handlers, runId);
   }
   throw new Error("unsupported run command");
+}
+
+function sdkRunSummary(run: RunRecord): Record<string, unknown> {
+  const nodes = Object.values(run.nodes);
+  const statusCounts = Object.fromEntries(
+    [...new Set(nodes.map((node) => node.status))]
+      .sort()
+      .map((status) => [status, nodes.filter((node) => node.status === status).length]),
+  );
+  return {
+    runId: run.runId,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    coordination: nodes[0]?.coordination ?? null,
+    nodeCount: nodes.length,
+    activeCount: nodes.filter((node) => node.status === "busy" || node.status === "starting").length,
+    statusCounts,
+  };
+}
+
+function sdkRunView(run: RunRecord): Record<string, unknown> {
+  const nodes = Object.fromEntries(
+    Object.entries(run.nodes).map(([nodeId, node]) => [
+      nodeId,
+      {
+        nodeId: node.nodeId,
+        role: node.role,
+        agent: node.agent,
+        coordination: node.coordination,
+        status: node.status,
+        lastMessage: boundedSdkText(node.lastMessage),
+        dependsOn: node.dependsOn,
+        planned: node.planned,
+        unplanned: node.unplanned,
+        allow: node.allow,
+        model: node.model,
+        reasoningEffort: node.reasoningEffort,
+        sessionAlias: node.sessionAlias,
+        tmuxSessionName: node.tmuxSessionName,
+        metrics: node.metrics,
+        createdAt: node.createdAt,
+        updatedAt: node.updatedAt,
+      },
+    ]),
+  );
+  const events = run.events.slice(-8).map((event) => ({
+    type: event.type,
+    nodeId: event.nodeId,
+    parentNodeId: event.parentNodeId,
+    targetNodeId: event.targetNodeId,
+    role: event.role,
+    agent: event.agent,
+    coordination: event.coordination,
+    status: event.status,
+    message: boundedSdkText(event.message),
+    dependsOn: event.dependsOn,
+    createdAt: event.createdAt,
+  }));
+  return {
+    version: run.version,
+    runId: run.runId,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    nodes,
+    events,
+  };
+}
+
+function boundedSdkText(value: string | undefined): string | undefined {
+  if (!value) {
+    return value;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= 200 ? normalized : `${normalized.slice(0, 197)}...`;
 }
 
 async function handleRunMessage(

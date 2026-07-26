@@ -15,9 +15,11 @@ import {
   recentCronExecutions,
   recordCronJob,
   resolveHeadlessCronBinary,
+  type CronExecutionRecord,
   type CronJobRecord,
 } from "./cron.js";
 import { quoteCommand } from "./shell.js";
+import { renderSdkResult, type SdkFormat } from "./sdk.js";
 import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
 
 export type CronCommand = "add" | "list" | "view" | "pause" | "resume" | "kill" | "rm" | "start" | "stop";
@@ -53,6 +55,7 @@ export interface CronCommandInput {
   debug: boolean;
   usage: boolean;
   force: boolean;
+  sdkFormat?: SdkFormat;
 }
 
 export interface CronCommandHandlers {
@@ -63,8 +66,8 @@ export interface CronCommandHandlers {
 
 export async function handleCronCommand(input: CronCommandInput, handlers: CronCommandHandlers): Promise<number> {
   if (input.command === "add") return await cronAdd(input, handlers);
-  if (input.command === "list") return cronList(handlers);
-  if (input.command === "view") return cronView(requireJobId(input), handlers);
+  if (input.command === "list") return cronList(input, handlers);
+  if (input.command === "view") return cronView(requireJobId(input), input, handlers);
   if (input.command === "pause") return cronPause(requireJobId(input), handlers);
   if (input.command === "resume") return cronResume(requireJobId(input), handlers);
   if (input.command === "kill") return await cronKill(requireJobId(input), handlers);
@@ -112,8 +115,17 @@ async function cronAdd(input: CronCommandInput, handlers: CronCommandHandlers): 
   return 0;
 }
 
-function cronList(handlers: CronCommandHandlers): number {
+function cronList(input: CronCommandInput, handlers: CronCommandHandlers): number {
   const jobs = listCronJobs(handlers.env);
+  if (input.sdkFormat) {
+    handlers.stdout(
+      renderSdkResult("cron.list", {
+        jobs: jobs.map(sdkCronJobSummary),
+        daemonRunning: daemonRunning(handlers.env),
+      }),
+    );
+    return 0;
+  }
   if (jobs.length === 0) {
     handlers.stdout("No cron jobs\n");
     return 0;
@@ -138,9 +150,22 @@ function cronList(handlers: CronCommandHandlers): number {
   return 0;
 }
 
-function cronView(jobId: string, handlers: CronCommandHandlers): number {
+function cronView(jobId: string, input: CronCommandInput, handlers: CronCommandHandlers): number {
   const job = requireJob(handlers.env, jobId);
   const executions = recentCronExecutions(handlers.env, jobId, 10);
+  const promptFile = promptFileFromArgs(job.command.args);
+  const warnings = promptFile && !existsSync(promptFile) ? [`prompt file not found: ${promptFile}`] : [];
+  if (input.sdkFormat) {
+    handlers.stdout(
+      renderSdkResult("cron.view", {
+        job: sdkCronJobView(job),
+        daemonRunning: daemonRunning(handlers.env),
+        executions: executions.map(sdkCronExecution),
+        warnings: warnings.map(() => "prompt file not found"),
+      }),
+    );
+    return 0;
+  }
   const lines = [
     `id: ${job.id}`,
     `agent: ${job.agent}`,
@@ -156,7 +181,6 @@ function cronView(jobId: string, handlers: CronCommandHandlers): number {
     `last run: ${job.lastRunAt ? formatDisplayTime(job.lastRunAt) : "-"}`,
     `last exit: ${job.lastExitCode === undefined || job.lastExitCode === null ? "-" : String(job.lastExitCode)}`,
   ];
-  const promptFile = promptFileFromArgs(job.command.args);
   if (promptFile) {
     lines.push(`prompt file: ${promptFile}`);
     if (!existsSync(promptFile)) {
@@ -183,6 +207,74 @@ function cronView(jobId: string, handlers: CronCommandHandlers): number {
   }
   handlers.stdout(`${lines.join("\n")}\n`);
   return 0;
+}
+
+function sdkCronJobSummary(job: CronJobRecord): Record<string, unknown> {
+  return {
+    version: job.version,
+    id: job.id,
+    agent: job.agent,
+    schedule: job.schedule,
+    status: job.status,
+    timezone: job.timezone,
+    nextRunAt: job.nextRunAt,
+    lastRunAt: job.lastRunAt,
+    lastExitCode: job.lastExitCode,
+    lastExecutionId: job.lastExecutionId,
+    activeExecutionId: job.activeExecutionId,
+    pending: job.pending,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function sdkCronJobView(job: CronJobRecord): Record<string, unknown> {
+  return {
+    ...sdkCronJobSummary(job),
+    command: {
+      args: redactScheduledArgs(job.command.args),
+    },
+  };
+}
+
+function sdkCronExecution(execution: CronExecutionRecord): Record<string, unknown> {
+  const finalMessage = execution.finalMessage?.replace(/\s+/g, " ").trim();
+  return {
+    version: execution.version,
+    jobId: execution.jobId,
+    executionId: execution.executionId,
+    status: execution.status,
+    startedAt: execution.startedAt,
+    completedAt: execution.completedAt,
+    exitCode: execution.exitCode,
+    signal: execution.signal,
+    finalMessage:
+      finalMessage && finalMessage.length > 200
+        ? `${finalMessage.slice(0, 197)}...`
+        : finalMessage,
+  };
+}
+
+function redactScheduledArgs(args: string[]): string[] {
+  const redactedValueFlags = new Set([
+    "--prompt",
+    "--prompt-file",
+    "--work-dir",
+    "-C",
+    "--docker-arg",
+    "--docker-env",
+    "--modal-env",
+  ]);
+  const redacted: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index] ?? "";
+    redacted.push(value);
+    if (redactedValueFlags.has(value) && index + 1 < args.length) {
+      redacted.push("<redacted>");
+      index += 1;
+    }
+  }
+  return redacted;
 }
 
 function cronPause(jobId: string, handlers: CronCommandHandlers): number {
