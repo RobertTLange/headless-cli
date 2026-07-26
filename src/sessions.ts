@@ -145,11 +145,15 @@ function normalizeSessionStore(value: unknown): SessionStoreFile {
   for (const agent of ["acp", "antigravity", "claude", "codex", "cursor", "gemini", "opencode", "pi"] as const) {
     const sessions = value.agents[agent];
     if (!isRecord(sessions)) continue;
+    const normalizedSessions = Object.create(null) as Record<string, StoredSession>;
     for (const [alias, candidate] of Object.entries(sessions)) {
       const session = normalizeStoredSession(candidate, agent, alias);
       if (session) {
-        (store.agents[agent] ??= {})[alias] = session;
+        normalizedSessions[alias] = session;
       }
+    }
+    if (Object.keys(normalizedSessions).length > 0) {
+      store.agents[agent] = normalizedSessions;
     }
   }
   return store;

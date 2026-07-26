@@ -85,3 +85,44 @@ test("secure session stores validate records and write private files atomically"
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("secure session stores preserve reserved aliases as own properties", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-sessions-test-"));
+  try {
+    const storeDir = join(dir, ".headless");
+    const storePath = join(storeDir, "sessions.json");
+    const env = { HOME: dir, [SECURE_SESSION_STORE_ENV]: "1" };
+    const aliases = ["__proto__", "constructor", "prototype"];
+    const sessions = Object.fromEntries(
+      aliases.map((alias) => [
+        alias,
+        {
+          agent: "codex",
+          alias,
+          nativeId: `${alias}-session`,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ]),
+    );
+    mkdirSync(storeDir);
+    writeFileSync(storePath, JSON.stringify({ version: 1, agents: { codex: sessions } }));
+
+    writeStoredSession(env, {
+      agent: "codex",
+      alias: "work",
+      nativeId: "work-session",
+      workDir: dir,
+    });
+
+    const stored = JSON.parse(readFileSync(storePath, "utf8")) as {
+      agents: { codex: Record<string, unknown> };
+    };
+    for (const alias of aliases) {
+      assert.equal(Object.hasOwn(stored.agents.codex, alias), true);
+      assert.equal(readStoredSession(env, "codex", alias)?.nativeId, `${alias}-session`);
+    }
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
