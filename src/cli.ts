@@ -1215,7 +1215,8 @@ type StdoutHandling = "capture" | "stream" | "capture-and-stream";
 
 interface ExecuteCommandOptions {
   stdoutHandling: StdoutHandling;
-  stdout: (text: string) => void;
+  stdout: (text: string) => unknown;
+  waitForStdoutDrain?: (signal: AbortSignal) => Promise<void>;
   stdoutLog?: (text: string) => void;
   stderr?: (text: string) => void;
   timeoutSeconds?: number;
@@ -1717,6 +1718,9 @@ async function executeCommand(
       let forceKill: NodeJS.Timeout | undefined;
       let forceFinish: NodeJS.Timeout | undefined;
       let forceDrain: NodeJS.Timeout | undefined;
+      let stdoutDrainPending = false;
+      let exitedBeforeClose: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+      const stdoutDrainController = new AbortController();
       let removeParentSignalHandlers = () => {};
       const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
@@ -1815,6 +1819,7 @@ async function executeCommand(
         if (forceDrain) {
           clearTimeout(forceDrain);
         }
+        stdoutDrainController.abort();
         removeParentSignalHandlers();
         flushTraceBuffer();
         result.finalMessageTrace = finalMessageTrace.join("") || undefined;
@@ -1844,6 +1849,41 @@ async function executeCommand(
           }
         }
         child.kill(signal);
+      };
+
+      const clearForceDrain = () => {
+        if (forceDrain) {
+          clearTimeout(forceDrain);
+          forceDrain = undefined;
+        }
+      };
+
+      const armForceDrain = () => {
+        if (
+          forceDrain ||
+          settled ||
+          termination ||
+          stdoutDrainPending ||
+          options.cleanupBeforeParentSignalExit === undefined ||
+          exitedBeforeClose === undefined
+        ) {
+          return;
+        }
+        const { code, signal } = exitedBeforeClose;
+        forceDrain = setTimeout(() => {
+          forceDrain = undefined;
+          if (settled || termination || stdoutDrainPending) return;
+          signalChildTree("SIGKILL");
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish({
+            code: signal ? 1 : (code ?? 1),
+            stdout: capturedStdout,
+            stdoutReceived,
+            stdoutEndsWithNewline,
+          });
+        }, terminationGraceMs);
+        forceDrain.unref();
       };
 
       if (handlesParentSignals) {
@@ -1934,7 +1974,35 @@ async function executeCommand(
         }
         options.stdoutLog?.(chunk);
         if (options.stdoutHandling !== "capture") {
-          options.stdout(chunk);
+          const writable = options.stdout(chunk);
+          if (
+            writable === false &&
+            !stdoutDrainPending &&
+            options.waitForStdoutDrain
+          ) {
+            clearForceDrain();
+            stdoutDrainPending = true;
+            child.stdout?.pause();
+            void options.waitForStdoutDrain(stdoutDrainController.signal).then(
+              () => {
+                stdoutDrainPending = false;
+                if (!settled) {
+                  child.stdout?.resume();
+                  armForceDrain();
+                }
+              },
+              () => {
+                stdoutDrainPending = false;
+                if (!settled) {
+                  const message = "headless: SDK output stream failed\n";
+                  options.stderr?.(message);
+                  stderr(message);
+                  child.stdout?.resume();
+                  terminateChild(1);
+                }
+              },
+            );
+          }
         }
       });
       child.stderr?.setEncoding("utf8");
@@ -1955,19 +2023,8 @@ async function executeCommand(
         if (options.cleanupBeforeParentSignalExit === undefined || termination !== undefined || settled) {
           return;
         }
-        forceDrain = setTimeout(() => {
-          if (settled || termination) return;
-          signalChildTree("SIGKILL");
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          finish({
-            code: signal ? 1 : (code ?? 1),
-            stdout: capturedStdout,
-            stdoutReceived,
-            stdoutEndsWithNewline,
-          });
-        }, terminationGraceMs);
-        forceDrain.unref();
+        exitedBeforeClose = { code, signal };
+        armForceDrain();
       });
       child.on("close", (code, signal) => {
         if (ownsChildProcessGroup && options.cleanupBeforeParentSignalExit !== undefined) {
@@ -3145,6 +3202,41 @@ async function executeStoredNode(
 
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((text: string) => process.stdout.write(text));
+  const waitForSdkStdoutDrain = deps.stdout
+    ? undefined
+    : (signal: AbortSignal) =>
+        new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            process.stdout.off("drain", handleDrain);
+            process.stdout.off("error", handleError);
+            process.stdout.off("close", handleClose);
+            signal.removeEventListener("abort", handleAbort);
+          };
+          const handleDrain = () => {
+            cleanup();
+            resolve();
+          };
+          const handleError = (error: Error) => {
+            cleanup();
+            reject(error);
+          };
+          const handleClose = () => {
+            cleanup();
+            resolve();
+          };
+          const handleAbort = () => {
+            cleanup();
+            resolve();
+          };
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          process.stdout.once("drain", handleDrain);
+          process.stdout.once("error", handleError);
+          process.stdout.once("close", handleClose);
+          signal.addEventListener("abort", handleAbort, { once: true });
+        });
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env: Env = { ...(deps.env ?? process.env) };
@@ -4232,6 +4324,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             modalEnv: parsed.modalEnv,
             modalSecrets: parsed.modalSecrets,
             maxCapturedStdoutBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
+            waitForStdoutDrain:
+              parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
             stderr: (text) => {
               commandStderr?.(text);
               const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
@@ -4241,7 +4335,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             },
             stdout: (text) => {
               commandStdoutLog?.(text);
-              commandStdout(text);
+              return commandStdout(text);
             },
             stdoutHandling,
             timeoutSeconds: modalTimeoutSeconds,
@@ -4260,6 +4354,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
                 Boolean(parsed.sdkFormat) ||
                 (parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias))),
               maxFinalMessageTraceBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
+              waitForStdoutDrain:
+                parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
               cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
               inheritedSignalListeners,
             });

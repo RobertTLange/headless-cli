@@ -61,10 +61,11 @@ export interface ExecuteModalOptions {
   modalEnv: string[];
   modalSecrets: string[];
   maxCapturedStdoutBytes?: number;
-  stdout: (text: string) => void;
+  stdout: (text: string) => unknown;
   stdoutHandling: StdoutHandling;
   stderr: (text: string) => void;
   timeoutSeconds: number;
+  waitForStdoutDrain?: (signal: AbortSignal) => Promise<void>;
   workDir: string;
   clientFactory?: () => Promise<ModalClientLike>;
 }
@@ -231,6 +232,7 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
   const image = client.images.fromRegistry(options.image, imageSecret);
   const secrets = await Promise.all(options.modalSecrets.map((name) => client.secrets.fromName(name)));
   let sandbox: ModalSandboxLike | undefined;
+  const stdoutDrainController = new AbortController();
   const baselineDir = mkdtempSync(join(tmpdir(), "headless-modal-baseline-"));
   const resultDir = mkdtempSync(join(tmpdir(), "headless-modal-result-"));
 
@@ -276,9 +278,12 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
     );
     const stdoutPromise = readTextStream(
       runProcess.stdout,
-      (text) => {
+      async (text) => {
         if (options.stdoutHandling !== "capture") {
-          options.stdout(text);
+          const writable = options.stdout(text);
+          if (writable === false) {
+            await options.waitForStdoutDrain?.(stdoutDrainController.signal);
+          }
         }
       },
       options.maxCapturedStdoutBytes,
@@ -296,6 +301,7 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
 
     return { code, stdout, conflicts: sync.conflicts };
   } finally {
+    stdoutDrainController.abort();
     if (sandbox) {
       await sandbox.terminate();
     }
@@ -748,13 +754,19 @@ async function writeModalStdin(stdin: ModalWriteStreamLike<string | Uint8Array>,
 
 async function readTextStream<R extends string | Uint8Array>(
   stream: ModalReadStreamLike<R>,
-  onChunk?: (text: string) => void,
+  onChunk?: (text: string) => unknown,
   maxBytes?: number,
 ): Promise<string> {
+  const emitChunks = async (text: string) => {
+    const maxChunkChars = 64 * 1024;
+    for (let offset = 0; offset < text.length; offset += maxChunkChars) {
+      await onChunk?.(text.slice(offset, offset + maxChunkChars));
+    }
+  };
   if (!stream.getReader) {
     const text = (await stream.readText?.()) ?? "";
     if (text) {
-      onChunk?.(text);
+      await emitChunks(text);
     }
     return maxBytes === undefined ? text : boundedTextTail(text, maxBytes);
   }
@@ -768,12 +780,12 @@ async function readTextStream<R extends string | Uint8Array>(
     }
     const text = typeof value === "string" ? value : decoder.decode(value, { stream: true });
     output.append(text);
-    onChunk?.(text);
+    await emitChunks(text);
   }
   const tail = decoder.decode();
   if (tail) {
     output.append(tail);
-    onChunk?.(tail);
+    await emitChunks(tail);
   }
   return output.text();
 }

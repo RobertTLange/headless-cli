@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { runCli } from "../src/cli.ts";
 import { readStoredSession } from "../src/sessions.ts";
@@ -35,6 +38,16 @@ async function writeExecutable(path: string, content: string): Promise<void> {
   chmodSync(path, 0o755);
 }
 
+async function waitForPath(path: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for ${path}`);
+    }
+    await delay(20);
+  }
+}
+
 test("SDK trace writer bounds a complete oversized row received in one chunk", () => {
   const stdout: string[] = [];
   const writer = new SdkTraceWriter("codex", (text) => stdout.push(text));
@@ -50,6 +63,15 @@ test("SDK trace writer bounds a complete oversized row received in one chunk", (
       (fragment) =>
         Buffer.byteLength(fragment.data?.raw as string, "utf8") <= 4 * 1024 * 1024,
     ),
+  );
+});
+
+test("SDK trace writer propagates output backpressure", () => {
+  const writer = new SdkTraceWriter("codex", () => false);
+
+  assert.equal(
+    writer.write(`${JSON.stringify({ type: "agent_message", text: "done" })}\n`),
+    false,
   );
 });
 
@@ -123,6 +145,232 @@ test("SDK NDJSON wraps native trace rows and terminates with a result", async ()
     rmSync(dir, { force: true, recursive: true });
   }
 });
+
+test("SDK NDJSON pauses the agent while its consumer is backpressured", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-sdk-backpressure-test-"));
+  const marker = join(dir, "agent-finished");
+  let cli: ReturnType<typeof spawn> | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    await writeExecutable(
+      join(binDir, "codex"),
+      [
+        "#!/usr/bin/env node",
+        "const { once } = await import('node:events');",
+        "const { writeFileSync } = await import('node:fs');",
+        "const line = `${JSON.stringify({ type: 'agent_message', text: 'x'.repeat(1024) })}\\n`;",
+        "for (let index = 0; index < 8192; index += 1) {",
+        "  if (!process.stdout.write(line)) await once(process.stdout, 'drain');",
+        "}",
+        "writeFileSync(process.env.AGENT_FINISHED_MARKER, 'done');",
+        "",
+      ].join("\n"),
+    );
+    cli = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(process.cwd(), "src", "cli.ts"),
+        "codex",
+        "--prompt",
+        "hello",
+        "--sdk-format",
+        "ndjson",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          AGENT_FINISHED_MARKER: marker,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    assert.ok(cli.stdout);
+    await once(cli.stdout, "readable");
+    await delay(500);
+
+    assert.equal(existsSync(marker), false);
+
+    cli.stdout.resume();
+    const [code] = await once(cli, "close");
+    assert.equal(code, 0);
+    assert.equal(existsSync(marker), true);
+  } finally {
+    if (cli?.exitCode === null) {
+      cli.kill("SIGKILL");
+      await once(cli, "close");
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test(
+  "SDK NDJSON resumes backpressured output during timeout termination",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headless-sdk-timeout-backpressure-"));
+    const terminatedMarker = join(dir, "agent-terminated");
+    let cli: ReturnType<typeof spawn> | undefined;
+    try {
+      const binDir = join(dir, "bin");
+      mkdirSync(binDir);
+      await writeExecutable(
+        join(binDir, "codex"),
+        [
+          "#!/usr/bin/env node",
+          "const { once } = await import('node:events');",
+          "const { writeFileSync } = await import('node:fs');",
+          "let terminated = false;",
+          "const keepAlive = setInterval(() => {}, 1000);",
+          "process.on('SIGTERM', () => {",
+          "  terminated = true;",
+          "  process.stdout.write(`${JSON.stringify({ type: 'agent_message', text: 'terminated cleanly' })}\\n`);",
+          "  writeFileSync(process.env.AGENT_TERMINATED_MARKER, 'done');",
+          "  clearInterval(keepAlive);",
+          "});",
+          "const line = `${JSON.stringify({ type: 'agent_message', text: 'x'.repeat(1024) })}\\n`;",
+          "for (let index = 0; index < 8192 && !terminated; index += 1) {",
+          "  if (!process.stdout.write(line)) await once(process.stdout, 'drain');",
+          "}",
+          "clearInterval(keepAlive);",
+          "",
+        ].join("\n"),
+      );
+      cli = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          join(process.cwd(), "src", "cli.ts"),
+          "codex",
+          "--prompt",
+          "hello",
+          "--sdk-format",
+          "ndjson",
+          "--timeout",
+          "1",
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            AGENT_TERMINATED_MARKER: terminatedMarker,
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      assert.ok(cli.stdout);
+      cli.stderr?.resume();
+      await once(cli.stdout, "readable");
+      await waitForPath(terminatedMarker);
+
+      cli.stdout.setEncoding("utf8");
+      let output = "";
+      cli.stdout.on("data", (chunk: string) => {
+        output += chunk;
+      });
+      const [code] = await once(cli, "close");
+
+      assert.equal(code, 124);
+      assert.equal(parseEnvelopes(output).at(-1)?.data?.finalMessage, "terminated cleanly");
+    } finally {
+      if (cli?.exitCode === null) {
+        cli.kill("SIGKILL");
+        await once(cli, "close");
+      }
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "SDK NDJSON defers Antigravity descendant cleanup while output is backpressured",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headless-sdk-antigravity-backpressure-"));
+    const grandchildFinishedMarker = join(dir, "grandchild-finished");
+    let cli: ReturnType<typeof spawn> | undefined;
+    try {
+      const home = join(dir, "home");
+      const appDir = join(home, ".gemini", "antigravity-cli");
+      const binDir = join(dir, "bin");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(binDir);
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        join(appDir, "settings.json"),
+        `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`,
+      );
+      const grandchildSource = [
+        "const { once } = require('node:events');",
+        "const { writeFileSync } = require('node:fs');",
+        "const line = `${JSON.stringify({ type: 'agent_message', text: 'x'.repeat(1024) })}\\n`;",
+        "(async () => {",
+        "  for (let index = 0; index < 8192; index += 1) {",
+        "    if (!process.stdout.write(line)) await once(process.stdout, 'drain');",
+        "  }",
+        "  writeFileSync(process.env.GRANDCHILD_FINISHED_MARKER, 'done');",
+        "})().catch(() => process.exit(1));",
+      ].join("\n");
+      await writeExecutable(
+        join(binDir, "agy"),
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          `spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { stdio: ['ignore', 'inherit', 'inherit'] }).unref();`,
+          "",
+        ].join("\n"),
+      );
+      cli = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          join(process.cwd(), "src", "cli.ts"),
+          "antigravity",
+          "--prompt",
+          "hello",
+          "--sdk-format",
+          "ndjson",
+          "--usage",
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            ANTIGRAVITY_CLI_BIN: join(binDir, "agy"),
+            GRANDCHILD_FINISHED_MARKER: grandchildFinishedMarker,
+            HOME: home,
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      assert.ok(cli.stdout);
+      cli.stderr?.resume();
+      await once(cli.stdout, "readable");
+      await delay(1_300);
+
+      assert.equal(existsSync(grandchildFinishedMarker), false);
+
+      cli.stdout.resume();
+      const [code] = await once(cli, "close");
+      assert.equal(code, 0);
+      assert.equal(existsSync(grandchildFinishedMarker), true);
+    } finally {
+      if (cli?.exitCode === null) {
+        cli.kill("SIGKILL");
+        await once(cli, "close");
+      }
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
 
 test("SDK JSON reports a successful trace without a final message as an error", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-sdk-test-"));

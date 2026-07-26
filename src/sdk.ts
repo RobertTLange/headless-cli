@@ -63,16 +63,18 @@ export class SdkTraceWriter {
   private pending = "";
   private fragmenting = false;
   private sequence = 0;
+  private writable = true;
   finalMessage = "";
   nativeSessionId = "";
   oversizedRecord = false;
 
   constructor(
     private readonly agent: AgentName,
-    private readonly writeOutput?: (text: string) => void,
+    private readonly writeOutput?: (text: string) => unknown,
   ) {}
 
-  write(chunk: string): void {
+  write(chunk: string): boolean {
+    this.writable = true;
     this.pending += chunk;
     let newlineIndex = this.pending.indexOf("\n");
     while (newlineIndex >= 0) {
@@ -86,17 +88,20 @@ export class SdkTraceWriter {
       newlineIndex = this.pending.indexOf("\n");
     }
     this.pending = this.writeOversizedFragments(this.pending);
+    return this.writable;
   }
 
-  flush(): void {
+  flush(): boolean {
+    this.writable = true;
     if (!this.pending) {
       if (this.fragmenting) {
         this.writeLine("");
       }
-      return;
+      return this.writable;
     }
     this.writeLine(this.pending);
     this.pending = "";
+    return this.writable;
   }
 
   private writeLine(line: string): void {
@@ -122,7 +127,7 @@ export class SdkTraceWriter {
       command: "invoke",
       data,
     };
-    this.writeOutput?.(renderSdkEnvelope(envelope));
+    this.emit(envelope);
   }
 
   private writeOversizedFragments(line: string): string {
@@ -150,7 +155,13 @@ export class SdkTraceWriter {
       },
     };
     this.sequence += 1;
-    this.writeOutput?.(renderSdkEnvelope(envelope));
+    this.emit(envelope);
+  }
+
+  private emit(envelope: SdkTraceEnvelope): void {
+    if (this.writeOutput?.(renderSdkEnvelope(envelope)) === false) {
+      this.writable = false;
+    }
   }
 
   private observeLine(line: string): void {

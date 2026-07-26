@@ -239,6 +239,72 @@ test("executeModalAgent runs through a Modal client and syncs results back", asy
   }
 });
 
+test("executeModalAgent waits for stdout drain before reading the next chunk", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-backpressure-"));
+  try {
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    writeFileSync(join(work, "input.txt"), "local");
+    let markFirstChunkStreamed!: () => void;
+    const firstChunkStreamed = new Promise<void>((resolve) => {
+      markFirstChunkStreamed = resolve;
+    });
+    const firstChunk = `${"x".repeat(64 * 1024)}\n`;
+    const secondChunk = "second\n";
+    const sandbox = new FakeSandbox(remote, {
+      agentStdoutChunks: [`${firstChunk}${secondChunk}`],
+    });
+    const client = new FakeModalClient(sandbox);
+    let releaseDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const streamed: string[] = [];
+
+    const execution = executeModalAgent({
+      agent: "codex",
+      appName: "headless-test",
+      command: { command: "codex", args: ["exec", "--json", "-"], stdinText: "prompt" },
+      cpu: DEFAULT_MODAL_CPU,
+      env: { HOME: join(dir, "home"), OPENAI_API_KEY: "sk-test" },
+      image: DEFAULT_MODAL_IMAGE,
+      includeGit: false,
+      memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+      modalEnv: [],
+      modalSecrets: [],
+      stderr: () => {},
+      stdout: (text) => {
+        streamed.push(text);
+        if (streamed.length === 1) {
+          markFirstChunkStreamed();
+        }
+        return streamed.length === 1 ? false : true;
+      },
+      stdoutHandling: "stream",
+      timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+      waitForStdoutDrain: () => drain,
+      workDir: work,
+      clientFactory: async () => client,
+    });
+
+    await firstChunkStreamed;
+    assert.equal(sandbox.agentStdoutReadCount, 1);
+    assert.deepEqual(streamed, [firstChunk.slice(0, 64 * 1024)]);
+
+    releaseDrain();
+    const result = await execution;
+
+    assert.equal(result.code, 0);
+    assert.equal(streamed.join(""), `${firstChunk}${secondChunk}`);
+    assert.equal(sandbox.agentStdoutReadCount, 2);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent seeds forwarded file-backed credentials", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-credentials-"));
   try {
@@ -541,6 +607,7 @@ class FakeModalClient implements ModalClientLike {
 }
 
 class FakeSandbox implements ModalSandboxLike {
+  agentStdoutReadCount = 0;
   agentCommand?: string[];
   agentEnv?: Record<string, string>;
   agentStdin = "";
@@ -550,7 +617,10 @@ class FakeSandbox implements ModalSandboxLike {
 
   constructor(
     private root: string,
-    public options: { resultArchive?: Uint8Array } = {},
+    public options: {
+      agentStdoutChunks?: string[];
+      resultArchive?: Uint8Array;
+    } = {},
   ) {}
 
   async exec(command: string[], params?: ModalExecParams): Promise<ModalProcessLike<string | Uint8Array>> {
@@ -566,8 +636,8 @@ class FakeSandbox implements ModalSandboxLike {
 
 class FakeProcess implements ModalProcessLike<string | Uint8Array> {
   stdin = new FakeWriteStream();
-  stdout = new FakeReadStream<string | Uint8Array>(() => this.done.then(() => this.stdoutValue));
-  stderr = new FakeReadStream<string | Uint8Array>(() => this.done.then(() => this.stderrValue));
+  stdout: ModalReadStreamLike<string | Uint8Array>;
+  stderr: ModalReadStreamLike<string | Uint8Array>;
   private resolveDone!: () => void;
   private stdoutValue: string | Uint8Array = "";
   private stderrValue: string | Uint8Array = "";
@@ -580,7 +650,15 @@ class FakeProcess implements ModalProcessLike<string | Uint8Array> {
     private params: ModalExecParams | undefined,
     private root: string,
     private sandbox: FakeSandbox,
-  ) {}
+  ) {
+    const agentStdoutChunks = command[0] === "sh" ? sandbox.options.agentStdoutChunks : undefined;
+    this.stdout = agentStdoutChunks
+      ? new FakeChunkedReadStream(agentStdoutChunks, () => {
+          sandbox.agentStdoutReadCount += 1;
+        })
+      : new FakeReadStream<string | Uint8Array>(() => this.done.then(() => this.stdoutValue));
+    this.stderr = new FakeReadStream<string | Uint8Array>(() => this.done.then(() => this.stderrValue));
+  }
 
   async wait(): Promise<number> {
     try {
@@ -703,5 +781,25 @@ class FakeReadStream<R extends string | Uint8Array> implements ModalReadStreamLi
   async readBytes(): Promise<Uint8Array> {
     const value = await this.read();
     return typeof value === "string" ? new TextEncoder().encode(value) : value;
+  }
+}
+
+class FakeChunkedReadStream<R extends string | Uint8Array> implements ModalReadStreamLike<R> {
+  private index = 0;
+
+  constructor(
+    private chunks: R[],
+    private onRead: () => void,
+  ) {}
+
+  getReader(): ReadableStreamDefaultReader<R> {
+    return {
+      read: async () => {
+        this.onRead();
+        const value = this.chunks[this.index];
+        this.index += 1;
+        return value === undefined ? { done: true, value: undefined } : { done: false, value };
+      },
+    } as ReadableStreamDefaultReader<R>;
   }
 }
