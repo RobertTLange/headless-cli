@@ -518,6 +518,7 @@ test("interactive pi command isolates a new session with --session-dir", () => {
 test("CLI print-command normalizes Claude model shorthand", async () => {
   const stdout: string[] = [];
   const code = await runCli(["claude", "--prompt", "hello", "--model", "sonnet-4.5", "--print-command"], {
+    env: { ...process.env, CLAUDE_CODE_BIN: undefined, CLAUDE_BIN: "claude" },
     stdout: (text) => stdout.push(text),
   });
 
