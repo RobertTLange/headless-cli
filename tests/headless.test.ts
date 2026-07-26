@@ -2062,6 +2062,27 @@ test("CLI rejects invalid --session combinations", async () => {
   assert.match(stderr.join(""), /--session cannot be used with --name/);
 });
 
+test("CLI rejects dot-segment session names", async () => {
+  const home = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    for (const alias of [".", ".."]) {
+      const stderr: string[] = [];
+
+      assert.equal(
+        await runCli(["codex", "--session", alias, "--prompt", "hello", "--print-command"], {
+          env: { ...process.env, HOME: home },
+          stderr: (text) => stderr.push(text),
+          stdout: () => {},
+        }),
+        2,
+      );
+      assert.match(stderr.join(""), /invalid session name/);
+    }
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
+
 test("CLI --docker --session persists a durable home across turns", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

@@ -1191,7 +1191,7 @@ function validateSessionAlias(alias: string | undefined): string | undefined {
   if (alias === undefined) {
     return undefined;
   }
-  if (!/^[A-Za-z0-9_.-]+$/.test(alias)) {
+  if (alias === "." || alias === ".." || !/^[A-Za-z0-9_.-]+$/.test(alias)) {
     throw new CliError("invalid session name; use letters, numbers, dots, dashes, or underscores");
   }
   return alias;
