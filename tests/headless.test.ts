@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -2181,6 +2192,119 @@ test("CLI --docker --session persists a durable home across turns", async () => 
     const resetCalls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     const resetCommand = resetCalls[2].args.slice(resetCalls[2].args.indexOf("headless-agent") + 1);
     assert.ok(!resetCommand.includes("resume"));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --docker --session creates Cursor chats inside the container", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const hostBinDir = join(dir, "host-bin");
+    const containerBinDir = join(dir, "container-bin");
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    const captureFile = join(dir, "cursor-calls.jsonl");
+    mkdirSync(hostBinDir);
+    mkdirSync(containerBinDir);
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    const docker = join(hostBinDir, "docker");
+    writeFileSync(
+      docker,
+      [
+        "#!/usr/bin/env node",
+        "const { spawnSync } = require('node:child_process');",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const volume = args.find((arg) => arg.endsWith(':/headless-home:rw'));",
+        "if (!volume) process.exit(11);",
+        "const sessionHome = volume.slice(0, -':/headless-home:rw'.length);",
+        "const scriptIndex = args.indexOf('-lc') + 1;",
+        "const script = args[scriptIndex] ?? '';",
+        "const runnableScript = script.replaceAll('/headless-home', sessionHome);",
+        "const command = args.slice(scriptIndex + 2);",
+        "const result = spawnSync('sh', ['-lc', runnableScript, 'headless-agent', ...command], {",
+        "  env: {",
+        "    ...process.env,",
+        "    HOME: sessionHome,",
+        "    PATH: `${process.env.HEADLESS_CONTAINER_BIN}:${process.env.HEADLESS_NODE_BIN}:/usr/bin:/bin`,",
+        "  },",
+        "  input: fs.readFileSync(0),",
+        "});",
+        "process.stdout.write(result.stdout);",
+        "process.stderr.write(result.stderr);",
+        "process.exit(result.status ?? 1);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(docker, 0o755);
+    const agent = join(containerBinDir, "agent");
+    writeFileSync(
+      agent,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_CURSOR_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'create-chat') {",
+        "  if (!process.env.HEADLESS_CURSOR_EMPTY_ID) console.log('cursor-docker-chat');",
+        "  process.exit(0);",
+        "}",
+        "if (!args.includes('--resume') || !args.includes('cursor-docker-chat')) process.exit(12);",
+        "console.log(JSON.stringify({ role: 'assistant', content: 'cursor docker done' }));",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(agent, 0o755);
+
+    const stdout: string[] = [];
+    const env = {
+      ...process.env,
+      HEADLESS_CONTAINER_BIN: containerBinDir,
+      HEADLESS_CURSOR_CAPTURE: captureFile,
+      HEADLESS_NODE_BIN: dirname(process.execPath),
+      HOME: homeDir,
+      PATH: `${hostBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
+    };
+    const sessionHome = join(homeDir, ".headless", "docker-sessions", "cursor", "work");
+    const externalMarkerTarget = join(dir, "external-marker-target");
+    mkdirSync(sessionHome, { recursive: true });
+    writeFileSync(externalMarkerTarget, "do not overwrite\n");
+    symlinkSync(externalMarkerTarget, join(sessionHome, ".headless-cursor-session-id"));
+
+    for (const prompt of ["first", "second"]) {
+      assert.equal(
+        await runCli(["cursor", "--docker", "--session", "work", "--prompt", prompt, "--work-dir", projectDir], {
+          env,
+          stdout: (text) => stdout.push(text),
+        }),
+        0,
+      );
+    }
+    assert.equal(stdout.join(""), "cursor docker done\ncursor docker done\n");
+    assert.equal(readFileSync(externalMarkerTarget, "utf8"), "do not overwrite\n");
+
+    const store = JSON.parse(readFileSync(join(sessionHome, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.cursor.work.nativeId, "cursor-docker-chat");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls[0], ["create-chat"]);
+    assert.equal(calls.filter((args) => args[0] === "create-chat").length, 1);
+    assert.ok(calls[1].includes("--resume"));
+    assert.ok(calls[2].includes("--resume"));
+
+    rmSync(sessionHome, { force: true, recursive: true });
+    const failureStderr: string[] = [];
+    assert.equal(
+      await runCli(["cursor", "--docker", "--session", "work", "--prompt", "empty", "--work-dir", projectDir], {
+        env: { ...env, HEADLESS_CURSOR_EMPTY_ID: "1" },
+        stderr: (text) => failureStderr.push(text),
+        stdout: () => {},
+      }),
+      1,
+    );
+    assert.match(failureStderr.join(""), /Cursor did not return a session id/);
+    assert.equal(existsSync(join(sessionHome, ".headless", "sessions.json")), false);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

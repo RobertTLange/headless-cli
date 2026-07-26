@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildDockerAgentCommand, dockerSessionNativeId, DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
+import {
+  buildDockerAgentCommand,
+  dockerSessionNativeId,
+  DEFAULT_DOCKER_IMAGE,
+  readDockerCursorSessionId,
+} from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 
 test("Dockerfile exposes Cursor agent from a non-root path", () => {
@@ -330,6 +335,27 @@ test("uses a persistent host home for durable Docker sessions", () => {
       dockerSessionNativeId("pi", join(persistentHome, ".pi", "agent", "sessions", "turn.jsonl"), persistentHome),
       "/headless-home/.pi/agent/sessions/turn.jsonl",
     );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("reads regular Docker Cursor session IDs and rejects symlinks", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const persistentHome = join(dir, "session");
+    const externalId = join(dir, "external-id");
+    mkdirSync(persistentHome);
+    const marker = join(persistentHome, ".headless-cursor-session-id");
+    writeFileSync(marker, "cursor-chat\n");
+
+    assert.equal(readDockerCursorSessionId(persistentHome), "cursor-chat");
+
+    rmSync(marker);
+    writeFileSync(externalId, "external-chat\n");
+    symlinkSync(externalId, marker);
+
+    assert.equal(readDockerCursorSessionId(persistentHome), "");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

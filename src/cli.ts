@@ -51,6 +51,7 @@ import {
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
   ensureDockerSessionHome,
+  readDockerCursorSessionId,
 } from "./docker.js";
 import {
   buildModalRunSummary,
@@ -1187,6 +1188,8 @@ interface SessionPlan {
   startedAt?: string;
 }
 
+type SessionExecution = "docker" | "local";
+
 function validateSessionAlias(alias: string | undefined): string | undefined {
   if (alias === undefined) {
     return undefined;
@@ -1221,11 +1224,12 @@ async function prepareSessionPlan(
   plan: SessionPlan | undefined,
   cwd: string | undefined,
   env: Env,
+  execution: SessionExecution,
 ): Promise<SessionPlan | undefined> {
   if (!plan || plan.mode !== "new") {
     return plan;
   }
-  if (agent === "cursor" && !plan.nativeId) {
+  if (agent === "cursor" && !plan.nativeId && execution === "local") {
     return { ...plan, nativeId: await mintCursorSessionId(cwd, env) };
   }
   if (agent === "antigravity" && !plan.nativeId) {
@@ -1303,6 +1307,9 @@ async function discoverNativeSessionId(
   }
   if (agent === "antigravity") {
     return newestAntigravitySessionId(cwd, env, startedAt);
+  }
+  if (agent === "cursor" && dockerSession) {
+    return env.HOME ? readDockerCursorSessionId(env.HOME) : "";
   }
   if (agent === "opencode") {
     if (dockerSession) {
@@ -2843,7 +2850,15 @@ async function executeStoredNode(
     { baseInstructionPrompt: defaults.baseInstructionPrompt },
   );
   const sessionPlan =
-    node.coordination === "session" ? await prepareSessionPlan(node.agent, buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env), node.workDir, env) : undefined;
+    node.coordination === "session"
+      ? await prepareSessionPlan(
+          node.agent,
+          buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env),
+          node.workDir,
+          env,
+          "local",
+        )
+      : undefined;
   const command = withRunEnvironment(
     buildAgentCommand(
       node.agent,
@@ -3707,7 +3722,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const sessionEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
     let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
     if (!parsed.printCommand) {
-      sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env);
+      sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
     }
     if (dockerSessionHome && !parsed.printCommand) {
       ensureDockerSessionHome(dockerSessionHome);
@@ -3743,6 +3758,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         persistentHome: dockerSessionHome,
         runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
         runId: parsed.runId,
+        sessionBootstrap:
+          parsed.agent === "cursor" && sessionPlan?.mode === "new" && dockerSessionHome
+            ? "initialize-cursor"
+            : undefined,
         workDir: cwd ?? process.cwd(),
       });
     }

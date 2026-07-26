@@ -1,4 +1,15 @@
-import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
@@ -12,6 +23,7 @@ const containerHome = "/headless-home";
 const hostHomeMountRoot = "/tmp/headless-host-home";
 
 type DockerEnvEntry = ForwardedEnvEntry;
+type DockerSessionBootstrap = "initialize-cursor";
 
 export interface DockerAgentCommandOptions {
   agent: AgentName;
@@ -24,6 +36,7 @@ export interface DockerAgentCommandOptions {
   persistentHome?: string;
   runDirHost?: string;
   runId?: string;
+  sessionBootstrap?: DockerSessionBootstrap;
   workDir: string;
 }
 
@@ -44,21 +57,39 @@ export function ensureDockerSessionHome(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
 }
 
+export function readDockerCursorSessionId(persistentHome: string): string {
+  const path = join(persistentHome, ".headless-cursor-session-id");
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile() || stats.size > 256) {
+      return "";
+    }
+    const nativeId = readFileSync(descriptor, "utf8").trim();
+    return /^[A-Za-z0-9_.:-]{1,256}$/.test(nativeId) ? nativeId : "";
+  } catch {
+    return "";
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
+  }
+}
+
 export function dockerSessionNativeId(agent: AgentName, nativeId: string | undefined, persistentHome: string): string | undefined {
   if (!nativeId || agent !== "pi") {
     return nativeId;
   }
   const relativePath = relative(resolve(persistentHome), resolve(nativeId));
-  if (
-    relativePath === "" ||
-    relativePath === ".." ||
-    relativePath.startsWith("../") ||
-    relativePath.startsWith("..\\") ||
-    isAbsolute(relativePath)
-  ) {
+  if (!isContainedRelativePath(relativePath)) {
     return nativeId;
   }
   return join(containerHome, relativePath);
+}
+
+function isContainedRelativePath(path: string): boolean {
+  return path !== "" && path !== ".." && !path.startsWith("../") && !path.startsWith("..\\") && !isAbsolute(path);
 }
 
 export function buildDockerAgentCommand(options: DockerAgentCommandOptions): BuiltCommand {
@@ -90,7 +121,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     options.image,
     "sh",
     "-lc",
-    bootstrapScript(Boolean(options.persistentHome)),
+    bootstrapScript(Boolean(options.persistentHome), options.sessionBootstrap),
     "headless-agent",
     options.command.command,
     ...options.command.args,
@@ -109,14 +140,28 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   return dockerCommand;
 }
 
-function bootstrapScript(persistentHome: boolean): string {
+function bootstrapScript(persistentHome: boolean, sessionBootstrap?: DockerSessionBootstrap): string {
   const copyFlags = persistentHome ? "-R -n" : "-R";
-  return [
+  const commands = [
     "set -eu",
     `mkdir -p "${containerHome}"`,
     `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
-    'exec "$@"',
-  ].join("; ");
+  ];
+  if (sessionBootstrap === "initialize-cursor") {
+    commands.push(
+      'cursor_session_id="$("$1" create-chat)"',
+      'if [ -z "$cursor_session_id" ]; then echo "Cursor did not return a session id" >&2; exit 1; fi',
+      'cursor_session_id_tmp="$(mktemp "$HOME/.headless-cursor-session-id.XXXXXX")"',
+      `printf '%s\\n' "$cursor_session_id" > "$cursor_session_id_tmp"`,
+      'mv -f "$cursor_session_id_tmp" "$HOME/.headless-cursor-session-id"',
+      'cursor_command="$1"',
+      "shift",
+      'exec "$cursor_command" --resume "$cursor_session_id" "$@"',
+    );
+  } else {
+    commands.push('exec "$@"');
+  }
+  return commands.join("; ");
 }
 
 function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
