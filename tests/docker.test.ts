@@ -320,7 +320,7 @@ test("uses a persistent host home for durable Docker sessions", () => {
         args: ["exec", "--json", "-"],
         stdinText: "hello",
       },
-      dockerArgs: [],
+      dockerArgs: ["--env", "CODEX_HOME=/headless-home/custom"],
       dockerEnv: [],
       env: { HOME: home },
       hostUser: "501:20",
@@ -332,6 +332,8 @@ test("uses a persistent host home for durable Docker sessions", () => {
     assert.ok(command.args.includes(`${persistentHome}:/headless-home:rw`));
     assert.ok(!command.args.includes("/headless-home:rw,mode=1777"));
     assert.match(command.args.find((arg) => arg.includes("cp -R -n")) ?? "", /cp -R -n/);
+    assert.match(command.args.find((arg) => arg.includes("cp -R -n")) ?? "", /export HOME="\/headless-home"/);
+    assert.match(command.args.find((arg) => arg.includes("cp -R -n")) ?? "", /unset CODEX_HOME/);
     assert.equal(
       dockerSessionNativeId("pi", join(persistentHome, ".pi", "agent", "sessions", "turn.jsonl"), persistentHome),
       "/headless-home/.pi/agent/sessions/turn.jsonl",

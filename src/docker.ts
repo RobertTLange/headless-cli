@@ -25,6 +25,17 @@ const hostHomeMountRoot = "/tmp/headless-host-home";
 type DockerEnvEntry = ForwardedEnvEntry;
 type DockerSessionBootstrap = "initialize-cursor";
 
+const dockerSessionAgentHomeVariables = {
+  acp: [],
+  antigravity: ["AGY_HOME", "ANTIGRAVITY_HOME"],
+  claude: ["CLAUDE_CONFIG_DIR"],
+  codex: ["CODEX_HOME"],
+  cursor: ["CURSOR_HOME"],
+  gemini: ["GEMINI_HOME"],
+  opencode: ["OPENCODE_DATA_HOME"],
+  pi: ["PI_CODING_AGENT_HOME"],
+} satisfies Record<AgentName, readonly string[]>;
+
 export interface DockerAgentCommandOptions {
   agent: AgentName;
   command: BuiltCommand;
@@ -59,6 +70,10 @@ export function dockerSessionHomePath(agent: AgentName, alias: string, env: Env)
 
 export function ensureDockerSessionHome(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
+}
+
+export function dockerSessionAgentHomeEnvNames(agent: AgentName): readonly string[] {
+  return dockerSessionAgentHomeVariables[agent];
 }
 
 export function readDockerCursorSessionId(persistentHome: string): string {
@@ -125,7 +140,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     options.image,
     "sh",
     "-lc",
-    bootstrapScript(Boolean(options.persistentHome), options.sessionBootstrap),
+    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap),
     "headless-agent",
     options.command.command,
     ...options.command.args,
@@ -144,13 +159,20 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   return dockerCommand;
 }
 
-function bootstrapScript(persistentHome: boolean, sessionBootstrap?: DockerSessionBootstrap): string {
+function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBootstrap?: DockerSessionBootstrap): string {
   const copyFlags = persistentHome ? "-R -n" : "-R";
   const commands = [
     "set -eu",
+    `export HOME="${containerHome}"`,
     `mkdir -p "${containerHome}"`,
     `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
   ];
+  if (persistentHome) {
+    const agentHomeVariables = dockerSessionAgentHomeEnvNames(agent);
+    if (agentHomeVariables.length > 0) {
+      commands.push(`unset ${agentHomeVariables.join(" ")}`);
+    }
+  }
   if (sessionBootstrap === "initialize-cursor") {
     commands.push(
       'cursor_session_id="$("$1" create-chat)"',

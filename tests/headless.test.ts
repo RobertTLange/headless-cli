@@ -2197,6 +2197,92 @@ test("CLI --docker --session persists a durable home across turns", async () => 
   }
 });
 
+test("CLI --docker --session discovers Antigravity transcripts in the durable home", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const homeDir = join(dir, "home");
+    const hostAntigravityHome = join(dir, "host-antigravity");
+    const projectDir = join(dir, "project");
+    mkdirSync(binDir);
+    mkdirSync(homeDir);
+    mkdirSync(hostAntigravityHome);
+    mkdirSync(projectDir);
+    const docker = join(binDir, "docker");
+    writeFileSync(
+      docker,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "const volume = args.find((arg) => arg.endsWith(':/headless-home:rw'));",
+        "if (!volume) process.exit(11);",
+        "const sessionHome = volume.slice(0, -':/headless-home:rw'.length);",
+        "const id = 'agy-docker-session';",
+        "const root = path.join(sessionHome, '.gemini', 'antigravity-cli');",
+        "const cache = path.join(root, 'cache', 'last_conversations.json');",
+        "const transcript = path.join(root, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');",
+        "fs.mkdirSync(path.dirname(cache), { recursive: true });",
+        "fs.writeFileSync(cache, JSON.stringify({ [process.env.HEADLESS_EXPECT_CWD]: id }));",
+        "fs.mkdirSync(path.dirname(transcript), { recursive: true });",
+        "fs.writeFileSync(transcript, JSON.stringify({ type: 'SESSION_META', payload: { cwd: process.env.HEADLESS_EXPECT_CWD } }) + '\\n');",
+        "console.log('antigravity docker done');",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(docker, 0o755);
+
+    const stdout: string[] = [];
+    const env = {
+      ...process.env,
+      ANTIGRAVITY_HOME: hostAntigravityHome,
+      HEADLESS_EXPECT_CWD: realpathSync(projectDir),
+      HOME: homeDir,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    assert.equal(
+      await runCli(["antigravity", "--docker", "--session", "work", "--prompt", "hello", "--work-dir", projectDir], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "antigravity docker done\n");
+
+    const sessionHome = join(homeDir, ".headless", "docker-sessions", "antigravity", "work");
+    const store = JSON.parse(readFileSync(join(sessionHome, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.antigravity.work.nativeId, "agy-docker-session");
+
+    const stderr: string[] = [];
+    assert.equal(
+      await runCli(
+        [
+          "antigravity",
+          "--docker",
+          "--session",
+          "custom-home",
+          "--docker-env",
+          "ANTIGRAVITY_HOME=/headless-home/custom",
+          "--prompt",
+          "hello",
+          "--work-dir",
+          projectDir,
+        ],
+        {
+          env,
+          stderr: (text) => stderr.push(text),
+          stdout: () => {},
+        },
+      ),
+      2,
+    );
+    assert.match(stderr.join(""), /ANTIGRAVITY_HOME cannot be overridden.*--docker --session/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --docker --session creates Cursor chats inside the container", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

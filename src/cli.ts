@@ -46,6 +46,7 @@ import {
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
+  dockerSessionAgentHomeEnvNames,
   dockerSessionNativeId,
   dockerSessionHomePath,
   LOCAL_DOCKER_IMAGE,
@@ -1272,7 +1273,7 @@ async function persistSessionPlan(
   if (!plan) {
     return;
   }
-  const discoveryEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
+  const discoveryEnv = dockerSessionHome ? dockerSessionDiscoveryEnv(agent, env, dockerSessionHome) : env;
   const nativeId =
     plan.nativeId ||
     (await discoverNativeSessionId(agent, stdout, cwd, discoveryEnv, plan.startedAt, Boolean(dockerSessionHome)));
@@ -1285,6 +1286,23 @@ async function persistSessionPlan(
     nativeId,
     workDir: cwd ?? process.cwd(),
   });
+}
+
+function dockerSessionDiscoveryEnv(agent: AgentName, env: Env, dockerSessionHome: string): Env {
+  const discoveryEnv: Env = { ...env, HOME: dockerSessionHome };
+  for (const name of dockerSessionAgentHomeEnvNames(agent)) {
+    delete discoveryEnv[name];
+  }
+  return discoveryEnv;
+}
+
+function validateDockerSessionEnv(agent: AgentName, dockerEnv: string[]): void {
+  const agentHomeVariables = new Set<string>(dockerSessionAgentHomeEnvNames(agent));
+  const override = dockerEnv.find((item) => agentHomeVariables.has(item.split("=", 1)[0] ?? ""));
+  if (override) {
+    const name = override.split("=", 1)[0];
+    throw new CliError(`${name} cannot be overridden with --docker-env when using --docker --session`);
+  }
 }
 
 async function discoverNativeSessionId(
@@ -3718,6 +3736,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       : undefined;
     if (parsed.docker && sessionAlias && !dockerSessionHome) {
       throw new CliError("HOME is required for --session");
+    }
+    if (dockerSessionHome) {
+      validateDockerSessionEnv(parsed.agent, parsed.dockerEnv);
     }
     const sessionEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
     let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
