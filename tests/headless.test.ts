@@ -1479,6 +1479,45 @@ test("CLI --json --usage keeps usage accounting bounded around a large native tr
   }
 });
 
+test("CLI --json --usage preserves Codex session identity across a large relevant trace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    const home = join(dir, "home");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-large' }));",
+          "for (let index = 0; index < 4_000; index += 1) {",
+          "  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'x'.repeat(100) } }));",
+          "}",
+          "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const code = await runCli(["codex", "--prompt", "hello", "--session", "work", "--json", "--usage"], {
+      env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 0);
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.codex.work.nativeId, "thread-large");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI flags override configured role allow and reasoning effort", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
