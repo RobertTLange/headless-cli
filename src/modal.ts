@@ -60,10 +60,12 @@ export interface ExecuteModalOptions {
   memoryMiB: number;
   modalEnv: string[];
   modalSecrets: string[];
-  stdout: (text: string) => void;
+  maxCapturedStdoutBytes?: number;
+  stdout: (text: string) => unknown;
   stdoutHandling: StdoutHandling;
   stderr: (text: string) => void;
   timeoutSeconds: number;
+  waitForStdoutDrain?: (signal: AbortSignal) => Promise<void>;
   workDir: string;
   clientFactory?: () => Promise<ModalClientLike>;
 }
@@ -230,6 +232,7 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
   const image = client.images.fromRegistry(options.image, imageSecret);
   const secrets = await Promise.all(options.modalSecrets.map((name) => client.secrets.fromName(name)));
   let sandbox: ModalSandboxLike | undefined;
+  const stdoutDrainController = new AbortController();
   const baselineDir = mkdtempSync(join(tmpdir(), "headless-modal-baseline-"));
   const resultDir = mkdtempSync(join(tmpdir(), "headless-modal-result-"));
 
@@ -273,11 +276,18 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
         workdir: remoteWorkDir,
       },
     );
-    const stdoutPromise = readTextStream(runProcess.stdout, (text) => {
-      if (options.stdoutHandling !== "capture") {
-        options.stdout(text);
-      }
-    });
+    const stdoutPromise = readTextStream(
+      runProcess.stdout,
+      async (text) => {
+        if (options.stdoutHandling !== "capture") {
+          const writable = options.stdout(text);
+          if (writable === false) {
+            await options.waitForStdoutDrain?.(stdoutDrainController.signal);
+          }
+        }
+      },
+      options.maxCapturedStdoutBytes,
+    );
     const stderrPromise = readTextStream(runProcess.stderr, options.stderr);
     await writeModalStdin(runProcess.stdin, options.command);
     const [stdout, , code] = await Promise.all([stdoutPromise, stderrPromise, runProcess.wait()]);
@@ -291,6 +301,7 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
 
     return { code, stdout, conflicts: sync.conflicts };
   } finally {
+    stdoutDrainController.abort();
     if (sandbox) {
       await sandbox.terminate();
     }
@@ -743,33 +754,103 @@ async function writeModalStdin(stdin: ModalWriteStreamLike<string | Uint8Array>,
 
 async function readTextStream<R extends string | Uint8Array>(
   stream: ModalReadStreamLike<R>,
-  onChunk?: (text: string) => void,
+  onChunk?: (text: string) => unknown,
+  maxBytes?: number,
 ): Promise<string> {
+  const emitChunks = async (text: string) => {
+    const maxChunkChars = 64 * 1024;
+    for (let offset = 0; offset < text.length; offset += maxChunkChars) {
+      await onChunk?.(text.slice(offset, offset + maxChunkChars));
+    }
+  };
   if (!stream.getReader) {
     const text = (await stream.readText?.()) ?? "";
     if (text) {
-      onChunk?.(text);
+      await emitChunks(text);
     }
-    return text;
+    return maxBytes === undefined ? text : boundedTextTail(text, maxBytes);
   }
   const decoder = new TextDecoder();
   const reader = stream.getReader();
-  let output = "";
+  const output = new BoundedTextCapture(maxBytes);
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
       break;
     }
     const text = typeof value === "string" ? value : decoder.decode(value, { stream: true });
-    output += text;
-    onChunk?.(text);
+    output.append(text);
+    await emitChunks(text);
   }
   const tail = decoder.decode();
   if (tail) {
-    output += tail;
-    onChunk?.(tail);
+    output.append(tail);
+    await emitChunks(tail);
   }
-  return output;
+  return output.text();
+}
+
+export class BoundedTextCapture {
+  private byteLength = 0;
+  private readonly chunks: Array<Buffer | undefined> = [];
+  private head = 0;
+
+  constructor(private readonly maxBytes?: number) {}
+
+  append(text: string): void {
+    if (!text) {
+      return;
+    }
+    const chunk = Buffer.from(text, "utf8");
+    this.chunks.push(chunk);
+    this.byteLength += chunk.byteLength;
+    if (this.maxBytes === undefined) {
+      return;
+    }
+    while (this.byteLength > this.maxBytes && this.head < this.chunks.length) {
+      const overflow = this.byteLength - this.maxBytes;
+      const first = this.chunks[this.head];
+      if (!first) {
+        this.head += 1;
+        continue;
+      }
+      if (first.byteLength <= overflow) {
+        this.chunks[this.head] = undefined;
+        this.head += 1;
+        this.byteLength -= first.byteLength;
+        continue;
+      }
+      let start = overflow;
+      while (start < first.byteLength && (first[start] & 0xc0) === 0x80) {
+        start += 1;
+      }
+      this.chunks[this.head] = Buffer.from(first.subarray(start));
+      this.byteLength -= start;
+    }
+    if (this.head > 1024 && this.head * 2 > this.chunks.length) {
+      this.chunks.splice(0, this.head);
+      this.head = 0;
+    }
+  }
+
+  text(): string {
+    const retained = this.chunks
+      .slice(this.head)
+      .filter((chunk): chunk is Buffer => chunk !== undefined);
+    return Buffer.concat(retained, this.byteLength).toString("utf8");
+  }
+}
+
+function boundedTextTail(text: string, maxBytes: number): string {
+  const encoded = Buffer.from(text, "utf8");
+  if (encoded.byteLength <= maxBytes) {
+    return text;
+  }
+  let start = encoded.byteLength - maxBytes;
+  while (start < encoded.byteLength && (encoded[start] & 0xc0) === 0x80) {
+    start += 1;
+  }
+  return encoded.subarray(start).toString("utf8");
 }
 
 async function readBytes(stream: ModalReadStreamLike<Uint8Array>): Promise<Uint8Array> {

@@ -16,6 +16,28 @@ npm run hooks:install
 
 The package exports one binary, `headless`, from `dist/cli.js`.
 
+## Python SDK
+
+The Python package lives in `python/` and calls the built Headless CLI. Install
+its test dependencies, then run the full local gate:
+
+```bash
+npm run build
+python -m pip install -e "./python[test]"
+cd python
+python -m ruff format --check src tests
+python -m ruff check src tests
+python -m mypy src tests
+python -m coverage run -m pytest
+python -m coverage report --fail-under=80
+python -m build
+HEADLESS_CLI_BIN=../dist/cli.js python -c "from headless_cli import Headless; print(Headless().version())"
+```
+
+CI runs the SDK on the oldest and newest supported Python versions. Release
+builds publish `headless-cli` to PyPI through trusted publishing when that
+package version does not already exist.
+
 ## Layout
 
 ```text
@@ -30,4 +52,5 @@ src/run-view.ts Run graph/list rendering
 src/shell.ts    Shell-safe dry-run rendering
 src/types.ts    Shared TypeScript contracts
 tests/          CLI and command-builder coverage
+python/         Typed sync/async Python SDK, tests, and packaging
 ```

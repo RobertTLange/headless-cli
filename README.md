@@ -42,6 +42,26 @@ HEADLESS_REF=main
 npx -y degit@2.8.4 "RobertTLange/headless-cli/skills/headless-swarm#$HEADLESS_REF" ~/.codex/skills/headless-swarm
 ```
 
+### Python SDK
+
+Install the typed Python wrapper after installing the Headless CLI:
+
+```bash
+pip install headless-cli
+```
+
+```python
+from headless_cli import Headless
+
+headless = Headless()
+result = headless.run("codex", prompt="Review this repository")
+print(result.final_message)
+```
+
+Sync and async clients cover runs, native and tmux sessions, coordinated runs,
+cron jobs, Docker helpers, structured streaming, and a raw CLI escape hatch.
+See the [Python SDK guide](python/README.md) for the complete interface.
+
 ## Core Usage
 
 ```bash
@@ -150,6 +170,7 @@ Install the agent CLIs you want Headless to drive.
 ## More Docs
 
 - [Usage guide](docs/usage.md): agents, output modes, sessions, cron jobs, Docker, Modal, config defaults, CLI flags, and environment variables.
+- [Python SDK](python/README.md): typed sync/async clients, structured streaming, namespaces, and raw invocation.
 - [Multi-agent workflows](docs/orchestration.md): roles, coordinated runs, teams, run state, messaging, and `headless run` commands.
 - [Development](docs/development.md): local setup, test commands, pre-push integration coverage, project layout, and agent install references.
 

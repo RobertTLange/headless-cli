@@ -20,7 +20,7 @@ interface CaptureResult {
   stderr: string;
 }
 
-interface AgentCheck {
+export interface AgentCheck {
   agent: AgentName;
   command: string;
   available: boolean;
@@ -30,7 +30,7 @@ interface AgentCheck {
   reasoningEffort: string;
 }
 
-interface DockerCheck {
+export interface DockerCheck {
   command: string;
   available: boolean;
   version: string;
@@ -38,7 +38,7 @@ interface DockerCheck {
   imageAvailable: boolean;
 }
 
-type AuthLabel = "-" | "api" | "oauth" | "api+oauth";
+export type AuthLabel = "-" | "api" | "oauth" | "api+oauth";
 
 export function commandForAgent(agent: AgentName, env: Env): string {
   if (agent === "acp") {
