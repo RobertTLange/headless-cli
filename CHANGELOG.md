@@ -3,6 +3,7 @@
 ## TBD
 
 - Added durable Docker sessions with `--docker --session <name>`, persisting each native agent home under `~/.headless/docker-sessions` for multi-turn conversations while keeping the default Docker mode ephemeral.
+- Thanks to Anant Garg (@anantgar) for contributing durable Docker sessions.
 - Changed Docker auth seeding for Antigravity to mount only credential and settings files instead of copying its conversation and brain history into each container.
 - Thanks to Anant Garg (@anantgar) for contributing safer Antigravity Docker credential seeding.
 - Added combined `--json --usage` output for one-shot runs: Headless streams the native trace unchanged, appends normalized usage after the native process exits, and does not require an extractable final assistant message.
