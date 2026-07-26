@@ -184,7 +184,7 @@ headless codex --prompt "Use the private provider" --docker --docker-env OPENROU
 headless gemini --prompt "Inspect this repo" --docker --docker-arg --network=host
 ```
 
-Add `--session <name>` to make Docker execution durable across turns. Headless stores the container home under `~/.headless/docker-sessions/<agent>/<name>` and keeps the native agent's session files there while continuing to remove each container after the turn.
+Add `--session <name>` to make Docker execution durable across turns. Headless stores the container home under `~/.headless/docker-sessions/<agent>/<name-prefix>-<hash>` and keeps the native agent's session files there while continuing to remove each container after the turn. The readable prefix may be truncated; the exact-name hash keeps aliases distinct on case-insensitive filesystems.
 
 ```bash
 headless codex --docker --session bughunt --prompt "Start investigating the failing tests"

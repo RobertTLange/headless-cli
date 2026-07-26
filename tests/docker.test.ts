@@ -360,8 +360,33 @@ test("requires an absolute configured Docker session root", () => {
       HEADLESS_DOCKER_SESSION_ROOT: "/var/lib/headless-sessions",
       HOME: "/home/test",
     }),
-    "/var/lib/headless-sessions/codex/work",
+    "/var/lib/headless-sessions/codex/work-00e13ed7af55b27622f1d6eab5bec0147e68efe28dc2b12461117afa1a5ed40e",
   );
+});
+
+test("uses distinct Docker homes for aliases that differ only by case", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const env = { HEADLESS_DOCKER_SESSION_ROOT: join(dir, "sessions") };
+    const lowerHome = dockerSessionHomePath("codex", "work", env) as string;
+    const upperHome = dockerSessionHomePath("codex", "WORK", env) as string;
+
+    assert.notEqual(lowerHome.toLowerCase(), upperHome.toLowerCase());
+    assert.notEqual(ensureDockerSessionHome(lowerHome), ensureDockerSessionHome(upperHome));
+    assert.notEqual(statSync(lowerHome).ino, statSync(upperHome).ino);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("bounds long Docker session directory names without alias collisions", () => {
+  const root = "/var/lib/headless-sessions";
+  const sharedPrefix = "a".repeat(200);
+  const first = dockerSessionHomePath("codex", `${sharedPrefix}x`, { HEADLESS_DOCKER_SESSION_ROOT: root }) as string;
+  const second = dockerSessionHomePath("codex", `${sharedPrefix}y`, { HEADLESS_DOCKER_SESSION_ROOT: root }) as string;
+
+  assert.ok(first.length < root.length + 180);
+  assert.notEqual(first, second);
 });
 
 test("maps Pi transcripts stored through a former symlinked Docker root", { skip: process.platform === "win32" }, () => {

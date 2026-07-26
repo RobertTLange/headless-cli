@@ -29,7 +29,7 @@ import {
 import { acpClientCapabilities } from "../src/acp.ts";
 import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
-import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
+import { DEFAULT_DOCKER_IMAGE, dockerSessionHomePath } from "../src/docker.ts";
 import { launchLockPath } from "../src/launch-lock.ts";
 import { writeStoredSession } from "../src/sessions.ts";
 import { quoteCommand } from "../src/shell.ts";
@@ -2172,7 +2172,7 @@ test("CLI --docker --session persists a durable home across turns", async () => 
     const secondCommand = calls[1].args.slice(calls[1].args.indexOf("headless-agent") + 1);
     assert.ok(secondCommand.includes("resume"));
 
-    const sessionHome = join(homeDir, ".headless", "docker-sessions", "codex", "work");
+    const sessionHome = dockerSessionHomePath("codex", "work", { HOME: homeDir }) as string;
     assert.equal(readFileSync(join(sessionHome, "turns.txt"), "utf8"), "2");
     const dockerStore = JSON.parse(readFileSync(join(sessionHome, ".headless", "sessions.json"), "utf8"));
     assert.equal(dockerStore.agents.codex.work.nativeId, "docker-thread");
@@ -2314,7 +2314,7 @@ test("CLI --docker --session discovers Antigravity transcripts in the durable ho
     );
     assert.equal(stdout.join(""), "antigravity docker done\n");
 
-    const sessionHome = join(homeDir, ".headless", "docker-sessions", "antigravity", "work");
+    const sessionHome = dockerSessionHomePath("antigravity", "work", { HOME: homeDir }) as string;
     const store = JSON.parse(readFileSync(join(sessionHome, ".headless", "sessions.json"), "utf8"));
     assert.equal(store.agents.antigravity.work.nativeId, "agy-docker-session");
 
@@ -2417,7 +2417,7 @@ test("CLI --docker --session creates Cursor chats inside the container", async (
       HOME: homeDir,
       PATH: `${hostBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
     };
-    const sessionHome = join(homeDir, ".headless", "docker-sessions", "cursor", "work");
+    const sessionHome = dockerSessionHomePath("cursor", "work", { HOME: homeDir }) as string;
     const externalMarkerTarget = join(dir, "external-marker-target");
     mkdirSync(sessionHome, { recursive: true });
     writeFileSync(externalMarkerTarget, "do not overwrite\n");
@@ -2523,7 +2523,7 @@ test("CLI --docker --session print-command prepares its bind-mount source", asyn
       0,
     );
 
-    const sessionHome = join(homeDir, ".headless", "docker-sessions", "codex", "work");
+    const sessionHome = dockerSessionHomePath("codex", "work", { HOME: homeDir }) as string;
     assert.equal(existsSync(sessionHome), true);
     assert.ok(stdout.join("").includes(`${sessionHome}:/headless-home:rw`));
   } finally {

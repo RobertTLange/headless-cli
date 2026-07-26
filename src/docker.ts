@@ -12,6 +12,7 @@ import {
   statSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
@@ -67,7 +68,12 @@ export function dockerSessionHomePath(agent: AgentName, alias: string, env: Env)
   }
   const root =
     configuredRoot || (env.HOME ? join(env.HOME, ".headless", "docker-sessions") : undefined);
-  return root ? resolve(root, agent, alias) : undefined;
+  return root ? resolve(root, agent, dockerSessionDirectoryName(alias)) : undefined;
+}
+
+function dockerSessionDirectoryName(alias: string): string {
+  const digest = createHash("sha256").update(alias).digest("hex");
+  return `${alias.slice(0, 100)}-${digest}`;
 }
 
 export function ensureDockerSessionHome(path: string): string {
