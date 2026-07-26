@@ -2060,13 +2060,83 @@ test("CLI rejects invalid --session combinations", async () => {
     2,
   );
   assert.match(stderr.join(""), /--session cannot be used with --name/);
+});
 
-  stderr.length = 0;
-  assert.equal(
-    await runCli(["codex", "--session", "work", "--docker", "--prompt", "hello"], { stderr: (text) => stderr.push(text) }),
-    2,
-  );
-  assert.match(stderr.join(""), /--session cannot be used with --docker/);
+test("CLI --docker --session persists a durable home across turns", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    const captureFile = join(dir, "docker.jsonl");
+    mkdirSync(binDir);
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    await import("node:fs/promises").then(async ({ chmod, writeFile }) => {
+      const docker = join(binDir, "docker");
+      await writeFile(
+        docker,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          "const args = process.argv.slice(2);",
+          "const volume = args.find((arg) => arg.endsWith(':/headless-home:rw'));",
+          "if (!volume) process.exit(11);",
+          "const sessionHome = volume.slice(0, -':/headless-home:rw'.length);",
+          "fs.mkdirSync(sessionHome, { recursive: true });",
+          "const statePath = path.join(sessionHome, 'turns.txt');",
+          "const turn = fs.existsSync(statePath) ? Number(fs.readFileSync(statePath, 'utf8')) + 1 : 1;",
+          "fs.writeFileSync(statePath, String(turn));",
+          "fs.appendFileSync(process.env.HEADLESS_DOCKER_CAPTURE, JSON.stringify({ args, turn }) + '\\n');",
+          "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'docker-thread' }));",
+          "console.log(JSON.stringify({ type: 'agent_message', text: `turn ${turn}` }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(docker, 0o755);
+    });
+
+    const env = {
+      ...process.env,
+      HEADLESS_DOCKER_CAPTURE: captureFile,
+      HOME: homeDir,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    const stdout: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--session", "work", "--prompt", "first", "--work-dir", projectDir, "--docker"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "turn 1\n");
+
+    stdout.length = 0;
+    assert.equal(
+      await runCli(["codex", "--session", "work", "--prompt", "second", "--work-dir", projectDir, "--docker"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "turn 2\n");
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].turn, 1);
+    assert.equal(calls[1].turn, 2);
+    const secondCommand = calls[1].args.slice(calls[1].args.indexOf("headless-agent") + 1);
+    assert.ok(secondCommand.includes("resume"));
+
+    const sessionHome = join(homeDir, ".headless", "docker-sessions", "codex", "work");
+    assert.equal(readFileSync(join(sessionHome, "turns.txt"), "utf8"), "2");
+    const store = JSON.parse(readFileSync(join(homeDir, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.codex.work.nativeId, "docker-thread");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("CLI --docker print-command wraps the selected agent command", async () => {

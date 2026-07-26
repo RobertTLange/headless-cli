@@ -78,6 +78,7 @@ headless codex --allow read-only --prompt "Review this repo"
 
 # Start or resume native sessions.
 headless codex --prompt "Continue the fix" --session bughunt
+headless codex --docker --session bughunt --prompt "Continue the fix in a durable Docker home"
 
 # Launch an interactive tmux session.
 headless codex --prompt "Fix the failing tests" --tmux

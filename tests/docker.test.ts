@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildDockerAgentCommand, DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
+import { buildDockerAgentCommand, dockerSessionNativeId, DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 
 test("Dockerfile exposes Cursor agent from a non-root path", () => {
@@ -292,6 +292,43 @@ test("does not mount a symlinked Antigravity credential with a directory target"
       !command.args.some((arg) =>
         arg.endsWith(":/tmp/headless-host-home/.gemini/antigravity-cli/antigravity-oauth-token:ro"),
       ),
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("uses a persistent host home for durable Docker sessions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const persistentHome = join(dir, "sessions", "codex", "work");
+    const workDir = join(dir, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: {
+        command: "codex",
+        args: ["exec", "--json", "-"],
+        stdinText: "hello",
+      },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { HOME: home },
+      hostUser: "501:20",
+      image: DEFAULT_DOCKER_IMAGE,
+      persistentHome,
+      workDir,
+    });
+
+    assert.ok(command.args.includes(`${persistentHome}:/headless-home:rw`));
+    assert.ok(!command.args.includes("/headless-home:rw,mode=1777"));
+    assert.match(command.args.find((arg) => arg.includes("cp -R -n")) ?? "", /cp -R -n/);
+    assert.equal(
+      dockerSessionNativeId("pi", join(persistentHome, ".pi", "agent", "sessions", "turn.jsonl"), persistentHome),
+      "/headless-home/.pi/agent/sessions/turn.jsonl",
     );
   } finally {
     rmSync(dir, { force: true, recursive: true });

@@ -169,7 +169,7 @@ Use `headless attach` without a session name to attach to the most recently acti
 
 ## Docker
 
-Docker mode wraps one-shot headless execution in `docker run --rm`. It mounts the target workdir at the same absolute path inside the container, mounts existing agent config/auth seed paths read-only, passes curated credential environment variables, and runs the selected agent from `ghcr.io/roberttlange/headless:latest` by default. For Antigravity, Docker mounts only the credential files needed for authentication and settings; it does not copy the conversation and brain history stored alongside them into the container home.
+Docker mode wraps headless execution in `docker run --rm`. By default it is one-shot: the target workdir is mounted at the same absolute path inside the container, existing agent config/auth seed paths are mounted read-only, curated credential environment variables are passed through, and the container home is a temporary filesystem. It runs the selected agent from `ghcr.io/roberttlange/headless:latest` by default. For Antigravity, Docker mounts only the credential files needed for authentication and settings; it does not copy the conversation and brain history stored alongside them into the container home.
 
 ```bash
 headless codex --prompt "Fix the failing tests" --docker
@@ -184,7 +184,16 @@ headless codex --prompt "Use the private provider" --docker --docker-env OPENROU
 headless gemini --prompt "Inspect this repo" --docker --docker-arg --network=host
 ```
 
-Docker mode is only for one-shot headless execution. It cannot be combined with `--tmux`, `send`, `rename`, or `--list`.
+Add `--session <name>` to make Docker execution durable across turns. Headless stores the container home under `~/.headless/docker-sessions/<agent>/<name>` and keeps the native agent's session files there while continuing to remove each container after the turn.
+
+```bash
+headless codex --docker --session bughunt --prompt "Start investigating the failing tests"
+headless codex --docker --session bughunt --prompt "Continue the investigation and fix the root cause"
+```
+
+The workdir is always persisted through its normal host bind mount. A durable Docker session additionally persists the agent home; seed files are copied only when they do not already exist, so later turns cannot overwrite native conversation state. Delete the corresponding directory to reset the Docker session. Set `HEADLESS_DOCKER_SESSION_ROOT` to use a different absolute root directory.
+
+Docker mode cannot be combined with `--tmux`, `send`, `rename`, or `--list`.
 
 For local development or when the default image has not been published yet, build the packaged Dockerfile explicitly.
 
@@ -278,7 +287,7 @@ Options:
 - `--acp-registry`: with `--acp-agent`, use a custom ACP registry URL.
 - `--acp-registry-file`: with `--acp-agent`, read registry JSON from a local file.
 - `--work-dir`, `-C`: run the agent from a specific working directory.
-- `--docker`: run the agent inside Docker for one-shot headless execution.
+- `--docker`: run the agent inside Docker; add `--session` for a durable multi-turn container home.
 - `--modal`: run the agent in a Modal CPU sandbox for one-shot headless execution.
 - `--timeout <s>`: stop one-shot local, Docker, Modal, or `--tmux --wait` execution after the given number of seconds.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
@@ -317,6 +326,7 @@ See [orchestration.md](orchestration.md) for `--role`, `--run`, `--node`, `--tea
 - `HEADLESS_ACP_REGISTRY_FILE`: local ACP registry JSON file.
 - `HEADLESS_ACP_REGISTRY_JSON`: inline ACP registry JSON, mainly useful for tests or wrappers.
 - `HEADLESS_CRON_DIR`: cron state root. Defaults to `~/.headless/cron`.
+- `HEADLESS_DOCKER_SESSION_ROOT`: root for durable Docker session homes. Defaults to `~/.headless/docker-sessions`.
 - `HEADLESS_CLI_BIN`: binary path the cron daemon uses to start scheduled Headless invocations.
 - `HEADLESS_BIN`: fallback binary path for detached Headless child invocations.
 - `HEADLESS_RUN_DIR`: concrete directory for the active run store, mainly used by Docker run coordination.

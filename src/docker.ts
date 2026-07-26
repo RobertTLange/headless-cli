@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
 import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
@@ -7,14 +7,9 @@ import type { AgentName, BuiltCommand, Env } from "./types.js";
 
 export const DEFAULT_DOCKER_IMAGE = "ghcr.io/roberttlange/headless:latest";
 export const LOCAL_DOCKER_IMAGE = "headless-local:dev";
+export const DOCKER_SESSION_ROOT_ENV = "HEADLESS_DOCKER_SESSION_ROOT";
 const containerHome = "/headless-home";
 const hostHomeMountRoot = "/tmp/headless-host-home";
-const bootstrapScript = [
-  "set -eu",
-  `mkdir -p "${containerHome}"`,
-  `if [ -d "${hostHomeMountRoot}" ]; then cp -R "${hostHomeMountRoot}/." "$HOME"/; fi`,
-  'exec "$@"',
-].join("; ");
 
 type DockerEnvEntry = ForwardedEnvEntry;
 
@@ -26,6 +21,7 @@ export interface DockerAgentCommandOptions {
   env: Env;
   hostUser?: string;
   image: string;
+  persistentHome?: string;
   runDirHost?: string;
   runId?: string;
   workDir: string;
@@ -38,12 +34,43 @@ export function detectDockerHostUser(): string | undefined {
   return `${process.getuid()}:${process.getgid()}`;
 }
 
+export function dockerSessionHomePath(agent: AgentName, alias: string, env: Env): string | undefined {
+  const root =
+    env[DOCKER_SESSION_ROOT_ENV]?.trim() || (env.HOME ? join(env.HOME, ".headless", "docker-sessions") : undefined);
+  return root ? resolve(root, agent, alias) : undefined;
+}
+
+export function ensureDockerSessionHome(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+}
+
+export function dockerSessionNativeId(agent: AgentName, nativeId: string | undefined, persistentHome: string): string | undefined {
+  if (!nativeId || agent !== "pi") {
+    return nativeId;
+  }
+  const relativePath = relative(resolve(persistentHome), resolve(nativeId));
+  if (
+    relativePath === "" ||
+    relativePath === ".." ||
+    relativePath.startsWith("../") ||
+    relativePath.startsWith("..\\") ||
+    isAbsolute(relativePath)
+  ) {
+    return nativeId;
+  }
+  return join(containerHome, relativePath);
+}
+
 export function buildDockerAgentCommand(options: DockerAgentCommandOptions): BuiltCommand {
   const args = ["run", "--rm"];
   if (options.command.stdinText !== undefined || options.command.stdinFile !== undefined) {
     args.push("--interactive");
   }
-  args.push("--tmpfs", `${containerHome}:rw,mode=1777`);
+  if (options.persistentHome) {
+    args.push("--volume", `${options.persistentHome}:${containerHome}:rw`);
+  } else {
+    args.push("--tmpfs", `${containerHome}:rw,mode=1777`);
+  }
   if (options.hostUser) {
     args.push("--user", options.hostUser);
   }
@@ -59,7 +86,15 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
   args.push(...dockerEnvArgs(dockerEnvEntries));
   args.push(...options.dockerArgs);
-  args.push(options.image, "sh", "-lc", bootstrapScript, "headless-agent", options.command.command, ...options.command.args);
+  args.push(
+    options.image,
+    "sh",
+    "-lc",
+    bootstrapScript(Boolean(options.persistentHome)),
+    "headless-agent",
+    options.command.command,
+    ...options.command.args,
+  );
 
   const dockerCommand: BuiltCommand = { command: "docker", args };
   if (options.command.env) {
@@ -72,6 +107,16 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     dockerCommand.stdinText = options.command.stdinText;
   }
   return dockerCommand;
+}
+
+function bootstrapScript(persistentHome: boolean): string {
+  const copyFlags = persistentHome ? "-R -n" : "-R";
+  return [
+    "set -eu",
+    `mkdir -p "${containerHome}"`,
+    `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
+    'exec "$@"',
+  ].join("; ");
 }
 
 function agentConfigMountArgs(agent: AgentName, env: Env): string[] {

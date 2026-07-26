@@ -46,8 +46,11 @@ import {
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
+  dockerSessionNativeId,
+  dockerSessionHomePath,
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
+  ensureDockerSessionHome,
 } from "./docker.js";
 import {
   buildModalRunSummary,
@@ -231,7 +234,7 @@ function usage(): string {
     "  --prompt, -p <text>   Prompt text.",
     "  --prompt-file <path>  Read prompt from a file.",
     "  --work-dir, -C <path> Run from this directory.",
-    "  --docker             Run the agent inside Docker.",
+    "  --docker             Run the agent inside Docker; use --session for durable turns.",
     "  --docker-image <img> Docker image. Defaults to ghcr.io/roberttlange/headless:latest.",
     "  --docker-arg <arg>   Extra docker run argument. Repeat for multiple args.",
     "  --docker-env <env>   Pass env into Docker as NAME or NAME=value. Repeatable.",
@@ -1260,11 +1263,15 @@ async function persistSessionPlan(
   stdout: string,
   cwd: string | undefined,
   env: Env,
+  dockerSessionHome?: string,
 ): Promise<void> {
   if (!plan) {
     return;
   }
-  const nativeId = plan.nativeId || (await discoverNativeSessionId(agent, stdout, cwd, env, plan.startedAt));
+  const discoveryEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
+  const nativeId =
+    plan.nativeId ||
+    (await discoverNativeSessionId(agent, stdout, cwd, discoveryEnv, plan.startedAt, Boolean(dockerSessionHome)));
   if (!nativeId) {
     throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
   }
@@ -1282,18 +1289,25 @@ async function discoverNativeSessionId(
   cwd: string | undefined,
   env: Env,
   startedAt?: string,
+  dockerSession: boolean = false,
 ): Promise<string> {
   const fromTrace = extractNativeSessionId(agent, stdout);
   if (fromTrace) {
     return fromTrace;
   }
   if (agent === "gemini") {
+    if (dockerSession) {
+      return resolveLatestNativeTranscript("gemini", cwd, env, startedAt ? { startedAt } : {})?.sessionId ?? "";
+    }
     return await newestGeminiSessionId(cwd, env);
   }
   if (agent === "antigravity") {
     return newestAntigravitySessionId(cwd, env, startedAt);
   }
   if (agent === "opencode") {
+    if (dockerSession) {
+      return resolveLatestNativeTranscript("opencode", cwd, env, startedAt ? { startedAt } : {})?.sessionId ?? "";
+    }
     return await newestOpenCodeSessionId(cwd, env);
   }
   if (agent === "pi") {
@@ -3365,9 +3379,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.sessionAlias !== undefined && parsed.tmuxName !== undefined) {
       throw new CliError("--session cannot be used with --name");
     }
-    if (parsed.sessionAlias !== undefined && parsed.docker) {
-      throw new CliError("--session cannot be used with --docker");
-    }
     if (parsed.sessionAlias !== undefined && parsed.modal) {
       throw new CliError("--session cannot be used with --modal");
     }
@@ -3690,6 +3701,18 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env);
     }
+    const dockerSessionHome = parsed.docker && sessionPlan
+      ? dockerSessionHomePath(parsed.agent, sessionPlan.alias, env)
+      : undefined;
+    if (parsed.docker && sessionPlan && !dockerSessionHome) {
+      throw new CliError("HOME is required for --session");
+    }
+    if (dockerSessionHome && !parsed.printCommand) {
+      ensureDockerSessionHome(dockerSessionHome);
+    }
+    const commandSessionPlan = dockerSessionHome && sessionPlan
+      ? { ...sessionPlan, nativeId: dockerSessionNativeId(parsed.agent, sessionPlan.nativeId, dockerSessionHome) }
+      : sessionPlan;
     let command = withRunEnvironment(buildAgentCommand(
       parsed.agent,
       applySessionPlan({
@@ -3699,7 +3722,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
-      }, sessionPlan),
+      }, commandSessionPlan),
       env,
     ), parsed.runId, nodeId);
     const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
@@ -3715,6 +3738,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         env,
         hostUser: detectDockerHostUser(),
         image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
+        persistentHome: dockerSessionHome,
         runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
         runId: parsed.runId,
         workDir: cwd ?? process.cwd(),
@@ -3852,7 +3876,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
         : usageCommandTrace;
       if (result.code === 0 && sessionPlan) {
-        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env);
+        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env, dockerSessionHome);
       }
       if (parsed.runId && parsed.role && nodeId) {
         const finalMessage =
