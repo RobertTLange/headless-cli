@@ -69,10 +69,11 @@ Raw mode is the default: Headless prints the extracted final assistant message.
 headless codex --prompt "Fix the failing tests"
 ```
 
-`--json` streams the native agent JSON trace for scripting. It cannot be combined with `--tmux`.
+`--json` streams the native agent JSON trace for scripting. It cannot be combined with `--tmux`. Combine it with `--usage` to keep the native trace unchanged and append one normalized usage object after the native process exits.
 
 ```bash
 headless pi --prompt "Summarize this repo" --json
+headless codex --prompt "Summarize this repo" --json --usage
 ```
 
 When combined with `--print-command`, `--json` prints a single structured object for wrappers that need the selected agent identity without parsing shell text.
@@ -87,10 +88,13 @@ headless --prompt "identity" --print-command --json
 headless codex --prompt "Fix the failing tests" --debug
 ```
 
-`--usage` appends normalized token usage and cost JSON after the final message for one-shot runs, including Docker and Modal runs. It reports input, cache read, cache write, output, reasoning output, total tokens, provider/model metadata, pricing status, and cost when available. Native costs are used when available; fallback pricing comes from `https://models.dev/api.json`. If a model cannot be priced, token counts are still returned with `cost: null`.
+`--usage` appends normalized token usage and cost JSON for one-shot runs, including Docker and Modal runs. In the default output mode it follows the extracted final message. With `--json`, it follows the streamed native trace and does not require Headless to extract a final assistant message.
+
+Usage reports input, cache read, cache write, output, reasoning output, total tokens, provider/model metadata, pricing status, and cost when available. `usageStatus` is `reported` only when Headless recognizes a native usage record; otherwise it is `missing`, with cost left null. `costBasis` distinguishes `native-reported` values from `api-list-price-estimate` values calculated from token counts and `https://models.dev/api.json`. The latter is an API-equivalent list-price estimate, not actual subscription spend. If usage or model pricing is unavailable, available token counts are still returned with `cost: null` and `costBasis: null`.
 
 ```bash
 headless codex --prompt "Summarize this repo" --model gpt-5 --usage
+headless codex --prompt "Summarize this repo" --model gpt-5 --json --usage
 ```
 
 ## Cron Jobs
@@ -277,7 +281,7 @@ Options:
 - `--timeout <s>`: stop one-shot local, Docker, Modal, or `--tmux --wait` execution after the given number of seconds.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
-- `--usage`: append normalized token usage and cost JSON after the final message.
+- `--usage`: append normalized token usage and cost JSON after the final message or streamed `--json` trace.
 - `--tmux`: launch an interactive agent in a detached tmux session with the prompt as its initial message.
 - `--wait`: with `--tmux`, wait for native transcript completion and print the final message.
 - `--delete`: with `--tmux --wait`, kill the tmux session after completion.

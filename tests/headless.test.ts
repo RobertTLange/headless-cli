@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -32,6 +32,15 @@ async function waitFor(assertion: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(assertion(), true);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test("lists all supported agents", () => {
@@ -1233,6 +1242,453 @@ test("CLI exits 124 when a one-shot command exceeds --timeout", async () => {
     assert.equal(code, 124);
     assert.match(stderr.join(""), /timed out after 1s/);
   } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI waits for timed-out child stdout to drain before appending usage", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "process.on('SIGTERM', () => { process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }) + '\\n'); setTimeout(() => process.exit(0), 200); });",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 124);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(JSON.parse(lines[0] ?? "").type, "turn.completed");
+    assert.equal(JSON.parse(lines[1] ?? "").usage.usageStatus, "reported");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI bounds timeout drain when a descendant retains stdout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const pidFile = join(dir, "grandchild.pid");
+  let grandchildPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "process.on('SIGTERM', () => {",
+          "  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+          "  writeFileSync(process.env.HEADLESS_TEST_GRANDCHILD_PID, String(child.pid));",
+          "  child.unref();",
+          "  process.exit(0);",
+          "});",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const startedAt = Date.now();
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+      env: {
+        ...process.env,
+        HEADLESS_TEST_GRANDCHILD_PID: pidFile,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 124);
+    assert.ok(Date.now() - startedAt < 4_000, "timeout drain should finish before the descendant exits");
+    grandchildPid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+    if (process.platform !== "win32") {
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    }
+  } finally {
+    try {
+      grandchildPid = Number(readFileSync(pidFile, "utf8"));
+      if (Number.isInteger(grandchildPid) && grandchildPid > 0) process.kill(grandchildPid, "SIGKILL");
+    } catch {
+      // The child may fail before creating its descendant.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI kills timeout descendants after the direct child closes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const pidFile = join(dir, "grandchild.pid");
+  let grandchildPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "process.on('SIGTERM', () => {",
+          "  const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setTimeout(() => {}, 10_000)\"], { stdio: 'ignore' });",
+          "  writeFileSync(process.env.HEADLESS_TEST_GRANDCHILD_PID, String(child.pid));",
+          "  child.unref();",
+          "  process.exit(0);",
+          "});",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--timeout", "1"], {
+      env: {
+        ...process.env,
+        HEADLESS_TEST_GRANDCHILD_PID: pidFile,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 124);
+    grandchildPid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+    if (process.platform !== "win32") {
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    }
+  } finally {
+    if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI forwards parent signals to timeout-enabled agents", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const agentPidFile = join(dir, "agent.pid");
+  const signalFile = join(dir, "signal.txt");
+  let agentPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { writeFileSync } = require('node:fs');",
+          "writeFileSync(process.env.HEADLESS_TEST_AGENT_PID, String(process.pid));",
+          "process.on('SIGINT', () => {",
+          "  writeFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGINT');",
+          "  process.exit(130);",
+          "});",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    const headless = spawn(
+      process.execPath,
+      ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "codex", "--prompt", "hello", "--json", "--timeout", "30"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TEST_AGENT_PID: agentPidFile,
+          HEADLESS_TEST_SIGNAL_FILE: signalFile,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(agentPidFile));
+
+    headless.kill("SIGINT");
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      headless.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+
+    assert.deepEqual(exit, { code: null, signal: "SIGINT" });
+    await waitFor(() => existsSync(signalFile));
+    assert.equal(readFileSync(signalFile, "utf8"), "SIGINT");
+  } finally {
+    try {
+      agentPid = Number(readFileSync(agentPidFile, "utf8"));
+      if (Number.isInteger(agentPid) && agentPid > 0 && processIsAlive(agentPid)) process.kill(agentPid, "SIGKILL");
+    } catch {
+      // The wrapper may fail before launching its agent.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI forwards suspend and continue signals to timeout-enabled agents", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const agentPidFile = join(dir, "agent.pid");
+  const signalFile = join(dir, "signals.txt");
+  let agentPid: number | undefined;
+  let headless: ReturnType<typeof spawn> | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { appendFileSync, writeFileSync } = require('node:fs');",
+          "writeFileSync(process.env.HEADLESS_TEST_AGENT_PID, String(process.pid));",
+          "process.on('SIGTSTP', () => {",
+          "  appendFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGTSTP\\n');",
+          "  process.kill(process.pid, 'SIGSTOP');",
+          "});",
+          "process.on('SIGCONT', () => appendFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGCONT\\n'));",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    headless = spawn(
+      process.execPath,
+      ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "codex", "--prompt", "hello", "--json", "--timeout", "30"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TEST_AGENT_PID: agentPidFile,
+          HEADLESS_TEST_SIGNAL_FILE: signalFile,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(agentPidFile));
+
+    headless.kill("SIGTSTP");
+    await waitFor(() => existsSync(signalFile) && readFileSync(signalFile, "utf8").includes("SIGTSTP"));
+    headless.kill("SIGCONT");
+    await waitFor(() => readFileSync(signalFile, "utf8").includes("SIGCONT"));
+
+    const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      headless?.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    headless.kill("SIGTERM");
+    assert.deepEqual(await exit, { code: null, signal: "SIGTERM" });
+  } finally {
+    if (headless && headless.exitCode === null && headless.signalCode === null) headless.kill("SIGKILL");
+    try {
+      agentPid = Number(readFileSync(agentPidFile, "utf8"));
+      if (Number.isInteger(agentPid) && agentPid > 0 && processIsAlive(agentPid)) process.kill(agentPid, "SIGKILL");
+    } catch {
+      // The wrapper may fail before launching its agent.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage keeps usage accounting bounded around a large native trace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          `process.stdout.write(JSON.stringify({ type: 'tool', text: '${"x".repeat(300_000)}' }) + '\\n');`,
+          "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }) + '\\n');",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    assert.ok(stdout.join("").length > 300_000);
+    const usage = JSON.parse(stdout.join("").trim().split("\n").at(-1) ?? "").usage;
+    assert.equal(usage.totalTokens, 12);
+    assert.equal(usage.usageStatus, "reported");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage preserves terminal usage from oversized JSON rows", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+    const cases: Array<{
+      agent: "claude" | "cursor" | "opencode" | "pi";
+      binaryName: string;
+      row: Record<string, unknown>;
+      expectedTotalTokens: number;
+      expectedCost?: number;
+    }> = [
+      {
+        agent: "claude",
+        binaryName: "claude",
+        row: {
+          type: "result",
+          total_cost_usd: 0.25,
+          usage: { input_tokens: 10, cache_read_input_tokens: 3, output_tokens: 2 },
+        },
+        expectedTotalTokens: 15,
+        expectedCost: 0.25,
+      },
+      {
+        agent: "cursor",
+        binaryName: "agent",
+        row: {
+          type: "result",
+          usage: { inputTokens: 10, cacheReadTokens: 3, outputTokens: 2 },
+        },
+        expectedTotalTokens: 15,
+      },
+      {
+        agent: "opencode",
+        binaryName: "opencode",
+        row: {
+          type: "step_finish",
+          part: { cost: 0.2, tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 3 } } },
+        },
+        expectedTotalTokens: 16,
+        expectedCost: 0.2,
+      },
+      {
+        agent: "pi",
+        binaryName: "pi",
+        row: {
+          type: "message_end",
+          message: {
+            model: "gpt-test",
+            provider: "openai",
+            usage: { input: 10, cacheRead: 3, output: 2, cost: { total: 0.15 } },
+          },
+        },
+        expectedTotalTokens: 15,
+        expectedCost: 0.15,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+      try {
+        const binDir = join(dir, "bin");
+        await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+          await mkdir(binDir);
+          const binary = join(binDir, testCase.binaryName);
+          await writeFile(
+            binary,
+            [
+              "#!/usr/bin/env node",
+              `const metadata = ${JSON.stringify(testCase.row)};`,
+              "const row = { type: metadata.type, result: 'x'.repeat(300_000), ...metadata };",
+              "process.stdout.write(JSON.stringify(row) + '\\n');",
+              "",
+            ].join("\n"),
+          );
+          await chmod(binary, 0o755);
+        });
+
+        const stdout: string[] = [];
+        const code = await runCli([testCase.agent, "--prompt", "hello", "--json", "--usage"], {
+          env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+          stdout: (text) => stdout.push(text),
+        });
+
+        assert.equal(code, 0);
+        assert.ok(stdout.join("").length > 300_000);
+        const usage = JSON.parse(stdout.join("").trim().split("\n").at(-1) ?? "").usage;
+        assert.equal(usage.totalTokens, testCase.expectedTotalTokens);
+        assert.equal(usage.usageStatus, "reported");
+        if (testCase.expectedCost !== undefined) {
+          assert.equal(usage.cost.total, testCase.expectedCost);
+          assert.equal(usage.costBasis, "native-reported");
+        }
+      } finally {
+        rmSync(dir, { force: true, recursive: true });
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("CLI --json --usage preserves Codex session identity across a large relevant trace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    const home = join(dir, "home");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-large' }));",
+          "for (let index = 0; index < 4_000; index += 1) {",
+          "  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'x'.repeat(100) } }));",
+          "}",
+          "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }));",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const code = await runCli(["codex", "--prompt", "hello", "--session", "work", "--json", "--usage"], {
+      env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: () => {},
+    });
+
+    assert.equal(code, 0);
+    const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
+    assert.equal(store.agents.codex.work.nativeId, "thread-large");
+  } finally {
+    globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
   }
 });
@@ -2446,6 +2902,7 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
         outputTokens: 100,
         reasoningOutputTokens: 0,
         totalTokens: 1100,
+        usageStatus: "reported",
         cost: {
           input: 0.00075,
           cacheRead: 0.00005,
@@ -2453,10 +2910,116 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
           output: 0.001,
           total: 0.0018,
         },
+        costBasis: "api-list-price-estimate",
         pricingSource: "models.dev",
         pricingStatus: "priced",
       },
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage streams raw trace and appends usage without requiring a final message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    const firstRecord = { type: "thread.started", thread_id: "thread-1" };
+    const usageRecord = {
+      type: "turn.completed",
+      usage: { input_tokens: 1000, cached_input_tokens: 400, output_tokens: 100 },
+    };
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          `console.log(${JSON.stringify(JSON.stringify(firstRecord))});`,
+          `setTimeout(() => console.log(${JSON.stringify(JSON.stringify(usageRecord))}), 150);`,
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              "gpt-5": { cost: { input: 1.25, cache_read: 0.125, output: 10 } },
+            },
+          },
+        }),
+      );
+
+    const stdout: string[] = [];
+    let completed = false;
+    const result = runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--json", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    }).finally(() => {
+      completed = true;
+    });
+
+    await waitFor(() => stdout.join("").startsWith(`${JSON.stringify(firstRecord)}\n`) && !completed);
+    assert.equal(completed, false);
+    assert.equal(await result, 0);
+
+    const lines = stdout.join("").trim().split("\n");
+    assert.deepEqual(JSON.parse(lines[0] ?? ""), firstRecord);
+    assert.deepEqual(JSON.parse(lines[1] ?? ""), usageRecord);
+    const usage = JSON.parse(lines[2] ?? "").usage;
+    assert.equal(usage.inputTokens, 600);
+    assert.equal(usage.cacheReadTokens, 400);
+    assert.equal(usage.outputTokens, 100);
+    assert.equal(usage.usageStatus, "reported");
+    assert.equal(usage.cost.total, 0.0018);
+    assert.equal(usage.costBasis, "api-list-price-estimate");
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --json --usage appends partial usage and preserves a nonzero agent status", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }));",
+          "process.exitCode = 7;",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({}));
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 7);
+    const lines = stdout.join("").trim().split("\n");
+    assert.equal(JSON.parse(lines[0] ?? "").type, "turn.completed");
+    const usage = JSON.parse(lines[1] ?? "").usage;
+    assert.equal(usage.totalTokens, 12);
+    assert.equal(usage.usageStatus, "reported");
+    assert.equal(usage.cost, null);
+    assert.equal(usage.costBasis, null);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
@@ -2511,6 +3074,7 @@ test("CLI --usage prices Codex hard default model", async () => {
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
     assert.equal(usage.model, "gpt-5.5");
     assert.equal(usage.pricingStatus, "priced");
+    assert.equal(usage.costBasis, "api-list-price-estimate");
     assert.deepEqual(usage.cost, {
       input: 0.002,
       cacheRead: 0,
@@ -2572,6 +3136,7 @@ test("CLI --usage reports Cursor reasoning model variant", async () => {
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1]).usage;
     assert.equal(usage.model, "gpt-5.5-extra-high");
     assert.equal(usage.pricingStatus, "priced");
+    assert.equal(usage.costBasis, "api-list-price-estimate");
     assert.deepEqual(usage.cost, {
       input: 0.0002,
       cacheRead: 0,
@@ -2652,22 +3217,14 @@ test("CLI --usage reports OpenCode hard default model", async () => {
     assert.equal(usage.provider, "openai");
     assert.equal(usage.model, "gpt-5.4");
     assert.equal(usage.pricingStatus, "native");
+    assert.equal(usage.costBasis, "native-reported");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
 
-test("CLI rejects --usage in raw json and tmux modes", async () => {
+test("CLI rejects --usage in tmux mode", async () => {
   const stderr: string[] = [];
-  assert.equal(
-    await runCli(["codex", "--prompt", "hello", "--usage", "--json"], {
-      stderr: (text) => stderr.push(text),
-    }),
-    2,
-  );
-  assert.match(stderr.join(""), /--usage cannot be used with --json/);
-
-  stderr.length = 0;
   assert.equal(
     await runCli(["codex", "--prompt", "hello", "--usage", "--tmux"], {
       stderr: (text) => stderr.push(text),

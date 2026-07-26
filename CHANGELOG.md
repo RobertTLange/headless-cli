@@ -3,6 +3,9 @@
 ## TBD
 
 - Changed Docker auth seeding for Antigravity to mount only credential and settings files instead of copying its conversation and brain history into each container.
+- Added combined `--json --usage` output for one-shot runs: Headless streams the native trace unchanged, appends normalized usage after the native process exits, and does not require an extractable final assistant message.
+- Clarified accounting provenance with `usageStatus` and `costBasis`: missing usage stays unknown instead of becoming a priced zero, and native-reported costs are distinguished from API list-price estimates calculated from token counts and `models.dev` pricing.
+- Thanks to Anant Garg (@anantgar) for contributing combined JSON traces with usage accounting.
 
 ## 0.4.0 - 2026-06-18
 
