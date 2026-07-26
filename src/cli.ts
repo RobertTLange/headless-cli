@@ -3732,7 +3732,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.runId && parsed.role && coordination === "oneshot") {
       sessionAlias = undefined;
     }
-    const dockerSessionHome = parsed.docker && sessionAlias
+    let dockerSessionHome = parsed.docker && sessionAlias
       ? dockerSessionHomePath(parsed.agent, sessionAlias, env)
       : undefined;
     if (parsed.docker && sessionAlias && !dockerSessionHome) {
@@ -3740,7 +3740,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (dockerSessionHome) {
       validateDockerSessionEnv(parsed.agent, parsed.dockerEnv);
-      ensureDockerSessionHome(dockerSessionHome);
+      dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
     }
     dockerSessionLock = dockerSessionHome ? await acquireDockerSessionLock(dockerSessionHome) : undefined;
     const sessionEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;

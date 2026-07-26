@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +9,7 @@ import {
   buildDockerAgentCommand,
   dockerSessionHomePath,
   dockerSessionNativeId,
+  ensureDockerSessionHome,
   DEFAULT_DOCKER_IMAGE,
   readDockerCursorSessionId,
 } from "../src/docker.ts";
@@ -358,6 +360,148 @@ test("requires an absolute configured Docker session root", () => {
       HOME: "/home/test",
     }),
     "/var/lib/headless-sessions/codex/work",
+  );
+});
+
+test("maps Pi transcripts stored through a former symlinked Docker root", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const targetHome = join(dir, "target", "sessions", "pi", "work");
+    const linkedRoot = join(dir, "current");
+    const transcriptSuffix = join(".pi", "agent", "sessions", "turn.jsonl");
+    mkdirSync(join(targetHome, ".pi", "agent", "sessions"), { recursive: true });
+    writeFileSync(join(targetHome, transcriptSuffix), "{}\n");
+    symlinkSync(join(dir, "target"), linkedRoot);
+
+    assert.equal(
+      dockerSessionNativeId("pi", join(linkedRoot, "sessions", "pi", "work", transcriptSuffix), realpathSync(targetHome)),
+      `/headless-home/${transcriptSuffix}`,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("rejects symlinked Docker session path components", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const root = join(dir, "sessions");
+    const external = join(dir, "external");
+    mkdirSync(join(root, "codex"), { recursive: true });
+    mkdirSync(external);
+    symlinkSync(external, join(root, "codex", "work"));
+
+    assert.throws(
+      () => ensureDockerSessionHome(join(root, "codex", "work")),
+      /symbolic link/,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("enforces private permissions on existing Docker session directories", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const root = join(dir, "sessions");
+    const agentDir = join(root, "codex");
+    const sessionHome = join(agentDir, "work");
+    mkdirSync(sessionHome, { recursive: true });
+    chmodSync(root, 0o755);
+    chmodSync(agentDir, 0o755);
+    chmodSync(sessionHome, 0o755);
+
+    ensureDockerSessionHome(sessionHome);
+
+    assert.equal(statSync(root).mode & 0o777, 0o755);
+    for (const path of [agentDir, sessionHome]) {
+      assert.equal(statSync(path).mode & 0o777, 0o700);
+    }
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("rejects an unsafe existing Docker session root without mutating it", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const root = join(dir, "sessions");
+    mkdirSync(root);
+    chmodSync(root, 0o777);
+
+    assert.throws(
+      () => ensureDockerSessionHome(join(root, "codex", "work")),
+      /root must not be group- or world-writable/,
+    );
+    assert.equal(statSync(root).mode & 0o777, 0o777);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("rejects Docker session roots below writable non-sticky parents", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const unsafeParent = join(dir, "shared");
+    const root = join(unsafeParent, "sessions");
+    mkdirSync(root, { recursive: true });
+    chmodSync(unsafeParent, 0o777);
+
+    assert.throws(
+      () => ensureDockerSessionHome(join(root, "codex", "work")),
+      /root ancestor is writable by other users/,
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("returns a canonical Docker session home despite ancestor symlink changes", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const firstTarget = join(dir, "first");
+    const secondTarget = join(dir, "second");
+    const linkedRoot = join(dir, "current");
+    mkdirSync(firstTarget);
+    mkdirSync(secondTarget);
+    symlinkSync(firstTarget, linkedRoot);
+
+    const sessionHome = ensureDockerSessionHome(join(linkedRoot, "sessions", "codex", "work"));
+    unlinkSync(linkedRoot);
+    symlinkSync(secondTarget, linkedRoot);
+
+    assert.equal(sessionHome, realpathSync(join(firstTarget, "sessions", "codex", "work")));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("rejects permissive macOS ACLs on Docker session roots", { skip: process.platform !== "darwin" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const root = join(dir, "sessions");
+    mkdirSync(root);
+    const acl = spawnSync(
+      "/bin/chmod",
+      ["+a", "everyone allow list,search,add_file,add_subdirectory,delete_child", root],
+      { encoding: "utf8" },
+    );
+    assert.equal(acl.status, 0, acl.stderr);
+
+    assert.throws(
+      () => ensureDockerSessionHome(join(root, "codex", "work")),
+      /permissive access ACL/,
+    );
+    assert.equal(existsSync(join(root, "codex")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("rejects durable Docker session homes on Windows", { skip: process.platform !== "win32" }, () => {
+  assert.throws(
+    () => ensureDockerSessionHome("C:\\headless-sessions\\codex\\work"),
+    /not supported on Windows/,
   );
 });
 

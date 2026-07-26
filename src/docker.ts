@@ -2,6 +2,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -10,7 +11,8 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
 import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
@@ -68,8 +70,150 @@ export function dockerSessionHomePath(agent: AgentName, alias: string, env: Env)
   return root ? resolve(root, agent, alias) : undefined;
 }
 
-export function ensureDockerSessionHome(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
+export function ensureDockerSessionHome(path: string): string {
+  if (process.platform === "win32") {
+    throw new Error(
+      "durable Docker sessions are not supported on Windows because private directory ACLs cannot be validated",
+    );
+  }
+  const sessionHome = resolve(path);
+  const agentRoot = dirname(sessionHome);
+  const sessionRoot = dirname(agentRoot);
+  if (dirname(sessionRoot) === sessionRoot) {
+    throw new Error("Docker session root cannot be the filesystem root");
+  }
+  let realSessionRoot = ensureDockerSessionRoot(sessionRoot);
+  assertTrustedDirectoryAncestors(dirname(realSessionRoot));
+  realSessionRoot = validateOwnedDirectory(realSessionRoot, false, true);
+  const realAgentRoot = ensurePrivateOwnedDirectory(join(realSessionRoot, basename(agentRoot)));
+  const realSessionHome = ensurePrivateOwnedDirectory(join(realAgentRoot, basename(sessionHome)));
+  const relativeHome = relative(realSessionRoot, realSessionHome);
+  if (!isContainedRelativePath(relativeHome)) {
+    throw new Error("Docker session home escapes its configured root");
+  }
+  return realSessionHome;
+}
+
+function ensureDockerSessionRoot(path: string): string {
+  const created = mkdirSync(path, { recursive: true, mode: 0o700 }) !== undefined;
+  return validateOwnedDirectory(path, created, false);
+}
+
+function ensurePrivateOwnedDirectory(path: string): string {
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  return validateOwnedDirectory(path, true, true);
+}
+
+function validateOwnedDirectory(path: string, hardenPermissions: boolean, validateAcl: boolean): string {
+  const pathStats = lstatSync(path);
+  if (pathStats.isSymbolicLink()) {
+    throw new Error(`Docker session path contains a symbolic link: ${path}`);
+  }
+  if (!pathStats.isDirectory()) {
+    throw new Error(`Docker session path is not a directory: ${path}`);
+  }
+  assertCurrentUserOwnsDirectory(path, pathStats.uid);
+
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const descriptorStats = fstatSync(descriptor);
+    assertCurrentUserOwnsDirectory(path, descriptorStats.uid);
+    if (descriptorStats.dev !== pathStats.dev || descriptorStats.ino !== pathStats.ino) {
+      throw new Error(`Docker session path changed while validating: ${path}`);
+    }
+    if (!hardenPermissions && (descriptorStats.mode & 0o022) !== 0) {
+      throw new Error(`Docker session root must not be group- or world-writable: ${path}`);
+    }
+    if (hardenPermissions) {
+      fchmodSync(descriptor, 0o700);
+    }
+    assertDirectoryIdentity(path, descriptorStats);
+    const realPath = realpathSync(path);
+    assertDirectoryIdentity(realPath, descriptorStats);
+    if (validateAcl) {
+      assertNoUnsafeMacAcl(realPath);
+      assertDirectoryIdentity(realPath, descriptorStats);
+    }
+    return realPath;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function assertTrustedDirectoryAncestors(path: string): void {
+  const currentUserId = process.getuid?.();
+  let currentPath = realpathSync(path);
+  const ancestors: string[] = [];
+  while (true) {
+    ancestors.push(currentPath);
+    const parentPath = dirname(currentPath);
+    if (parentPath === currentPath) break;
+    currentPath = parentPath;
+  }
+  for (const ancestor of ancestors.reverse()) {
+    const pathStats = lstatSync(ancestor);
+    const descriptor = openSync(ancestor, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const stats = fstatSync(descriptor);
+      if (
+        !pathStats.isDirectory() ||
+        stats.dev !== pathStats.dev ||
+        stats.ino !== pathStats.ino
+      ) {
+        throw new Error(`Docker session root ancestor changed while validating: ${ancestor}`);
+      }
+      if (currentUserId !== undefined && stats.uid !== currentUserId && stats.uid !== 0) {
+        throw new Error(`Docker session root ancestor is owned by an untrusted user: ${ancestor}`);
+      }
+      const writableByOthers = (stats.mode & 0o022) !== 0;
+      const sticky = (stats.mode & 0o1000) !== 0;
+      if (writableByOthers && !sticky) {
+        throw new Error(`Docker session root ancestor is writable by other users: ${ancestor}`);
+      }
+      assertNoUnsafeMacAcl(ancestor);
+      assertDirectoryIdentity(ancestor, stats);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+}
+
+function assertDirectoryIdentity(path: string, expected: ReturnType<typeof fstatSync>): void {
+  const stats = lstatSync(path);
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    stats.dev !== expected.dev ||
+    stats.ino !== expected.ino
+  ) {
+    throw new Error(`Docker session path changed while validating: ${path}`);
+  }
+}
+
+function assertNoUnsafeMacAcl(path: string): void {
+  if (process.platform !== "darwin") return;
+  const result = spawnSync("/bin/ls", ["-lde", "--", path], {
+    encoding: "utf8",
+    env: { LC_ALL: "C" },
+    maxBuffer: 64 * 1024,
+    timeout: 2_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`could not validate Docker session path ACL: ${path}`);
+  }
+  if (/^\s*\d+:.*\ballow\b/im.test(result.stdout)) {
+    throw new Error(`Docker session path has a permissive access ACL: ${path}`);
+  }
+}
+
+function assertCurrentUserOwnsDirectory(path: string, ownerId: number): void {
+  if (typeof process.getuid === "function" && ownerId !== process.getuid()) {
+    throw new Error(`Docker session path is not owned by the current user: ${path}`);
+  }
 }
 
 export function dockerSessionAgentHomeEnvNames(agent: AgentName): readonly string[] {
@@ -100,7 +244,13 @@ export function dockerSessionNativeId(agent: AgentName, nativeId: string | undef
   if (!nativeId || agent !== "pi") {
     return nativeId;
   }
-  const relativePath = relative(resolve(persistentHome), resolve(nativeId));
+  let resolvedNativeId = resolve(nativeId);
+  try {
+    resolvedNativeId = realpathSync(resolvedNativeId);
+  } catch {
+    // Retain the original value when a previously stored transcript no longer exists.
+  }
+  const relativePath = relative(resolve(persistentHome), resolvedNativeId);
   if (!isContainedRelativePath(relativePath)) {
     return nativeId;
   }
