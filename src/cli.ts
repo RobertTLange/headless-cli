@@ -1319,23 +1319,44 @@ async function discoverNativeSessionId(
   }
   if (agent === "gemini") {
     if (dockerSession) {
-      return resolveLatestNativeTranscript("gemini", cwd, env, startedAt ? { startedAt } : {})?.sessionId ?? "";
+      return resolveLatestNativeTranscript(
+        "gemini",
+        cwd,
+        env,
+        startedAt ? { startedAt } : {},
+        { dockerSessionRoot: env.HOME },
+      )?.sessionId ?? "";
     }
     return await newestGeminiSessionId(cwd, env);
   }
   if (agent === "antigravity") {
-    return newestAntigravitySessionId(cwd, env, startedAt);
+    return newestAntigravitySessionId(cwd, env, startedAt, dockerSession);
   }
   if (agent === "cursor" && dockerSession) {
     return env.HOME ? readDockerCursorSessionId(env.HOME) : "";
   }
   if (agent === "opencode") {
     if (dockerSession) {
-      return resolveLatestNativeTranscript("opencode", cwd, env, startedAt ? { startedAt } : {})?.sessionId ?? "";
+      return resolveLatestNativeTranscript(
+        "opencode",
+        cwd,
+        env,
+        startedAt ? { startedAt } : {},
+        { dockerSessionRoot: env.HOME },
+      )?.sessionId ?? "";
     }
     return await newestOpenCodeSessionId(cwd, env);
   }
   if (agent === "pi") {
+    if (dockerSession) {
+      return resolveLatestNativeTranscript(
+        "pi",
+        cwd,
+        env,
+        startedAt ? { startedAt } : {},
+        { dockerSessionRoot: env.HOME },
+      )?.path ?? "";
+    }
     return newestPiSessionFile(cwd, env);
   }
   return "";
@@ -1354,8 +1375,19 @@ async function newestGeminiSessionId(cwd: string | undefined, env: Env): Promise
   return matches.at(-1)?.[1] ?? "";
 }
 
-function newestAntigravitySessionId(cwd: string | undefined, env: Env, startedAt: string | undefined): string {
-  return resolveLatestNativeTranscript("antigravity", cwd ?? process.cwd(), env, startedAt ? { startedAt } : {})?.sessionId ?? "";
+function newestAntigravitySessionId(
+  cwd: string | undefined,
+  env: Env,
+  startedAt: string | undefined,
+  dockerSession: boolean,
+): string {
+  return resolveLatestNativeTranscript(
+    "antigravity",
+    cwd ?? process.cwd(),
+    env,
+    startedAt ? { startedAt } : {},
+    dockerSession ? { dockerSessionRoot: env.HOME } : {},
+  )?.sessionId ?? "";
 }
 
 async function newestOpenCodeSessionId(cwd: string | undefined, env: Env): Promise<string> {

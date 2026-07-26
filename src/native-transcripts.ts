@@ -1,7 +1,13 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import {
+  assertSafeDockerAntigravityState,
+  assertSafeDockerFile,
+  assertSafeDockerOpenCodeDatabase,
+  assertSafeDockerTree,
+} from "./docker-transcript-safety.js";
 import { extractFinalMessage } from "./output.js";
 import type { NativeTranscript } from "./runs.js";
 import type { AgentName, Env } from "./types.js";
@@ -16,6 +22,7 @@ export interface NativeAssistantCompletion {
 
 interface ResolveLatestOptions {
   antigravityScope?: "workspace" | "all";
+  dockerSessionRoot?: string;
 }
 
 export function resolveNativeTranscript(
@@ -95,8 +102,9 @@ export function resolveLatestNativeTranscript(
   workDir: string | undefined,
   env: Env,
   partial: Partial<NativeTranscript> = {},
+  options: ResolveLatestOptions = {},
 ): NativeTranscript | undefined {
-  return resolveLatestNativeTranscripts(agent, workDir, env, partial, 1)[0];
+  return resolveLatestNativeTranscripts(agent, workDir, env, partial, 1, options)[0];
 }
 
 export function resolveLatestNativeTranscripts(
@@ -110,22 +118,22 @@ export function resolveLatestNativeTranscripts(
   const workspace = realWorkspace(workDir);
   if (!workspace) return [];
   if (agent === "opencode") {
-    return latestOpenCodeTranscripts(workspace, workDir, env, partial, limit);
+    return latestOpenCodeTranscripts(workspace, workDir, env, partial, limit, options.dockerSessionRoot);
   }
 
   const paths =
     agent === "claude"
       ? latestFiles(claudeProjectRoot(workspace, env), partial)
       : agent === "antigravity"
-        ? latestAntigravityTranscripts(workspace, workDir, env, partial, options.antigravityScope ?? "workspace")
+        ? latestAntigravityTranscripts(workspace, workDir, env, partial, options.antigravityScope ?? "workspace", options.dockerSessionRoot)
       : agent === "codex"
         ? latestWorkspaceFiles(codexSessionsRoot(env), workspace, workDir, partial)
         : agent === "cursor"
           ? latestFiles(cursorTranscriptsRoot(workspace, env), partial)
           : agent === "gemini"
-            ? latestGeminiTranscripts(workspace, env, partial)
+            ? latestGeminiTranscripts(workspace, env, partial, options.dockerSessionRoot)
             : agent === "pi"
-              ? latestFiles(piProjectRoot(workspace, env), partial)
+              ? latestPiTranscripts(workspace, env, partial, options.dockerSessionRoot)
               : [];
   return paths.slice(0, Math.max(0, limit)).map((path) => ({
     kind: "jsonl",
@@ -280,14 +288,15 @@ function piProjectRoot(workspace: string, env: Env): string | undefined {
   return root ? join(root, "sessions", piProjectKey(workspace)) : undefined;
 }
 
-function geminiProjectSlot(root: string, workspace: string): string {
+function geminiProjectSlot(root: string, workspace: string, dockerSession = false): string {
   const projectsPath = join(root, "projects.json");
   if (!existsSync(projectsPath)) return "";
   try {
     const config = JSON.parse(readFileSync(projectsPath, "utf8")) as Record<string, unknown>;
     const projects = isRecord(config.projects) ? config.projects : config;
     const direct = projects[workspace];
-    if (typeof direct === "string") return direct;
+    if (typeof direct === "string") return dockerSession ? safePathSegment(direct) : direct;
+    if (dockerSession) return "";
     for (const [key, value] of Object.entries(projects)) {
       if (realWorkspace(key) === workspace && typeof value === "string") return value;
     }
@@ -295,6 +304,10 @@ function geminiProjectSlot(root: string, workspace: string): string {
     return "";
   }
   return "";
+}
+
+function safePathSegment(value: string): string {
+  return value !== "." && value !== ".." && /^[A-Za-z0-9._-]+$/.test(value) ? value : "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -326,11 +339,19 @@ function latestGeminiTranscripts(
   workspace: string,
   env: Env,
   partial: Partial<NativeTranscript>,
+  dockerSessionRoot?: string,
 ): string[] {
   const root = env.GEMINI_HOME ?? (env.HOME ? join(env.HOME, ".gemini") : undefined);
   if (!root) return [];
-  const projectSlot = geminiProjectSlot(root, workspace);
-  return projectSlot ? latestFiles(join(root, "tmp", projectSlot, "chats"), partial) : [];
+  if (dockerSessionRoot && root) {
+    assertSafeDockerFile(dockerSessionRoot, join(root, "projects.json"), 1024 * 1024);
+  }
+  const projectSlot = geminiProjectSlot(root, workspace, Boolean(dockerSessionRoot));
+  const chatsRoot = projectSlot ? join(root, "tmp", projectSlot, "chats") : undefined;
+  if (dockerSessionRoot && chatsRoot) {
+    assertSafeDockerTree(dockerSessionRoot, chatsRoot);
+  }
+  return chatsRoot ? latestFiles(chatsRoot, partial) : [];
 }
 
 function latestAntigravityTranscripts(
@@ -339,10 +360,14 @@ function latestAntigravityTranscripts(
   env: Env,
   partial: Partial<NativeTranscript>,
   scope: "workspace" | "all",
+  dockerSessionRoot?: string,
 ): string[] {
   const root = antigravityRoot(env);
   const brainRoot = root ? join(root, "brain") : undefined;
   if (!brainRoot || !existsSync(brainRoot)) return [];
+  if (dockerSessionRoot && root) {
+    assertSafeDockerAntigravityState(dockerSessionRoot, root, brainRoot);
+  }
   const startedAtMs = partial.startedAt ? Date.parse(partial.startedAt) : Number.NaN;
   const candidates = readdirSync(brainRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
@@ -359,16 +384,22 @@ function latestAntigravityTranscripts(
     .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs || right.localeCompare(left));
   if (scope === "all") return candidates;
   const needles = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
-  const mappedIds = antigravityConversationIdsForWorkspace(root, needles);
+  const dockerSession = Boolean(dockerSessionRoot);
+  const mappedIds = antigravityConversationIdsForWorkspace(root, needles, dockerSession);
+  const statuses = new Map(candidates.map((path) => [path, fileWorkspaceCwdStatus(path, needles, dockerSession)]));
   const mapped = candidates.filter((path) => {
     const nativeId = nativeIdFromPath("antigravity", path);
-    return Boolean(nativeId && mappedIds.includes(nativeId) && fileWorkspaceCwdStatus(path, needles) !== "mismatch");
+    return Boolean(nativeId && mappedIds.includes(nativeId) && statuses.get(path) !== "mismatch");
   });
-  const fromTranscript = candidates.filter((path) => fileWorkspaceCwdStatus(path, needles) === "match");
+  const fromTranscript = candidates.filter((path) => statuses.get(path) === "match");
   return uniqueStrings([...mapped, ...fromTranscript]);
 }
 
-function antigravityConversationIdsForWorkspace(root: string | undefined, needles: string[]): string[] {
+function antigravityConversationIdsForWorkspace(
+  root: string | undefined,
+  needles: string[],
+  dockerSession: boolean,
+): string[] {
   if (!root) return [];
   const cachePath = join(root, "cache", "last_conversations.json");
   try {
@@ -377,6 +408,7 @@ function antigravityConversationIdsForWorkspace(root: string | undefined, needle
       Object.entries(values)
         .filter(([key]) => {
           if (needles.includes(key)) return true;
+          if (dockerSession) return false;
           const realKey = realWorkspace(key);
           return Boolean(realKey && needles.includes(realKey));
         })
@@ -394,16 +426,23 @@ function latestOpenCodeTranscripts(
   env: Env,
   partial: Partial<NativeTranscript>,
   limit: number,
+  dockerSessionRoot?: string,
 ): NativeTranscript[] {
   const path = opencodeDatabasePath(env);
   if (!path || !existsSync(path)) return [];
+  let databasePath = path;
+  if (dockerSessionRoot) {
+    assertSafeDockerOpenCodeDatabase(dockerSessionRoot, path);
+    databasePath = realpathSync(path);
+  }
   const directories = uniqueStrings([workspace, workDir].filter((value): value is string => Boolean(value)));
   const startedAtMs = partial.startedAt ? Date.parse(partial.startedAt) : Number.NaN;
   const whereDirectory = directories.map((directory) => `'${directory.replaceAll("'", "''")}'`).join(", ");
   const sqlite = spawnSync(
     "sqlite3",
     [
-      path,
+      ...(dockerSessionRoot ? ["-batch", "-nofollow", "-readonly", "-safe"] : []),
+      databasePath,
       [
         "select id",
         "from session",
@@ -413,10 +452,34 @@ function latestOpenCodeTranscripts(
         `limit ${Math.max(0, limit)};`,
       ].join("\n"),
     ],
-    { encoding: "utf8" },
+    {
+      encoding: "utf8",
+      ...(dockerSessionRoot ? { maxBuffer: 1024 * 1024, timeout: 5_000 } : {}),
+    },
   );
-  const sessionIds = sqlite.status === 0 ? sqlite.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
-  return sessionIds.map((sessionId) => ({ kind: "sqlite", path, sessionId, ...partial }));
+  const sessionIds = sqlite.status === 0
+    ? sqlite.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(
+        (sessionId) =>
+          Boolean(sessionId) && (!dockerSessionRoot || /^[A-Za-z0-9_.:-]{1,256}$/.test(sessionId)),
+      )
+    : [];
+  return sessionIds.map((sessionId) => ({ kind: "sqlite", path: databasePath, sessionId, ...partial }));
+}
+
+function latestPiTranscripts(
+  workspace: string,
+  env: Env,
+  partial: Partial<NativeTranscript>,
+  dockerSessionRoot?: string,
+): string[] {
+  const root = piProjectRoot(workspace, env);
+  if (dockerSessionRoot && root) {
+    assertSafeDockerTree(dockerSessionRoot, root);
+  }
+  return latestFiles(root, partial);
 }
 
 // Resolve the opencode session whose `title` equals a caller-assigned unique
@@ -503,15 +566,21 @@ function fileHasWorkspaceCwd(path: string, needles: string[]): boolean {
   return fileWorkspaceCwdStatus(path, needles) === "match";
 }
 
-function fileWorkspaceCwdStatus(path: string, needles: string[]): "match" | "mismatch" | "unknown" {
+function fileWorkspaceCwdStatus(
+  path: string,
+  needles: string[],
+  dockerSession = false,
+): "match" | "mismatch" | "unknown" {
   let sawCwd = false;
   try {
-    for (const line of readFileSync(path, "utf8").split(/\r?\n/).slice(0, 40)) {
+    const contents = dockerSession ? readFilePrefix(path, 64 * 1024) : readFileSync(path, "utf8");
+    for (const line of contents.split(/\r?\n/).slice(0, 40)) {
       if (!line.trim()) continue;
       const record = JSON.parse(line) as Record<string, unknown>;
       const cwd = cwdFromRecord(record);
       if (cwd) sawCwd = true;
       if (cwd && needles.includes(cwd)) return "match";
+      if (dockerSession) continue;
       const realCwd = realWorkspace(cwd);
       if (realCwd && needles.includes(realCwd)) return "match";
     }
@@ -519,6 +588,17 @@ function fileWorkspaceCwdStatus(path: string, needles: string[]): "match" | "mis
     return "unknown";
   }
   return sawCwd ? "mismatch" : "unknown";
+}
+
+function readFilePrefix(path: string, maxBytes: number): string {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const bytesRead = readSync(descriptor, buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function cwdFromRecord(record: Record<string, unknown>): string {
