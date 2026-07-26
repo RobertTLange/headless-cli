@@ -189,6 +189,26 @@ test("Antigravity usage capture ignores empty preferred profile roots", () => {
   }
 });
 
+test("Antigravity usage capture preserves whitespace in non-empty profile roots", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-spaced-profile-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(dir, "profile ");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "settings.json"), "{}\n");
+
+    const capture = prepareAntigravityUsageCapture({ HOME: home, ANTIGRAVITY_HOME: appDir });
+    assert.ok(capture);
+    assert.equal(
+      realpathSync(join(capture.commandEnv.ANTIGRAVITY_HOME ?? "", "brain")),
+      realpathSync(join(appDir, "brain")),
+    );
+    capture.cleanup();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("Antigravity usage capture preserves the original status command environment and exit code", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-status-command-test-"));
   try {

@@ -127,6 +127,10 @@ function readSettings(path: string): AntigravitySettings {
   return value as AntigravitySettings;
 }
 
+function nonEmptyPath(value: string | undefined): string | undefined {
+  return value?.trim() ? value : undefined;
+}
+
 export function prepareAntigravityUsageCapture(env: Env, cwd?: string): AntigravityUsageCapture | undefined {
   if (process.platform === "win32") return undefined;
   if (!env.HOME) return undefined;
@@ -134,7 +138,7 @@ export function prepareAntigravityUsageCapture(env: Env, cwd?: string): Antigrav
   const realHome = resolve(baseDir, env.HOME);
 
   const realGeminiDir = join(realHome, ".gemini");
-  const configuredAppDir = env.ANTIGRAVITY_HOME?.trim() || env.AGY_HOME?.trim() || undefined;
+  const configuredAppDir = nonEmptyPath(env.ANTIGRAVITY_HOME) ?? nonEmptyPath(env.AGY_HOME);
   const realAppDir = resolve(baseDir, configuredAppDir ?? join(realGeminiDir, "antigravity-cli"));
   if (!existsSync(realAppDir)) return undefined;
 
