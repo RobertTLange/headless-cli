@@ -3152,7 +3152,8 @@ test("CLI cleans the Antigravity usage overlay when the parent receives SIGTERM"
       encoding: "utf8",
       env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
     });
-    assert.equal(child.status, 143, child.stderr);
+    assert.equal(child.signal, "SIGTERM", child.stderr);
+    assert.equal(child.status, null, child.stderr);
     assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
   } finally {
     rmSync(dir, { force: true, recursive: true });

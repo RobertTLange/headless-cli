@@ -160,6 +160,31 @@ export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCaptur
       { mode: 0o600 },
     );
 
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      process.off("exit", cleanup);
+      process.off("SIGINT", onInterrupt);
+      process.off("SIGTERM", onTerminate);
+      try {
+        rmSync(root, { force: true, recursive: true });
+      } catch {
+        // Cleanup failure must not replace the agent's result.
+      }
+    };
+    const onInterrupt = () => {
+      cleanup();
+      process.kill(process.pid, "SIGINT");
+    };
+    const onTerminate = () => {
+      cleanup();
+      process.kill(process.pid, "SIGTERM");
+    };
+    process.on("exit", cleanup);
+    process.once("SIGINT", onInterrupt);
+    process.once("SIGTERM", onTerminate);
+
     return {
       commandEnv: {
         HOME: overlayHome,
@@ -173,13 +198,7 @@ export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCaptur
           return "";
         }
       },
-      cleanup: () => {
-        try {
-          rmSync(root, { force: true, recursive: true });
-        } catch {
-          // Cleanup failure must not replace the agent's result.
-        }
-      },
+      cleanup,
     };
   } catch (error) {
     rmSync(root, { force: true, recursive: true });
