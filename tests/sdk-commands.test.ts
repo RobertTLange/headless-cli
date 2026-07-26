@@ -151,6 +151,25 @@ test("SDK cron list and view return persisted job records", async () => {
   }
 });
 
+test("SDK cron view preserves safe actionable errors", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-sdk-cron-error-test-"));
+  try {
+    const stdout: string[] = [];
+
+    const code = await runCli(["cron", "view", "missing", "--sdk-format", "json"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 2);
+    const envelope = parseEnvelope(stdout.join(""));
+    assert.equal(envelope.command, "cron.view");
+    assert.equal(envelope.error?.message, "unknown cron job: missing");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("SDK check output exposes agent and Docker checks without terminal tables", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-sdk-check-test-"));
   try {
@@ -219,6 +238,36 @@ test("SDK session list returns structured tmux session details", async () => {
     assert.deepEqual(sessions.map(({ name, agent }) => ({ name, agent })), [
       { name: "headless-codex-review", agent: "codex" },
     ]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("SDK session list errors do not expose tmux stderr", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-sdk-session-error-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    await writeExecutable(
+      join(binDir, "tmux"),
+      [
+        "#!/bin/sh",
+        "printf 'sentinel-private-socket\\n' >&2",
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    const stdout: string[] = [];
+
+    const code = await runCli(["--list", "--sdk-format", "json"], {
+      env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 2);
+    const message = parseEnvelope(stdout.join("")).error?.message;
+    assert.equal(message, "could not list tmux sessions");
+    assert.doesNotMatch(message, /sentinel-private-socket/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -83,7 +83,7 @@ test("SDK capabilities report the supported protocol and command families", asyn
   ]);
 });
 
-test("SDK operation errors identify the requested command", async () => {
+test("SDK operation errors preserve safe actionable messages", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-sdk-error-test-"));
   try {
     const stdout: string[] = [];
@@ -94,7 +94,9 @@ test("SDK operation errors identify the requested command", async () => {
     });
 
     assert.equal(code, 2);
-    assert.equal(parseEnvelope(stdout.join("")).command, "runs.view");
+    const envelope = parseEnvelope(stdout.join(""));
+    assert.equal(envelope.command, "runs.view");
+    assert.equal(envelope.error?.message, "unknown run: missing");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -118,6 +120,85 @@ test("SDK validation failures use an error envelope", async () => {
     exitCode: 2,
     error: { message: "--json cannot be used with --sdk-format" },
   });
+});
+
+test("SDK validation errors do not expose forwarded environment values", async () => {
+  const stdout: string[] = [];
+  const secret = "BAD-NAME=sentinel-secret";
+
+  const code = await runCli(
+    ["codex", "--docker", "--docker-env", secret, "--sdk-format", "json"],
+    {
+      stdout: (text) => stdout.push(text),
+    },
+  );
+
+  assert.equal(code, 2);
+  const message = parseEnvelope(stdout.join("")).error?.message;
+  assert.equal(message, "invalid docker env");
+  assert.doesNotMatch(message, /sentinel-secret/);
+});
+
+test("SDK validation errors do not expose filesystem paths", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-sdk-sensitive-path-test-"));
+  try {
+    const stdout: string[] = [];
+    const missingPath = join(dir, "sentinel-private-path");
+
+    const code = await runCli(
+      ["codex", "--work-dir", missingPath, "--sdk-format", "json"],
+      {
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    assert.equal(code, 2);
+    const message = parseEnvelope(stdout.join("")).error?.message;
+    assert.equal(message, "work dir not found");
+    assert.doesNotMatch(message, /sentinel-private-path/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("SDK errors do not expose malformed configuration contents", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-sdk-sensitive-config-test-"));
+  try {
+    const home = join(dir, "home");
+    const configDir = join(home, ".headless");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.toml"), "[sentinel-private-config]\n");
+    const stdout: string[] = [];
+
+    const code = await runCli(["codex", "--show-config", "--sdk-format", "json"], {
+      env: { ...process.env, HOME: home },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 2);
+    const message = parseEnvelope(stdout.join("")).error?.message;
+    assert.equal(message, "headless command failed");
+    assert.doesNotMatch(message, /sentinel-private-config/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("SDK validation errors preserve safe actionable messages", async () => {
+  const stdout: string[] = [];
+
+  const code = await runCli(
+    ["run", "view", "..", "--sdk-format", "json"],
+    {
+      stdout: (text) => stdout.push(text),
+    },
+  );
+
+  assert.equal(code, 2);
+  assert.equal(
+    parseEnvelope(stdout.join("")).error?.message,
+    "invalid run; use letters, numbers, dots, dashes, or underscores",
+  );
 });
 
 test("SDK invalid format requests still return machine-readable errors", async () => {

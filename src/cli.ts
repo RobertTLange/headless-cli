@@ -231,10 +231,26 @@ interface CliDeps {
 }
 
 class CliError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly sdkMessage = message,
+  ) {
     super(message);
     this.name = "CliError";
   }
+}
+
+function toCliError(error: unknown): CliError {
+  return error instanceof CliError
+    ? error
+    : new CliError(
+        errorMessage(error),
+        "headless command failed",
+      );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function usage(): string {
@@ -791,14 +807,14 @@ function parseModalEnv(value: string): string {
 function parseForwardedEnv(value: string, label: string): string {
   const name = value.includes("=") ? value.slice(0, value.indexOf("=")) : value;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    throw new CliError(`invalid ${label} env: ${value}`);
+    throw new CliError(`invalid ${label} env: ${value}`, `invalid ${label} env`);
   }
   return value;
 }
 
 function parseModalSecret(value: string): string {
   if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
-    throw new CliError(`invalid modal secret: ${value}`);
+    throw new CliError(`invalid modal secret: ${value}`, "invalid modal secret");
   }
   return value;
 }
@@ -1010,7 +1026,7 @@ async function resolvePrompt(
 
   if (parsed.promptFile) {
     if (!existsSync(parsed.promptFile) || !statSync(parsed.promptFile).isFile()) {
-      throw new CliError(`prompt file not found: ${parsed.promptFile}`);
+      throw new CliError(`prompt file not found: ${parsed.promptFile}`, "prompt file not found");
     }
     if (parsed.agent && !options.forceText && getAgentHarness(parsed.agent).promptFileMode === "stdin") {
       return { prompt: "", promptFile: parsed.promptFile };
@@ -1035,7 +1051,7 @@ function validateWorkDir(workDir: string | undefined): string | undefined {
     return undefined;
   }
   if (!existsSync(workDir) || !statSync(workDir).isDirectory()) {
-    throw new CliError(`work dir not found: ${workDir}`);
+    throw new CliError(`work dir not found: ${workDir}`, "work dir not found");
   }
   return workDir;
 }
@@ -2368,7 +2384,10 @@ async function listHeadlessTmuxSessionDetails(
     if (result.stderr.includes("no server running")) {
       return [];
     }
-    throw new CliError(result.stderr.trim() || "could not list tmux sessions");
+    throw new CliError(
+      result.stderr.trim() || "could not list tmux sessions",
+      "could not list tmux sessions",
+    );
   }
 
   const waitingAfterMs = parseWaitingAfterMs(env, configuredWaitingAfterMs);
@@ -2709,7 +2728,10 @@ async function mintCursorSessionId(cwd: string | undefined, env: Env): Promise<s
   const command = { command: env.CURSOR_CLI_BIN || "agent", args: ["create-chat"] };
   const result = await captureSimpleCommand(command, cwd, env);
   if (result.code !== 0) {
-    throw new CliError(result.stderr.trim() || "could not create Cursor session");
+    throw new CliError(
+      result.stderr.trim() || "could not create Cursor session",
+      "could not create Cursor session",
+    );
   }
   const nativeId = result.stdout.trim();
   if (!nativeId) {
@@ -3205,7 +3227,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     try {
       config = loadHeadlessConfig(env);
     } catch (error) {
-      throw new CliError(error instanceof Error ? error.message : String(error));
+      throw toCliError(error);
     }
     if (parsed.cronCommand) {
       if (parsed.sdkFormat && parsed.cronCommand !== "list" && parsed.cronCommand !== "view") {
@@ -3250,7 +3272,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           { env, stdout, stderr },
         );
       } catch (error) {
-        throw new CliError(error instanceof Error ? error.message : String(error));
+        const message = errorMessage(error);
+        if (
+          parsed.sdkFormat &&
+          parsed.cronCommand === "view" &&
+          message === `unknown cron job: ${parsed.cronJobId}`
+        ) {
+          throw new CliError(message);
+        }
+        throw toCliError(error);
       }
     }
     if (parsed.runCommand) {
@@ -3291,7 +3321,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           },
         );
       } catch (error) {
-        throw new CliError(error instanceof Error ? error.message : String(error));
+        const message = errorMessage(error);
+        if (
+          parsed.sdkFormat &&
+          parsed.runCommand === "view" &&
+          message === `unknown run: ${parsed.runCommandRunId}`
+        ) {
+          throw new CliError(message);
+        }
+        throw toCliError(error);
       }
     }
     if (parsed.dockerCommand) {
@@ -3594,7 +3632,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         stdout(renderAgentChecks(agents));
         stdout(renderDockerCheck(docker));
       } catch (error) {
-        throw new CliError(error instanceof Error ? error.message : String(error));
+        throw toCliError(error);
       }
       return 0;
     }
@@ -3737,7 +3775,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             : renderConfig(parsed.agent, defaults, env),
         );
       } catch (error) {
-        throw new CliError(error instanceof Error ? error.message : String(error));
+        throw toCliError(error);
       }
       return 0;
     }
@@ -3752,7 +3790,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         config,
       );
     } catch (error) {
-      throw new CliError(error instanceof Error ? error.message : String(error));
+      throw toCliError(error);
     }
     const commandTimeoutSeconds = parsed.timeoutSeconds ?? config.general.timeoutSeconds;
     const modalTimeoutSeconds = parsed.modalTimeoutSeconds ?? commandTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS;
@@ -4366,7 +4404,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (error instanceof CliError || error instanceof Error) {
       if (requestedSdkOutput) {
-        stdout(renderSdkError(error.message, 2, activeSdkCommand));
+        const message = error instanceof CliError ? error.sdkMessage : "headless command failed";
+        stdout(renderSdkError(message, 2, activeSdkCommand));
       } else {
         stderr(`headless: ${error.message}\n`);
       }
