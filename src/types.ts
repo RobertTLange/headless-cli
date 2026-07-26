@@ -49,6 +49,9 @@ export interface AgentConfig {
   configRelDir: string;
   workspaceConfigRelDir: string;
   seedPaths: string[];
+  // Optional allowlists for directory seed paths used by Docker. These keep
+  // provider caches and conversation history out of the container seed.
+  dockerSeedFiles?: Record<string, string[]>;
 }
 
 export interface AgentHarness extends AgentConfig {
