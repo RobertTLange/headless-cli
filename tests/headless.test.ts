@@ -20,6 +20,7 @@ import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE } from "../src/docker.ts";
 import { launchLockPath } from "../src/launch-lock.ts";
+import { writeStoredSession } from "../src/sessions.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
 
@@ -2124,6 +2125,13 @@ test("CLI --docker --session persists a durable home across turns", async () => 
       HOME: homeDir,
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
     };
+    writeStoredSession(env, {
+      agent: "codex",
+      alias: "work",
+      nativeId: "local-thread",
+      workDir: projectDir,
+    });
+
     const stdout: string[] = [];
     assert.equal(
       await runCli(["codex", "--session", "work", "--prompt", "first", "--work-dir", projectDir, "--docker"], {
@@ -2148,13 +2156,31 @@ test("CLI --docker --session persists a durable home across turns", async () => 
     assert.equal(calls.length, 2);
     assert.equal(calls[0].turn, 1);
     assert.equal(calls[1].turn, 2);
+    const firstCommand = calls[0].args.slice(calls[0].args.indexOf("headless-agent") + 1);
+    assert.ok(!firstCommand.includes("resume"));
     const secondCommand = calls[1].args.slice(calls[1].args.indexOf("headless-agent") + 1);
     assert.ok(secondCommand.includes("resume"));
 
     const sessionHome = join(homeDir, ".headless", "docker-sessions", "codex", "work");
     assert.equal(readFileSync(join(sessionHome, "turns.txt"), "utf8"), "2");
-    const store = JSON.parse(readFileSync(join(homeDir, ".headless", "sessions.json"), "utf8"));
-    assert.equal(store.agents.codex.work.nativeId, "docker-thread");
+    const dockerStore = JSON.parse(readFileSync(join(sessionHome, ".headless", "sessions.json"), "utf8"));
+    assert.equal(dockerStore.agents.codex.work.nativeId, "docker-thread");
+    const localStore = JSON.parse(readFileSync(join(homeDir, ".headless", "sessions.json"), "utf8"));
+    assert.equal(localStore.agents.codex.work.nativeId, "local-thread");
+
+    rmSync(sessionHome, { force: true, recursive: true });
+    stdout.length = 0;
+    assert.equal(
+      await runCli(["codex", "--session", "work", "--prompt", "reset", "--work-dir", projectDir, "--docker"], {
+        env,
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+    assert.equal(stdout.join(""), "turn 1\n");
+    const resetCalls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const resetCommand = resetCalls[2].args.slice(resetCalls[2].args.indexOf("headless-agent") + 1);
+    assert.ok(!resetCommand.includes("resume"));
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -3691,21 +3691,23 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return code;
     }
 
-    let sessionPlan = buildSessionPlan(parsed.agent, parsed.sessionAlias, env);
+    let sessionAlias = parsed.sessionAlias;
     if (parsed.runId && parsed.role && coordination === "session" && !parsed.sessionAlias) {
-      sessionPlan = buildSessionPlan(parsed.agent, nodeId, env);
+      sessionAlias = nodeId;
     }
     if (parsed.runId && parsed.role && coordination === "oneshot") {
-      sessionPlan = undefined;
+      sessionAlias = undefined;
     }
+    const dockerSessionHome = parsed.docker && sessionAlias
+      ? dockerSessionHomePath(parsed.agent, sessionAlias, env)
+      : undefined;
+    if (parsed.docker && sessionAlias && !dockerSessionHome) {
+      throw new CliError("HOME is required for --session");
+    }
+    const sessionEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
+    let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env);
-    }
-    const dockerSessionHome = parsed.docker && sessionPlan
-      ? dockerSessionHomePath(parsed.agent, sessionPlan.alias, env)
-      : undefined;
-    if (parsed.docker && sessionPlan && !dockerSessionHome) {
-      throw new CliError("HOME is required for --session");
     }
     if (dockerSessionHome && !parsed.printCommand) {
       ensureDockerSessionHome(dockerSessionHome);
@@ -3876,7 +3878,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
         : usageCommandTrace;
       if (result.code === 0 && sessionPlan) {
-        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, env, dockerSessionHome);
+        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, sessionEnv, dockerSessionHome);
       }
       if (parsed.runId && parsed.role && nodeId) {
         const finalMessage =
