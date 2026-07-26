@@ -72,6 +72,15 @@ test("secure session stores validate records and write private files atomically"
     });
     assert.equal(readStoredSession(env, "codex", "work")?.nativeId, "trusted");
     assert.equal(statSync(storePath).mode & 0o777, 0o600);
+
+    const longAlias = "a".repeat(300);
+    writeStoredSession(env, {
+      agent: "codex",
+      alias: longAlias,
+      nativeId: "long-session",
+      workDir: dir,
+    });
+    assert.equal(readStoredSession(env, "codex", longAlias)?.nativeId, "long-session");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

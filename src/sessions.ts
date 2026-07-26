@@ -160,7 +160,9 @@ function normalizeStoredSession(value: unknown, agent: AgentName, alias: string)
     !isRecord(value) ||
     value.agent !== agent ||
     value.alias !== alias ||
-    !/^[A-Za-z0-9_.-]{1,256}$/.test(alias) ||
+    alias === "." ||
+    alias === ".." ||
+    !/^[A-Za-z0-9_.-]+$/.test(alias) ||
     typeof value.createdAt !== "string" ||
     value.createdAt.length > 64 ||
     typeof value.updatedAt !== "string" ||
