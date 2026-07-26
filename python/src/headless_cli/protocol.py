@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, TypeGuard, cast
 
 from .errors import HeadlessProtocolError
 from .models import SdkEnvelope, SdkError, SdkResult, SdkTrace
 
 SDK_PROTOCOL_VERSION = 1
+
+
+def is_supported_protocol_version(value: object) -> TypeGuard[int]:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value == SDK_PROTOCOL_VERSION
+    )
 
 
 def parse_sdk_envelope(payload: str) -> SdkEnvelope:
@@ -19,7 +27,7 @@ def parse_sdk_envelope(payload: str) -> SdkEnvelope:
         raise HeadlessProtocolError("Headless SDK envelope must be an object")
     envelope = cast(Mapping[str, Any], decoded)
     version = envelope.get("protocolVersion")
-    if version != SDK_PROTOCOL_VERSION:
+    if not is_supported_protocol_version(version):
         raise HeadlessProtocolError(
             f"unsupported Headless SDK protocol version: {version!r}"
         )

@@ -28,7 +28,12 @@ from .models import (
     StreamEvent,
 )
 from .options import append_value, build_run_args
-from .protocol import SDK_PROTOCOL_VERSION, parse_sdk_envelope, parse_sdk_result
+from .protocol import (
+    SDK_PROTOCOL_VERSION,
+    is_supported_protocol_version,
+    parse_sdk_envelope,
+    parse_sdk_result,
+)
 from .transport import AsyncSubprocessTransport
 
 
@@ -404,7 +409,7 @@ class AsyncHeadless:
                 _command_result(capabilities),
             )
         version = capabilities.data.get("protocolVersion")
-        if version != SDK_PROTOCOL_VERSION:
+        if not is_supported_protocol_version(version):
             raise HeadlessVersionError(
                 (
                     "incompatible Headless CLI SDK protocol "

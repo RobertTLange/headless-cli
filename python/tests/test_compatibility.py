@@ -161,6 +161,37 @@ print(json.dumps({
         client.sessions.list()
 
 
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_non_integer_capability_protocol_is_incompatible(
+    tmp_path: Path,
+    version: object,
+) -> None:
+    binary = tmp_path / "headless"
+    binary.write_text(
+        f"""#!/usr/bin/env python3
+import json
+
+print(json.dumps({{
+    "protocolVersion": 1,
+    "type": "result",
+    "command": "capabilities",
+    "exitCode": 0,
+    "data": {{"protocolVersion": {version!r}}},
+}}))
+"""
+    )
+    binary.chmod(0o755)
+
+    with pytest.raises(HeadlessVersionError, match="expected 1"):
+        Headless(binary=binary).sessions.list()
+
+    async def exercise() -> None:
+        with pytest.raises(HeadlessVersionError, match="expected 1"):
+            await AsyncHeadless(binary=binary).sessions.list()
+
+    asyncio.run(exercise())
+
+
 def test_structured_check_false_returns_sdk_error(tmp_path: Path) -> None:
     binary = tmp_path / "headless"
     binary.write_text(

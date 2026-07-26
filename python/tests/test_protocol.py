@@ -48,6 +48,8 @@ def test_parse_trace_and_error_envelopes() -> None:
         "not json",
         "[]",
         '{"protocolVersion":2,"type":"result","command":"version","exitCode":0,"data":{}}',
+        '{"protocolVersion":true,"type":"result","command":"version","exitCode":0,"data":{}}',
+        '{"protocolVersion":1.0,"type":"result","command":"version","exitCode":0,"data":{}}',
         '{"protocolVersion":1,"type":"unknown","command":"version"}',
         '{"protocolVersion":1,"type":"error","command":"cli","exitCode":2,"error":{}}',
     ],
