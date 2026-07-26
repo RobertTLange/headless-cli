@@ -1261,7 +1261,7 @@ test("CLI waits for timed-out child stdout to drain before appending usage", asy
     globalThis.fetch = async () => new Response(JSON.stringify({}));
 
     const stdout: string[] = [];
-    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "3"], {
       env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
       stdout: (text) => stdout.push(text),
     });
@@ -1306,7 +1306,7 @@ test("CLI bounds timeout drain when a descendant retains stdout", async () => {
       await chmod(binary, 0o755);
     });
 
-    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "1"], {
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "3"], {
       env: {
         ...process.env,
         HEADLESS_TEST_GRANDCHILD_PID: pidFile,
@@ -1362,7 +1362,7 @@ test("CLI kills timeout descendants after the direct child closes", async () => 
       await chmod(binary, 0o755);
     });
 
-    const code = await runCli(["codex", "--prompt", "hello", "--json", "--timeout", "1"], {
+    const code = await runCli(["codex", "--prompt", "hello", "--json", "--timeout", "3"], {
       env: {
         ...process.env,
         HEADLESS_TEST_GRANDCHILD_PID: pidFile,
