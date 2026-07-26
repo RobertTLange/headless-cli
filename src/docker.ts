@@ -234,7 +234,7 @@ export function readDockerCursorSessionId(persistentHome: string): string {
   const path = join(persistentHome, ".headless-cursor-session-id");
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stats = fstatSync(descriptor);
     if (!stats.isFile() || stats.size > 256) {
       return "";

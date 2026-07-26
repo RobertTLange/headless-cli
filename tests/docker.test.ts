@@ -564,6 +564,13 @@ test("reads regular Docker Cursor session IDs and rejects symlinks", () => {
     symlinkSync(externalId, marker);
 
     assert.equal(readDockerCursorSessionId(persistentHome), "");
+
+    if (process.platform !== "win32") {
+      rmSync(marker);
+      const fifo = spawnSync("mkfifo", [marker], { encoding: "utf8" });
+      assert.equal(fifo.status, 0, fifo.stderr);
+      assert.equal(readDockerCursorSessionId(persistentHome), "");
+    }
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
