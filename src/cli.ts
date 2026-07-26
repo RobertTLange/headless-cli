@@ -78,6 +78,8 @@ import {
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
 import { acquireLaunchLock } from "./launch-lock.js";
+import { forceKillWindowsProcessTree } from "./process-tree.js";
+import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
 import { runCronDaemon } from "./cron.js";
@@ -1027,6 +1029,7 @@ interface ExecuteCommandOptions {
   stderr?: (text: string) => void;
   timeoutSeconds?: number;
   captureRelevantTrace?: boolean;
+  cleanupBeforeParentSignalExit?: () => void;
 }
 
 interface WaitingSpinner {
@@ -1421,21 +1424,38 @@ async function executeCommand(
       let stdoutReceived = false;
       let stdoutEndsWithNewline = false;
       let traceBuffer = "";
+      let traceRowDiscarded = false;
       const relevantTrace: string[] = [];
       let relevantTraceBytes = 0;
+      let pinnedIdentityTrace = "";
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
-      let termination: { code: number; signal: NodeJS.Signals } | undefined;
+      let termination: { code: number } | undefined;
       let forceKill: NodeJS.Timeout | undefined;
+      let forceFinish: NodeJS.Timeout | undefined;
+      let forceDrain: NodeJS.Timeout | undefined;
+      let removeParentSignalHandlers = () => {};
+      const terminationGraceMs = 1000;
       const maxRelevantTraceBytes = 256 * 1024;
+      const maxCapturedTraceRowBytes = 4 * 1024 * 1024;
+      const maxPinnedIdentityBytes = 16 * 1024;
       const relevantTracePattern =
-        /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text)"|"role"\s*:\s*"assistant"/;
+        /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text|planner_response|assistant_response)"|"role"\s*:\s*"assistant"/i;
+      const codexIdentityPattern = /"type"\s*:\s*"thread\.started"/;
       const appendRelevantTrace = (line: string) => {
-        const trimmed = line.trim();
+        let trimmed = line.trim();
         if (!trimmed || !relevantTracePattern.test(trimmed)) return;
-        const entry = `${trimmed}\n`;
-        const entryBytes = Buffer.byteLength(entry, "utf8");
+        let entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
+        if (entryBytes > maxRelevantTraceBytes) {
+          trimmed = compactOversizedTraceLine(agent, trimmed);
+          if (!trimmed || !relevantTracePattern.test(trimmed)) return;
+          entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
+        }
         if (entryBytes > maxRelevantTraceBytes) return;
+        const entry = `${trimmed}\n`;
+        if (agent === "codex" && codexIdentityPattern.test(trimmed) && entryBytes <= maxPinnedIdentityBytes) {
+          pinnedIdentityTrace = entry;
+        }
         relevantTrace.push(entry);
         relevantTraceBytes += entryBytes;
         while (relevantTraceBytes > maxRelevantTraceBytes && relevantTrace.length > 1) {
@@ -1445,24 +1465,32 @@ async function executeCommand(
       };
       const captureRelevantChunk = (chunk: string) => {
         if (!options.captureRelevantTrace) return;
-        traceBuffer += chunk;
-        if (Buffer.byteLength(traceBuffer, "utf8") > maxRelevantTraceBytes) {
-          traceBuffer = traceBuffer.slice(-maxRelevantTraceBytes);
+        const fragments = chunk.split("\n");
+        for (let index = 0; index < fragments.length; index += 1) {
+          if (!traceRowDiscarded) {
+            traceBuffer += fragments[index] ?? "";
+            if (Buffer.byteLength(traceBuffer, "utf8") > maxCapturedTraceRowBytes) {
+              traceBuffer = "";
+              traceRowDiscarded = true;
+            }
+          }
+          if (index < fragments.length - 1) {
+            if (!traceRowDiscarded) {
+              const line = traceBuffer.endsWith("\r") ? traceBuffer.slice(0, -1) : traceBuffer;
+              appendRelevantTrace(line);
+            }
+            traceBuffer = "";
+            traceRowDiscarded = false;
+          }
         }
-        const lines = traceBuffer.split(/\r?\n/);
-        traceBuffer = lines.pop() ?? "";
-        for (const line of lines) appendRelevantTrace(line);
       };
       const readRelevantTrace = () => {
-        if (traceBuffer) appendRelevantTrace(traceBuffer);
-        return relevantTrace.join("");
+        if (traceBuffer && !traceRowDiscarded) appendRelevantTrace(traceBuffer);
+        const rollingTrace = relevantTrace.join("");
+        return pinnedIdentityTrace && !rollingTrace.includes(pinnedIdentityTrace)
+          ? `${pinnedIdentityTrace}${rollingTrace}`
+          : rollingTrace;
       };
-      const signalExitCode = (signal: NodeJS.Signals): number => {
-        if (signal === "SIGINT") return 130;
-        if (signal === "SIGTERM") return 143;
-        return 1;
-      };
-      let removeSignalHandlers = () => {};
       const finish = (result: ExecuteResult) => {
         if (settled) {
           return;
@@ -1474,34 +1502,107 @@ async function executeCommand(
         if (forceKill) {
           clearTimeout(forceKill);
         }
-        removeSignalHandlers();
+        if (forceFinish) {
+          clearTimeout(forceFinish);
+        }
+        if (forceDrain) {
+          clearTimeout(forceDrain);
+        }
+        removeParentSignalHandlers();
         result.usageTrace = readRelevantTrace() || undefined;
         result.stdoutReceived = stdoutReceived;
         result.stdoutEndsWithNewline = stdoutEndsWithNewline;
         resolve(result);
       };
+      const ownsChildProcessGroup =
+        process.platform !== "win32" &&
+        (options.timeoutSeconds !== undefined || options.cleanupBeforeParentSignalExit !== undefined);
+      const handlesParentSignals = ownsChildProcessGroup || options.cleanupBeforeParentSignalExit !== undefined;
       const child = spawn(command.command, command.args, {
         cwd,
+        detached: ownsChildProcessGroup,
         env: commandEnv(env, command) as NodeJS.ProcessEnv,
         stdio,
       });
 
-      const terminateChild = (signal: NodeJS.Signals, code: number) => {
-        if (settled || termination) return;
-        termination = { code, signal };
+      const signalChildTree = (signal: NodeJS.Signals) => {
+        if (ownsChildProcessGroup && child.pid) {
+          try {
+            process.kill(-child.pid, signal);
+            return;
+          } catch {
+            // Fall back to the direct child when the process group has already exited.
+          }
+        }
         child.kill(signal);
-        forceKill = setTimeout(() => {
-          if (!settled) child.kill("SIGKILL");
-        }, 1000);
-        forceKill.unref();
       };
-      const onInterrupt = () => terminateChild("SIGINT", signalExitCode("SIGINT"));
-      const onTerminate = () => terminateChild("SIGTERM", signalExitCode("SIGTERM"));
-      process.once("SIGINT", onInterrupt);
-      process.once("SIGTERM", onTerminate);
-      removeSignalHandlers = () => {
-        process.removeListener("SIGINT", onInterrupt);
-        process.removeListener("SIGTERM", onTerminate);
+
+      if (handlesParentSignals) {
+        const handlers = new Map<NodeJS.Signals, () => void>();
+        removeParentSignalHandlers = () => {
+          for (const [signal, handler] of handlers) {
+            process.off(signal, handler);
+          }
+        };
+        const exitSignals: NodeJS.Signals[] =
+          process.platform === "win32"
+            ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+            : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
+        for (const signal of exitSignals) {
+          const handler = () => {
+            const hasExternalListener = process.listeners(signal).some((listener) => listener !== handler);
+            signalChildTree(signal);
+            try {
+              options.cleanupBeforeParentSignalExit?.();
+            } finally {
+              removeParentSignalHandlers();
+              if (!hasExternalListener) {
+                process.kill(process.pid, signal);
+              }
+            }
+          };
+          handlers.set(signal, handler);
+          process.once(signal, handler);
+        }
+        if (ownsChildProcessGroup) {
+          const suspendHandler = () => {
+            signalChildTree("SIGTSTP");
+            process.kill(process.pid, "SIGSTOP");
+          };
+          const continueHandler = () => {
+            signalChildTree("SIGCONT");
+          };
+          handlers.set("SIGTSTP", suspendHandler);
+          handlers.set("SIGCONT", continueHandler);
+          process.on("SIGTSTP", suspendHandler);
+          process.on("SIGCONT", continueHandler);
+        }
+      }
+
+      const terminateChild = (code: number) => {
+        if (settled || termination) return;
+        termination = { code };
+        if (process.platform === "win32") {
+          forceKillWindowsProcessTree(child, terminationGraceMs);
+        } else {
+          signalChildTree("SIGTERM");
+        }
+        forceKill = setTimeout(() => {
+          if (settled) return;
+          if (process.platform === "win32") {
+            forceKillWindowsProcessTree(child, terminationGraceMs);
+          } else {
+            signalChildTree("SIGKILL");
+          }
+          forceFinish = setTimeout(() => {
+            if (settled) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish({ code, stdout: capturedStdout });
+          }, terminationGraceMs);
+          forceFinish.unref();
+        }, terminationGraceMs);
+        forceKill.unref();
       };
 
       if (options.timeoutSeconds !== undefined) {
@@ -1509,7 +1610,7 @@ async function executeCommand(
           const message = `headless: command timed out after ${options.timeoutSeconds}s\n`;
           options.stderr?.(message);
           stderr(message);
-          terminateChild("SIGTERM", 124);
+          terminateChild(124);
         }, options.timeoutSeconds * 1000);
       }
       if (command.stdinText !== undefined) {
@@ -1542,7 +1643,28 @@ async function executeCommand(
         stderr(message);
         finish({ code: termination?.code ?? 127, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
       });
+      child.on("exit", (code, signal) => {
+        if (options.cleanupBeforeParentSignalExit === undefined || options.timeoutSeconds !== undefined || settled) {
+          return;
+        }
+        forceDrain = setTimeout(() => {
+          if (settled) return;
+          signalChildTree("SIGKILL");
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish({
+            code: signal ? 1 : (code ?? 1),
+            stdout: capturedStdout,
+            stdoutReceived,
+            stdoutEndsWithNewline,
+          });
+        }, terminationGraceMs);
+        forceDrain.unref();
+      });
       child.on("close", (code, signal) => {
+        if (termination) {
+          signalChildTree("SIGKILL");
+        }
         if (signal) {
           finish({ code: termination?.code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
           return;
@@ -3624,13 +3746,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
     }
     try {
-      if (parsed.runId && parsed.role && nodeId) {
-        updateNodeStatus(env, parsed.runId, nodeId, "busy");
-      }
-      const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
-      const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
-      result = parsed.modal
-        ? await executeModalAgent({
+      try {
+        if (parsed.runId && parsed.role && nodeId) {
+          updateNodeStatus(env, parsed.runId, nodeId, "busy");
+        }
+        const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
+        const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
+        result = parsed.modal
+          ? await executeModalAgent({
             agent: parsed.agent,
             appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
             command,
@@ -3656,24 +3779,25 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             stdoutHandling,
             timeoutSeconds: modalTimeoutSeconds,
             workDir: cwd ?? process.cwd(),
-          })
-        : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
-            stdout,
-            stdoutHandling,
-            stdoutLog: commandStdoutLog,
-            stderr: commandStderr,
-            timeoutSeconds: commandTimeoutSeconds,
-            captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
-          });
-      if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
-        appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
+            })
+          : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
+              stdout,
+              stdoutHandling,
+              stdoutLog: commandStdoutLog,
+              stderr: commandStderr,
+              timeoutSeconds: commandTimeoutSeconds,
+              captureRelevantTrace: parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias)),
+              cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
+            });
+        if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
+          appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
+        }
+      } finally {
+        waitingSpinner?.stop();
+        antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
+        antigravityUsageCapture?.cleanup();
       }
-    } finally {
-      waitingSpinner?.stop();
-      antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
-      antigravityUsageCapture?.cleanup();
-    }
-    try {
+
       if (!result) {
         throw new CliError("agent execution did not produce a result");
       }

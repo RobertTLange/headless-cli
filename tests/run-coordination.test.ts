@@ -448,6 +448,69 @@ test("json Antigravity usage is included in persisted run-node metrics", async (
   }
 });
 
+test("Antigravity json orchestrators preserve terminal responses for run completion", async () => {
+  for (const responseType of ["planner_response", "ASSISTANT_RESPONSE"]) {
+    const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+    try {
+      const home = join(dir, "home");
+      const binDir = join(dir, "bin");
+      mkdirSync(home);
+      await writeExecutable(
+        join(binDir, "agy"),
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const runFile = process.env.HOME + '/.headless/runs/antigravity-run/run.json';",
+          "const run = JSON.parse(fs.readFileSync(runFile, 'utf8'));",
+          "run.nodes.worker.status = 'idle';",
+          "fs.writeFileSync(runFile, JSON.stringify(run, null, 2) + '\\n');",
+          `console.log(JSON.stringify({ type: '${responseType}', status: 'COMPLETED', content: 'antigravity final' }));`,
+          "",
+        ].join("\n"),
+      );
+
+      const env = {
+        ...process.env,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      };
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+
+      const code = await runCli(
+        [
+          "antigravity",
+          "--role",
+          "orchestrator",
+          "--run",
+          "antigravity-run",
+          "--coordination",
+          "oneshot",
+          "--team",
+          "worker=1",
+          "--prompt",
+          "Build auth",
+          "--json",
+          "--usage",
+        ],
+        {
+          env,
+          stdout: (text) => stdout.push(text),
+          stderr: (text) => stderr.push(text),
+        },
+      );
+
+      assert.equal(code, 0, stderr.join(""));
+      assert.match(stdout.join(""), /"antigravity final"/);
+      const run = readRun(env, "antigravity-run");
+      assert.equal(run?.nodes.orchestrator.lastMessage, "antigravity final");
+      assert.equal(run?.nodes.worker.status, "done");
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
 test("orchestrator run rejects read-only mode because it must update run state", async () => {
   const stderr: string[] = [];
   const code = await runCli(
