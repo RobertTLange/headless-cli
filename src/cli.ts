@@ -1703,6 +1703,9 @@ async function executeCommand(
         forceDrain.unref();
       });
       child.on("close", (code, signal) => {
+        if (ownsChildProcessGroup && options.cleanupBeforeParentSignalExit !== undefined) {
+          signalChildTree("SIGKILL");
+        }
         if (termination) {
           signalChildTree("SIGKILL");
         }

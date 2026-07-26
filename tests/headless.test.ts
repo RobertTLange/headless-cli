@@ -3309,6 +3309,57 @@ test("CLI bounds Antigravity stdout drain after the direct child exits", async (
   }
 });
 
+test(
+  "CLI kills Antigravity descendants that close inherited stdio",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+    const grandchildPidPath = join(dir, "grandchild.pid");
+    let grandchildPid: number | undefined;
+    try {
+      const home = join(dir, "home");
+      const appDir = join(home, ".gemini", "antigravity-cli");
+      const binDir = join(dir, "bin");
+      const overlayPath = join(dir, "overlay-home.txt");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(binDir);
+      writeFileSync(
+        join(appDir, "settings.json"),
+        `${JSON.stringify({ statusLine: { type: "", command: "", enabled: true } })}\n`,
+      );
+      const binary = join(binDir, "agy");
+      writeFileSync(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          `writeFileSync(${JSON.stringify(overlayPath)}, process.env.HOME);`,
+          "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: 'ignore' });",
+          `writeFileSync(${JSON.stringify(grandchildPidPath)}, String(child.pid));`,
+          "child.unref();",
+          "process.stdout.write('antigravity final\\n');",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(binary, 0o755);
+
+      const code = await runCli(["antigravity", "--prompt", "hello", "--json", "--usage", "--timeout", "60"], {
+        env: { ...process.env, ANTIGRAVITY_CLI_BIN: binary, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: () => {},
+      });
+
+      assert.equal(code, 0);
+      assert.equal(existsSync(readFileSync(overlayPath, "utf8")), false);
+      grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
+      await waitFor(() => !processIsAlive(grandchildPid as number));
+    } finally {
+      if (grandchildPid && processIsAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
+      rmSync(dir, { force: true, recursive: true });
+    }
+  },
+);
+
 test("CLI --usage prices Codex hard default model", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;
