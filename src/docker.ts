@@ -104,6 +104,47 @@ export function ensureDockerSessionStoreDirectory(sessionHome: string): void {
   ensurePrivateOwnedDirectory(join(sessionHome, ".headless"));
 }
 
+export function validateDockerSessionRootWorkDir(sessionHome: string, workDir: string): void {
+  validateDockerWorkDir(workDir);
+  const sessionRoot = canonicalProspectivePath(dirname(dirname(resolve(sessionHome))));
+  const canonicalWorkDir = realpathSync(workDir);
+  if (pathsOverlap(sessionRoot, canonicalWorkDir)) {
+    throw new Error("Docker session root must not overlap the work dir");
+  }
+}
+
+export function validateDockerWorkDir(workDir: string): void {
+  const requestedWorkDir = resolve(workDir);
+  if (pathsOverlap(containerHome, requestedWorkDir)) {
+    throw new Error(`Docker work dir must not overlap the container home ${containerHome}`);
+  }
+  const canonicalWorkDir = realpathSync(workDir);
+  if (pathsOverlap(containerHome, canonicalWorkDir)) {
+    throw new Error(`Docker work dir must not overlap the container home ${containerHome}`);
+  }
+}
+
+function canonicalProspectivePath(path: string): string {
+  let existingPath = resolve(path);
+  const missingSegments: string[] = [];
+  while (!existsSync(existingPath)) {
+    missingSegments.unshift(basename(existingPath));
+    const parent = dirname(existingPath);
+    if (parent === existingPath) break;
+    existingPath = parent;
+  }
+  return resolve(realpathSync(existingPath), ...missingSegments);
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+  return isSameOrContained(first, second) || isSameOrContained(second, first);
+}
+
+function isSameOrContained(root: string, candidate: string): boolean {
+  const relativePath = relative(root, candidate);
+  return relativePath === "" || isContainedRelativePath(relativePath);
+}
+
 function ensureDockerSessionRoot(path: string): string {
   const created = mkdirSync(path, { recursive: true, mode: 0o700 }) !== undefined;
   return validateOwnedDirectory(path, created, false);

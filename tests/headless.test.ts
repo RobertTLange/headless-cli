@@ -2531,6 +2531,57 @@ test("CLI --docker --session print-command prepares its bind-mount source", asyn
   }
 });
 
+test("CLI rejects Docker session roots that overlap the workdir", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    const projectLink = join(dir, "project-link");
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    symlinkSync(projectDir, projectLink);
+
+    for (const sessionRoot of [join(projectDir, ".sessions"), join(projectLink, ".sessions"), dir]) {
+      const stderr: string[] = [];
+      assert.equal(
+        await runCli(
+          ["codex", "--docker", "--session", "work", "--prompt", "hello", "--work-dir", projectDir, "--print-command"],
+          {
+            env: {
+              ...process.env,
+              HEADLESS_DOCKER_SESSION_ROOT: sessionRoot,
+              HOME: homeDir,
+            },
+            stderr: (text) => stderr.push(text),
+          },
+        ),
+        2,
+      );
+      assert.match(stderr.join(""), /Docker session root must not overlap the work dir/);
+      assert.equal(existsSync(join(sessionRoot, "codex")), false);
+    }
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI rejects plain Docker workdirs that overlap the container home", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const stderr: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--docker", "--prompt", "hello", "--work-dir", "/", "--print-command"], {
+        env: { ...process.env, HOME: dir },
+        stderr: (text) => stderr.push(text),
+      }),
+      2,
+    );
+    assert.match(stderr.join(""), /Docker work dir must not overlap the container home/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --modal print-command wraps the selected agent command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

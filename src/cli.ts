@@ -54,6 +54,8 @@ import {
   ensureDockerSessionHome,
   ensureDockerSessionStoreDirectory,
   readDockerCursorSessionId,
+  validateDockerSessionRootWorkDir,
+  validateDockerWorkDir,
 } from "./docker.js";
 import {
   buildModalRunSummary,
@@ -3516,6 +3518,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const commandTimeoutSeconds = parsed.timeoutSeconds ?? config.general.timeoutSeconds;
     const modalTimeoutSeconds = parsed.modalTimeoutSeconds ?? commandTimeoutSeconds ?? DEFAULT_MODAL_TIMEOUT_SECONDS;
     const cwd = validateWorkDir(parsed.workDir);
+    if (parsed.docker) {
+      validateDockerWorkDir(cwd ?? process.cwd());
+    }
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
@@ -3791,11 +3796,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (dockerSessionHome) {
       validateDockerSessionEnv(parsed.agent, parsed.dockerEnv);
+      validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
       dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+      validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
     }
     dockerSessionLock = dockerSessionHome ? await acquireDockerSessionLock(dockerSessionHome) : undefined;
     if (dockerSessionHome) {
       dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
+      validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
       ensureDockerSessionStoreDirectory(dockerSessionHome);
     }
     const sessionEnv = dockerSessionHome

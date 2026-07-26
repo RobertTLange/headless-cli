@@ -13,6 +13,7 @@ import {
   ensureDockerSessionStoreDirectory,
   DEFAULT_DOCKER_IMAGE,
   readDockerCursorSessionId,
+  validateDockerSessionRootWorkDir,
 } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 
@@ -387,6 +388,15 @@ test("bounds long Docker session directory names without alias collisions", () =
 
   assert.ok(first.length < root.length + 180);
   assert.notEqual(first, second);
+});
+
+test("rejects workdirs that overlap the Docker container home target", () => {
+  for (const workDir of ["/headless-home", "/headless-home/project"]) {
+    assert.throws(
+      () => validateDockerSessionRootWorkDir("/var/lib/headless-sessions/codex/work", workDir),
+      /work dir must not overlap the container home/,
+    );
+  }
 });
 
 test("maps Pi transcripts stored through a former symlinked Docker root", { skip: process.platform === "win32" }, () => {

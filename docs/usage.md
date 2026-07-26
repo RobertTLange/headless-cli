@@ -193,7 +193,8 @@ headless codex --docker --session bughunt --prompt "Continue the investigation a
 
 The workdir is always persisted through its normal host bind mount. A durable Docker session additionally persists the agent home; seed files are copied only when they do not already exist, so later turns cannot overwrite native conversation state. Delete the corresponding directory to reset the Docker session. Set `HEADLESS_DOCKER_SESSION_ROOT` to use a different absolute root directory.
 
-Durable Docker sessions currently require POSIX filesystem permissions and are rejected on Windows hosts. An existing custom root must be owned by the current user, must not be group- or world-writable, and must not grant access through a permissive macOS ACL; Headless preserves its existing mode. Its parent chain must also be owned by the current user or root and must not be writable by other users unless the directory has the sticky bit, as with `/tmp`.
+Durable Docker sessions currently require POSIX filesystem permissions and are rejected on Windows hosts. An existing custom root must be owned by the current user, must not be group- or world-writable, must not overlap the workdir, and must not grant access through a permissive macOS ACL; Headless preserves its existing mode. Its parent chain must also be owned by the current user or root and must not be writable by other users unless the directory has the sticky bit, as with `/tmp`.
+In all Docker modes, the workdir must remain separate from the reserved `/headless-home` container path.
 
 Docker mode cannot be combined with `--tmux`, `send`, `rename`, or `--list`.
 
