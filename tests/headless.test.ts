@@ -2197,6 +2197,70 @@ test("CLI --docker --session persists a durable home across turns", async () => 
   }
 });
 
+test("CLI serializes concurrent turns for the same durable Docker session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const homeDirs = [join(dir, "home-first"), join(dir, "home-second")];
+    const sessionRoot = join(dir, "shared-sessions");
+    const projectDir = join(dir, "project");
+    const activeFile = join(dir, "active");
+    const overlapFile = join(dir, "overlap");
+    const captureFile = join(dir, "calls.jsonl");
+    mkdirSync(binDir);
+    for (const homeDir of homeDirs) mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    const docker = join(binDir, "docker");
+    writeFileSync(
+      docker,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const prompt = fs.readFileSync(0, 'utf8');",
+        "if (fs.existsSync(process.env.HEADLESS_ACTIVE_FILE)) fs.writeFileSync(process.env.HEADLESS_OVERLAP_FILE, 'overlap');",
+        "fs.writeFileSync(process.env.HEADLESS_ACTIVE_FILE, String(process.pid));",
+        "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);",
+        "fs.rmSync(process.env.HEADLESS_ACTIVE_FILE, { force: true });",
+        "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify({ args, prompt }) + '\\n');",
+        "console.log(JSON.stringify({ type: 'thread.started', thread_id: `thread-${prompt}` }));",
+        "console.log(JSON.stringify({ type: 'agent_message', text: `done ${prompt}` }));",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(docker, 0o755);
+    const sharedEnv = {
+      ...process.env,
+      HEADLESS_ACTIVE_FILE: activeFile,
+      HEADLESS_CAPTURE: captureFile,
+      HEADLESS_DOCKER_SESSION_ROOT: sessionRoot,
+      HEADLESS_OVERLAP_FILE: overlapFile,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+
+    const results = await Promise.all(
+      ["first", "second"].map((prompt, index) =>
+        runCli(["codex", "--docker", "--session", "work", "--prompt", prompt, "--work-dir", projectDir], {
+          env: { ...sharedEnv, HOME: homeDirs[index] },
+          stdout: () => {},
+        }),
+      ),
+    );
+
+    assert.deepEqual(results, [0, 0]);
+    assert.equal(existsSync(overlapFile), false);
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    const firstCommand = calls[0].args.slice(calls[0].args.indexOf("headless-agent") + 1);
+    const secondCommand = calls[1].args.slice(calls[1].args.indexOf("headless-agent") + 1);
+    assert.equal(firstCommand.includes("resume"), false);
+    assert.ok(secondCommand.includes("resume"));
+    assert.ok(secondCommand.includes(`thread-${calls[0].prompt}`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --docker --session discovers Antigravity transcripts in the durable home", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {

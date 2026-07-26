@@ -34,6 +34,7 @@
   "devDependencies": {
     "@bufbuild/protobuf": "^2.12.0",
     "@types/node": "^22.10.2",
+    "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
@@ -46,6 +47,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.0",
     "modal": "^0.7.4",
+    "proper-lockfile": "^4.1.2",
     "zod": "^4.2.0"
   }
 }

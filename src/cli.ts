@@ -83,7 +83,7 @@ import {
   resolveOpencodeTranscriptByTitle,
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
-import { acquireLaunchLock } from "./launch-lock.js";
+import { acquireDockerSessionLock, acquireLaunchLock } from "./launch-lock.js";
 import { forceKillWindowsProcessTree } from "./process-tree.js";
 import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
@@ -2915,6 +2915,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const stderrIsTTY = deps.stderrIsTTY ?? Boolean(process.stderr.isTTY);
   const env: Env = { ...(deps.env ?? process.env) };
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
+  let dockerSessionLock: { release: () => Promise<Error | undefined> } | undefined;
 
   if (argv[0] === "acp-stdio") {
     await runAcpStdioAgent();
@@ -3739,14 +3740,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (dockerSessionHome) {
       validateDockerSessionEnv(parsed.agent, parsed.dockerEnv);
+      ensureDockerSessionHome(dockerSessionHome);
     }
+    dockerSessionLock = dockerSessionHome ? await acquireDockerSessionLock(dockerSessionHome) : undefined;
     const sessionEnv = dockerSessionHome ? { ...env, HOME: dockerSessionHome } : env;
     let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
-    }
-    if (dockerSessionHome) {
-      ensureDockerSessionHome(dockerSessionHome);
     }
     const commandSessionPlan = dockerSessionHome && sessionPlan
       ? { ...sessionPlan, nativeId: dockerSessionNativeId(parsed.agent, sessionPlan.nativeId, dockerSessionHome) }
@@ -3991,6 +3991,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return 2;
     }
     throw error;
+  } finally {
+    const releaseError = await dockerSessionLock?.release();
+    if (releaseError) {
+      stderr(`headless: Docker session lock release failed: ${releaseError.message}\n`);
+    }
   }
 }
 
