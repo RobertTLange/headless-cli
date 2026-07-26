@@ -751,6 +751,9 @@ function requestsSdkOutput(argv: string[]): boolean {
     "--status",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--") {
+      break;
+    }
     if (valueOptions.has(argv[index] ?? "")) {
       index += 1;
       continue;
@@ -916,6 +919,7 @@ function resolveDisplayedDefaults(
   return {
     model: resolved.model ?? builtin.model,
     reasoningEffort: resolved.reasoningEffort ?? (usesBuiltinModel ? builtin.reasoningEffort : undefined),
+    allow: resolved.allow,
   };
 }
 
@@ -1441,6 +1445,7 @@ async function persistSessionPlan(
   cwd: string | undefined,
   env: Env,
   dockerSessionHome?: string,
+  capturedNativeId?: string,
 ): Promise<void> {
   if (!plan) {
     return;
@@ -1448,6 +1453,7 @@ async function persistSessionPlan(
   const discoveryEnv = dockerSessionHome ? dockerSessionDiscoveryEnv(agent, env, dockerSessionHome) : env;
   const nativeId =
     plan.nativeId ||
+    capturedNativeId ||
     (await discoverNativeSessionId(agent, stdout, cwd, discoveryEnv, plan.startedAt, Boolean(dockerSessionHome)));
   if (!nativeId) {
     throw new CliError(`could not determine ${agent} session id for --session ${plan.alias}`);
@@ -4240,9 +4246,22 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const usageTrace = antigravityUsageTrace
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
         : usageCommandTrace;
+      const capturedNativeSessionId =
+        sdkTraceWriter?.nativeSessionId ||
+        ((parsed.sdkFormat || sessionPlan) &&
+          extractNativeSessionId(parsed.agent, result.usageTrace ?? commandTrace)) ||
+        undefined;
       sdkTraceWriter?.flush();
       if (result.code === 0 && sessionPlan) {
-        await persistSessionPlan(parsed.agent, sessionPlan, commandTrace, cwd, sessionEnv, dockerSessionHome);
+        await persistSessionPlan(
+          parsed.agent,
+          sessionPlan,
+          commandTrace,
+          cwd,
+          sessionEnv,
+          dockerSessionHome,
+          capturedNativeSessionId,
+        );
       }
       if (parsed.runId && parsed.role && nodeId) {
         const finalMessage =
@@ -4283,9 +4302,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             model: context.model,
             reasoningEffort: configuredDefaults.reasoningEffort,
             finalMessage,
-            nativeSessionId:
-              sdkTraceWriter?.nativeSessionId ||
-              extractNativeSessionId(parsed.agent, result.usageTrace ?? commandTrace),
+            nativeSessionId: capturedNativeSessionId,
             ...(parsed.usage
               ? { usage: await buildUsageReport(parsed.agent, usageTrace, context) }
               : {}),

@@ -173,16 +173,20 @@ test("SDK check output exposes agent and Docker checks without terminal tables",
 test("SDK show-config output exposes resolved harness configuration", async () => {
   const stdout: string[] = [];
 
-  const code = await runCli(["codex", "--show-config", "--sdk-format", "json"], {
-    env: { CODEX_MODEL: "gpt-custom" },
-    stdout: (text) => stdout.push(text),
-  });
+  const code = await runCli(
+    ["codex", "--show-config", "--allow", "yolo", "--sdk-format", "json"],
+    {
+      env: { CODEX_MODEL: "gpt-custom" },
+      stdout: (text) => stdout.push(text),
+    },
+  );
 
   assert.equal(code, 0);
   const envelope = parseEnvelope(stdout.join(""));
   assert.equal(envelope.command, "config.show");
   assert.equal(envelope.data?.agent, "codex");
   assert.equal(envelope.data?.model, "gpt-custom");
+  assert.equal(envelope.data?.allow, "yolo");
   assert.deepEqual(envelope.data?.seedPaths, [".codex/auth.json", ".codex/config.toml"]);
 });
 
