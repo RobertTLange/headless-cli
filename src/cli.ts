@@ -3745,7 +3745,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
     }
-    if (dockerSessionHome && !parsed.printCommand) {
+    if (dockerSessionHome) {
       ensureDockerSessionHome(dockerSessionHome);
     }
     const commandSessionPlan = dockerSessionHome && sessionPlan

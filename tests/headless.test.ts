@@ -2442,6 +2442,31 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
   }
 });
 
+test("CLI --docker --session print-command prepares its bind-mount source", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const homeDir = join(dir, "home");
+    const projectDir = join(dir, "project");
+    mkdirSync(homeDir);
+    mkdirSync(projectDir);
+    const stdout: string[] = [];
+
+    assert.equal(
+      await runCli(["codex", "--docker", "--session", "work", "--prompt", "hello", "--work-dir", projectDir, "--print-command"], {
+        env: { ...process.env, HOME: homeDir },
+        stdout: (text) => stdout.push(text),
+      }),
+      0,
+    );
+
+    const sessionHome = join(homeDir, ".headless", "docker-sessions", "codex", "work");
+    assert.equal(existsSync(sessionHome), true);
+    assert.ok(stdout.join("").includes(`${sessionHome}:/headless-home:rw`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --modal print-command wraps the selected agent command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
