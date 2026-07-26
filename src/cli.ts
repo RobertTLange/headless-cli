@@ -77,6 +77,7 @@ import {
   resolvePiTranscriptInDir,
 } from "./native-transcripts.js";
 import { acquireLaunchLock } from "./launch-lock.js";
+import { forceKillWindowsProcessTree } from "./process-tree.js";
 import { compactOversizedTraceLine } from "./relevant-trace.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
@@ -1528,14 +1529,13 @@ async function executeCommand(
       };
 
       if (ownsChildProcessGroup) {
-        const parentSignals: NodeJS.Signals[] = ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
         const handlers = new Map<NodeJS.Signals, () => void>();
         removeParentSignalHandlers = () => {
           for (const [signal, handler] of handlers) {
             process.off(signal, handler);
           }
         };
-        for (const signal of parentSignals) {
+        for (const signal of ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"] as NodeJS.Signals[]) {
           const handler = () => {
             signalChildTree(signal);
             removeParentSignalHandlers();
@@ -1544,15 +1544,34 @@ async function executeCommand(
           handlers.set(signal, handler);
           process.once(signal, handler);
         }
+        const suspendHandler = () => {
+          signalChildTree("SIGTSTP");
+          process.kill(process.pid, "SIGSTOP");
+        };
+        const continueHandler = () => {
+          signalChildTree("SIGCONT");
+        };
+        handlers.set("SIGTSTP", suspendHandler);
+        handlers.set("SIGCONT", continueHandler);
+        process.on("SIGTSTP", suspendHandler);
+        process.on("SIGCONT", continueHandler);
       }
 
       const terminateChild = (code: number) => {
         if (settled || termination) return;
         termination = { code };
-        signalChildTree("SIGTERM");
+        if (process.platform === "win32") {
+          forceKillWindowsProcessTree(child, terminationGraceMs);
+        } else {
+          signalChildTree("SIGTERM");
+        }
         forceKill = setTimeout(() => {
           if (settled) return;
-          signalChildTree("SIGKILL");
+          if (process.platform === "win32") {
+            forceKillWindowsProcessTree(child, terminationGraceMs);
+          } else {
+            signalChildTree("SIGKILL");
+          }
           forceFinish = setTimeout(() => {
             if (settled) return;
             child.stdout?.destroy();

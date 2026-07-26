@@ -1441,6 +1441,72 @@ test("CLI forwards parent signals to timeout-enabled agents", async () => {
   }
 });
 
+test("CLI forwards suspend and continue signals to timeout-enabled agents", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const agentPidFile = join(dir, "agent.pid");
+  const signalFile = join(dir, "signals.txt");
+  let agentPid: number | undefined;
+  let headless: ReturnType<typeof spawn> | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(
+        binary,
+        [
+          "#!/usr/bin/env node",
+          "const { appendFileSync, writeFileSync } = require('node:fs');",
+          "writeFileSync(process.env.HEADLESS_TEST_AGENT_PID, String(process.pid));",
+          "process.on('SIGTSTP', () => {",
+          "  appendFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGTSTP\\n');",
+          "  process.kill(process.pid, 'SIGSTOP');",
+          "});",
+          "process.on('SIGCONT', () => appendFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGCONT\\n'));",
+          "setInterval(() => {}, 1000);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(binary, 0o755);
+    });
+
+    headless = spawn(
+      process.execPath,
+      ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "codex", "--prompt", "hello", "--json", "--timeout", "30"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TEST_AGENT_PID: agentPidFile,
+          HEADLESS_TEST_SIGNAL_FILE: signalFile,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(agentPidFile));
+
+    headless.kill("SIGTSTP");
+    await waitFor(() => existsSync(signalFile) && readFileSync(signalFile, "utf8").includes("SIGTSTP"));
+    headless.kill("SIGCONT");
+    await waitFor(() => readFileSync(signalFile, "utf8").includes("SIGCONT"));
+
+    const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      headless?.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    headless.kill("SIGTERM");
+    assert.deepEqual(await exit, { code: null, signal: "SIGTERM" });
+  } finally {
+    if (headless && headless.exitCode === null && headless.signalCode === null) headless.kill("SIGKILL");
+    try {
+      agentPid = Number(readFileSync(agentPidFile, "utf8"));
+      if (Number.isInteger(agentPid) && agentPid > 0 && processIsAlive(agentPid)) process.kill(agentPid, "SIGKILL");
+    } catch {
+      // The wrapper may fail before launching its agent.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --json --usage keeps usage accounting bounded around a large native trace", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;
