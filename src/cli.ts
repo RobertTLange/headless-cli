@@ -1433,7 +1433,7 @@ async function executeCommand(
       const maxRelevantTraceBytes = 256 * 1024;
       const maxPinnedIdentityBytes = 16 * 1024;
       const relevantTracePattern =
-        /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text)"|"role"\s*:\s*"assistant"/;
+        /"(?:usage|stats|tokens|context_window|num_turns|duration_ms|duration_api_ms|total_cost_usd|thread_id|session_id|sessionId|sessionID)"\s*:|"type"\s*:\s*"(?:thread\.started|turn\.completed|result|step_finish|message_end|agent_message|response_item|item\.completed|assistant|model|text|planner_response|assistant_response)"|"role"\s*:\s*"assistant"/i;
       const codexIdentityPattern = /"type"\s*:\s*"thread\.started"/;
       const appendRelevantTrace = (line: string) => {
         const trimmed = line.trim();
