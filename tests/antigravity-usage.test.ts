@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 
 import { prepareAntigravityUsageCapture } from "../src/antigravity-usage.ts";
@@ -132,6 +132,58 @@ test("Antigravity capture preserves state created by a fresh profile and hides t
     writeFileSync(createdState, "persisted\n");
     capture.cleanup();
     assert.equal(readFileSync(join(home, ".gemini", "antigravity-cli", "brain", "conversation.json"), "utf8"), "persisted\n");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("Antigravity usage capture honors configured profile roots", () => {
+  for (const variable of ["ANTIGRAVITY_HOME", "AGY_HOME"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-profile-test-"));
+    try {
+      const home = join(dir, "home");
+      const workDir = join(dir, "work");
+      const appDir = variable === "AGY_HOME" ? join(workDir, "custom-profile") : join(dir, "custom-profile");
+      const configuredAppDir = variable === "AGY_HOME" ? relative(workDir, appDir) : appDir;
+      mkdirSync(join(appDir, "brain"), { recursive: true });
+      writeFileSync(join(appDir, "settings.json"), `${JSON.stringify({ enableTelemetry: false })}\n`);
+
+      const capture = prepareAntigravityUsageCapture({ HOME: home, [variable]: configuredAppDir }, workDir);
+      assert.ok(capture);
+      const overlayAppDir = capture.commandEnv[variable] ?? "";
+      assert.notEqual(overlayAppDir, appDir);
+      assert.equal(realpathSync(join(overlayAppDir, "brain")), realpathSync(join(appDir, "brain")));
+      assert.equal(
+        JSON.parse(readFileSync(join(overlayAppDir, "settings.json"), "utf8")).statusLine.enabled,
+        true,
+      );
+
+      capture.cleanup();
+      assert.equal(existsSync(overlayAppDir), false);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  }
+});
+
+test("Antigravity usage capture ignores empty preferred profile roots", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-antigravity-empty-profile-test-"));
+  try {
+    const home = join(dir, "home");
+    const appDir = join(dir, "legacy-profile");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "settings.json"), "{}\n");
+
+    const capture = prepareAntigravityUsageCapture({
+      HOME: home,
+      ANTIGRAVITY_HOME: " ",
+      AGY_HOME: appDir,
+    });
+    assert.ok(capture);
+    assert.equal(realpathSync(capture.commandEnv.AGY_HOME ?? ""), realpathSync(capture.commandEnv.ANTIGRAVITY_HOME ?? ""));
+    assert.equal(existsSync(join(process.cwd(), "brain")), false);
+    assert.equal(existsSync(join(process.cwd(), "cache")), false);
+    capture.cleanup();
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

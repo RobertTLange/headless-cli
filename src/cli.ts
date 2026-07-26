@@ -3774,7 +3774,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     let antigravityUsageCapture: AntigravityUsageCapture | undefined;
     if (parsed.agent === "antigravity" && parsed.usage && !parsed.docker && !parsed.modal) {
       try {
-        antigravityUsageCapture = prepareAntigravityUsageCapture(env);
+        antigravityUsageCapture = prepareAntigravityUsageCapture(env, cwd);
         if (antigravityUsageCapture) {
           command = {
             ...command,

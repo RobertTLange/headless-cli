@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { quoteArg } from "./shell.js";
 import type { Env } from "./types.js";
@@ -105,19 +105,23 @@ function readSettings(path: string): AntigravitySettings {
   return value as AntigravitySettings;
 }
 
-export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCapture | undefined {
-  const realHome = env.HOME;
-  if (!realHome) return undefined;
+export function prepareAntigravityUsageCapture(env: Env, cwd?: string): AntigravityUsageCapture | undefined {
+  if (!env.HOME) return undefined;
+  const baseDir = cwd ?? process.cwd();
+  const realHome = resolve(baseDir, env.HOME);
 
   const realGeminiDir = join(realHome, ".gemini");
-  const realAppDir = join(realGeminiDir, "antigravity-cli");
+  const configuredAppDir = env.ANTIGRAVITY_HOME?.trim() || env.AGY_HOME?.trim() || undefined;
+  const realAppDir = resolve(baseDir, configuredAppDir ?? join(realGeminiDir, "antigravity-cli"));
   if (!existsSync(realAppDir)) return undefined;
 
   const root = mkdtempSync(join(tmpdir(), "headless-antigravity-usage-"));
   try {
     const overlayHome = join(root, "home");
     const overlayGeminiDir = join(overlayHome, ".gemini");
-    const overlayAppDir = join(overlayGeminiDir, "antigravity-cli");
+    const overlayAppDir = configuredAppDir
+      ? join(root, "antigravity-profile")
+      : join(overlayGeminiDir, "antigravity-cli");
     const capturePath = join(root, "usage.jsonl");
     const scriptPath = join(root, "capture.mjs");
     const statusCommandPath = join(root, "status-command");
@@ -163,6 +167,8 @@ export function prepareAntigravityUsageCapture(env: Env): AntigravityUsageCaptur
     return {
       commandEnv: {
         HOME: overlayHome,
+        ...(env.ANTIGRAVITY_HOME !== undefined ? { ANTIGRAVITY_HOME: overlayAppDir } : {}),
+        ...(env.AGY_HOME !== undefined ? { AGY_HOME: overlayAppDir } : {}),
         HEADLESS_ANTIGRAVITY_USAGE_FILE: capturePath,
         HEADLESS_ANTIGRAVITY_STATUS_COMMAND: undefined,
       },
