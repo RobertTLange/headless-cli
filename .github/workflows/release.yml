@@ -4,22 +4,68 @@ on:
   release:
     types:
       - published
-  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: package-release
+  cancel-in-progress: false
+  queue: max
+
 jobs:
-  publish-npm:
-    name: Publish to npm
+  validate-release:
+    name: Validate release versions
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate package and tag versions
+        env:
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import tomllib
+
+          npm_version = json.loads(pathlib.Path("package.json").read_text())["version"]
+          python_version = tomllib.loads(pathlib.Path("python/pyproject.toml").read_text())["project"]["version"]
+          if npm_version != python_version:
+              raise SystemExit(f"npm {npm_version} does not match PyPI {python_version}")
+
+          if os.environ["RELEASE_IS_PRERELEASE"] == "true":
+              raise SystemExit("stable package publishing requires a non-prerelease GitHub release")
+          release_tag = os.environ["RELEASE_TAG"]
+          if release_tag != f"v{npm_version}":
+              raise SystemExit(f"release tag {release_tag} does not match package version {npm_version}")
+          PY
+
+  publish-npm:
+    name: Publish to npm
+    needs:
+      - validate-release
+      - build-python
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -45,31 +91,55 @@ jobs:
 
       - name: Check npm package version
         id: npm-version
+        env:
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
         run: |
-          if npm view "@roberttlange/headless@${{ steps.package-version.outputs.version }}" version >/dev/null 2>&1; then
+          npm_error=$(mktemp)
+          if npm view "@roberttlange/headless@$PACKAGE_VERSION" version >/dev/null 2>"$npm_error"; then
             echo "published=true" >> "$GITHUB_OUTPUT"
-          else
+          elif grep -q "E404" "$npm_error"; then
             echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            cat "$npm_error" >&2
+            exit 1
           fi
 
       - name: Publish to npm
         if: steps.npm-version.outputs.published != 'true'
-        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+        run: npm publish --access public --provenance --tag "release-$PACKAGE_VERSION"
+
+      - name: Promote freshest release to npm latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          latest_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [[ "$RELEASE_TAG" != "$latest_release_tag" ]]; then
+            echo "::notice::A newer stable release exists; keeping its npm latest tag."
+            exit 0
+          fi
+          npm dist-tag add "@roberttlange/headless@$PACKAGE_VERSION" latest
 
   build-python:
     name: Build and verify Python SDK
+    needs: validate-release
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.pypi-version.outputs.published }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -80,7 +150,7 @@ jobs:
           npm run build
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
           cache: pip
@@ -150,7 +220,7 @@ jobs:
           PY
 
       - name: Upload Python distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: python-distributions
           path: python/dist/
@@ -161,7 +231,7 @@ jobs:
     needs:
       - publish-npm
       - build-python
-    if: github.event_name == 'release' && needs.build-python.outputs.published != 'true'
+    if: needs.build-python.outputs.published != 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -171,12 +241,12 @@ jobs:
 
     steps:
       - name: Download Python distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-distributions
           path: python/dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
         with:
           packages-dir: python/dist

@@ -461,7 +461,7 @@ def test_version_returns_trimmed_text(fake_headless: tuple[Path, Path]) -> None:
     binary, record = fake_headless
     client = Headless(binary=binary, env={"FAKE_HEADLESS_RECORD": str(record)})
 
-    assert client.version() == "0.4.0"
+    assert client.version() == "0.5.0"
     assert read_record(record)["argv"] == ["--version", "--sdk-format", "json"]
 
 

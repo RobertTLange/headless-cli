@@ -32,7 +32,7 @@ test("SDK version output uses a versioned result envelope", async () => {
     type: "result",
     command: "version",
     exitCode: 0,
-    data: { version: "0.4.0" },
+    data: { version: "0.5.0" },
   });
 });
 
@@ -55,7 +55,7 @@ test("plain version keeps ignoring trailing arguments for compatibility", async 
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "0.4.0\n");
+  assert.equal(stdout.join(""), "0.5.0\n");
 });
 
 test("SDK capabilities report the supported protocol and command families", async () => {

@@ -97,7 +97,7 @@ if "--sdk-format" in sys.argv:
             raise SystemExit(0)
         envelope("trace", "invoke", data={"agent": "codex", "value": {"event": "turn"}})
     if "--version" in sys.argv:
-        envelope("result", "version", data={"version": "0.4.0"})
+        envelope("result", "version", data={"version": "0.5.0"})
     elif "capabilities" in sys.argv:
         envelope("result", "capabilities", data={"protocolVersion": 1, "agents": ["codex"]})
     elif "--check" in sys.argv:
@@ -129,7 +129,7 @@ if "--fail" in sys.argv:
     print("private stderr", file=sys.stderr)
     raise SystemExit(7)
 if "--version" in sys.argv:
-    print("0.4.0")
+    print("0.5.0")
 else:
     print("final answer")
     print("trace", file=sys.stderr)

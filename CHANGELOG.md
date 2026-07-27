@@ -2,6 +2,8 @@
 
 ## TBD
 
+## 0.5.0 - 2026-07-27
+
 - Added multi-architecture GHCR image publishing for Linux AMD64 and ARM64 releases, with guarded manual recovery, immutable release and commit tags, serialized `latest` promotion, provenance, and SBOM attestations (#23).
 - Thanks to Anant Garg (@anantgar) for contributing multi-architecture Docker image publishing.
 - Added a typed Python SDK with synchronous and asynchronous clients, structured streaming, CLI namespace coverage, subprocess cancellation and process-tree cleanup, and a raw invocation escape hatch (#22).

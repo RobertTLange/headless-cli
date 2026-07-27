@@ -106,7 +106,7 @@ def test_async_namespaces_are_available(fake_headless: tuple[Path, Path]) -> Non
             result = await call()
             assert isinstance(result, (CommandResult, SdkResult))
             assert read_record(record)["argv"] == expected
-        assert await client.version() == "0.4.0"
+        assert await client.version() == "0.5.0"
 
     asyncio.run(exercise())
 

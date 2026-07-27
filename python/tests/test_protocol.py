@@ -10,14 +10,14 @@ from headless_cli.protocol import parse_sdk_envelope
 def test_parse_result_envelope() -> None:
     parsed = parse_sdk_envelope(
         '{"protocolVersion":1,"type":"result","command":"version",'
-        '"exitCode":0,"data":{"version":"0.4.0"}}'
+        '"exitCode":0,"data":{"version":"0.5.0"}}'
     )
 
     assert parsed == SdkResult(
         protocol_version=1,
         command="version",
         exit_code=0,
-        data={"version": "0.4.0"},
+        data={"version": "0.5.0"},
     )
 
 

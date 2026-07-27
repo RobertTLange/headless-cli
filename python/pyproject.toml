@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "headless-cli"
-version = "0.1.0"
+version = "0.5.0"
 description = "Typed Python interface for the Headless CLI"
 readme = "README.md"
 requires-python = ">=3.10"
