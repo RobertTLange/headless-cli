@@ -17,11 +17,10 @@ import {
 } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 
+const dockerfile = readFileSync("Dockerfile", "utf8");
 const dockerWorkflow = readFileSync(".github/workflows/docker-image.yml", "utf8");
 
 test("Dockerfile exposes Cursor agent from a non-root path", () => {
-  const dockerfile = readFileSync("Dockerfile", "utf8");
-
   assert.match(dockerfile, /^FROM node:22-bookworm-slim@sha256:[a-f0-9]{64}$/m);
   assert.match(dockerfile, /@anthropic-ai\/claude-code@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /@google\/gemini-cli@\d+\.\d+\.\d+/);
@@ -41,6 +40,13 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /sha512sum -c -/);
   assert.match(dockerfile, /install -m 0755 \/tmp\/antigravity \/usr\/local\/bin\/agy/);
   assert.match(dockerfile, /ENV AGY_CLI_DISABLE_AUTO_UPDATE=true/);
+});
+
+test("Dockerfile links published images to the source repository", () => {
+  assert.match(
+    dockerfile,
+    /^LABEL org\.opencontainers\.image\.source=https:\/\/github\.com\/RobertTLange\/headless-cli$/m,
+  );
 });
 
 test("Docker image workflow publishes the pinned image for both host architectures", () => {
