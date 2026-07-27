@@ -93,7 +93,10 @@ jobs:
         run: |
           mkdir npm-package
           npm pack --pack-destination npm-package
-          npx -y --package npm-package/roberttlange-headless-*.tgz headless --help
+          shopt -s nullglob
+          tarballs=("$PWD"/npm-package/*.tgz)
+          test "${#tarballs[@]}" -eq 1
+          npx -y --package "${tarballs[0]}" headless --help
 
       - name: Record npm package artifact
         id: package-artifact
