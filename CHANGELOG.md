@@ -2,6 +2,8 @@
 
 ## TBD
 
+- Added multi-architecture GHCR image publishing for Linux AMD64 and ARM64 releases, with guarded manual recovery, immutable release and commit tags, serialized `latest` promotion, provenance, and SBOM attestations (#23).
+- Thanks to Anant Garg (@anantgar) for contributing multi-architecture Docker image publishing.
 - Added a typed Python SDK with synchronous and asynchronous clients, structured streaming, CLI namespace coverage, subprocess cancellation and process-tree cleanup, and a raw invocation escape hatch (#22).
 - Added a versioned JSON/NDJSON SDK protocol for stable machine-readable CLI results, errors, traces, capability discovery, and structured session, run, cron, config, and diagnostic output (#22).
 - Added Python 3.10 and 3.14 CI coverage plus guarded PyPI trusted publishing for the `headless-cli` package (#22).
