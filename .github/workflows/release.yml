@@ -171,7 +171,7 @@ jobs:
           EXPECTED_VERSION: ${{ needs.validate-release.outputs.package-version }}
         run: |
           shopt -s nullglob
-          tarballs=(npm-package/*.tgz)
+          tarballs=("$PWD"/npm-package/*.tgz)
           test "${#tarballs[@]}" -eq 1
           tarball="${tarballs[0]}"
           test "$(sha256sum "$tarball" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
