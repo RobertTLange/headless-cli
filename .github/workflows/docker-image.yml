@@ -6,6 +6,11 @@ on:
       - published
   workflow_dispatch:
 
+concurrency:
+  group: docker-image-publish
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   publish:
     name: Publish multi-architecture image
@@ -19,6 +24,18 @@ jobs:
       packages: write
 
     steps:
+      - name: Validate manual source
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          default_branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)
+          if [[ "$GITHUB_SHA" != "$default_branch_sha" ]]; then
+            echo "::error::Default branch advanced while this workflow was queued; rerun the publish workflow."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -45,9 +62,10 @@ jobs:
           flavor: latest=false
           tags: |
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.event_name != 'release' || !github.event.release.prerelease }}
+            type=sha,format=long,prefix=sha-
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -56,7 +74,33 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=docker-${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
+            type=gha,scope=docker-main
+          cache-to: type=gha,mode=max,scope=docker-${{ github.event_name == 'workflow_dispatch' && 'main' || github.sha }}
           provenance: mode=max
           sbom: true
+
+      - name: Promote current image to latest
+        if: github.event_name != 'release' || !github.event.release.prerelease
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_NAME: ghcr.io/roberttlange/headless
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            latest_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+            if [[ "$RELEASE_TAG" != "$latest_release_tag" ]]; then
+              echo "::notice::A newer stable release exists; keeping its latest tag."
+              exit 0
+            fi
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            default_branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)
+            if [[ "$GITHUB_SHA" != "$default_branch_sha" ]]; then
+              echo "::error::Default branch advanced while this image was built; rerun the publish workflow."
+              exit 1
+            fi
+          fi
+          docker buildx imagetools create --tag "$IMAGE_NAME:latest" "$IMAGE_NAME@$IMAGE_DIGEST"

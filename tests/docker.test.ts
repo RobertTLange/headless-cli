@@ -72,8 +72,67 @@ test("Docker image workflow keeps prereleases off latest", () => {
   assert.match(dockerWorkflow, /flavor: latest=false/);
   assert.match(
     dockerWorkflow,
-    /type=raw,value=latest,enable=\$\{\{ github\.event_name != 'release' \|\| !github\.event\.release\.prerelease \}\}/,
+    /if: github\.event_name != 'release' \|\| !github\.event\.release\.prerelease/,
   );
+});
+
+test("Docker image workflow serializes every publish", () => {
+  assert.match(
+    dockerWorkflow,
+    /concurrency:\s+group: docker-image-publish\s+cancel-in-progress: false\s+queue: max/,
+  );
+});
+
+test("Docker image workflow only promotes the freshest stable release", () => {
+  const buildIndex = dockerWorkflow.indexOf("- name: Build and push");
+  const promotionIndex = dockerWorkflow.indexOf("- name: Promote current image to latest");
+  const buildBlock = dockerWorkflow.slice(buildIndex, promotionIndex);
+
+  assert.notEqual(buildIndex, -1);
+  assert.ok(promotionIndex > buildIndex);
+  assert.match(buildBlock, /push: true/);
+  assert.match(buildBlock, /tags: \$\{\{ steps\.meta\.outputs\.tags \}\}/);
+  assert.match(dockerWorkflow, /id: build/);
+  assert.match(dockerWorkflow, /type=ref,event=tag/);
+  assert.match(dockerWorkflow, /type=sha,format=long,prefix=sha-/);
+  assert.match(dockerWorkflow, /gh api "repos\/\$GITHUB_REPOSITORY\/releases\/latest" --jq \.tag_name/);
+  assert.match(dockerWorkflow, /"\$RELEASE_TAG" != "\$latest_release_tag"/);
+  assert.doesNotMatch(dockerWorkflow, /releases\/latest.*\|\| true/);
+  assert.match(dockerWorkflow, /IMAGE_DIGEST: \$\{\{ steps\.build\.outputs\.digest \}\}/);
+  assert.match(
+    dockerWorkflow,
+    /docker buildx imagetools create --tag "\$IMAGE_NAME:latest" "\$IMAGE_NAME@\$IMAGE_DIGEST"/,
+  );
+});
+
+test("Docker image workflow rejects a stale manual dispatch", () => {
+  const validationIndex = dockerWorkflow.indexOf("- name: Validate manual source");
+  const buildIndex = dockerWorkflow.indexOf("- name: Build and push");
+  const promotionIndex = dockerWorkflow.indexOf("- name: Promote current image to latest");
+  const defaultHeadCheckIndices = [
+    ...dockerWorkflow.matchAll(
+      /gh api "repos\/\$GITHUB_REPOSITORY\/commits\/\$DEFAULT_BRANCH" --jq \.sha/g,
+    ),
+  ].map((match) => match.index);
+
+  assert.notEqual(validationIndex, -1);
+  assert.ok(validationIndex < buildIndex);
+  assert.ok(buildIndex < promotionIndex);
+  assert.equal(defaultHeadCheckIndices.length, 2);
+  assert.ok((defaultHeadCheckIndices[0] ?? -1) > validationIndex);
+  assert.ok((defaultHeadCheckIndices[0] ?? -1) < buildIndex);
+  assert.ok((defaultHeadCheckIndices[1] ?? -1) > promotionIndex);
+  assert.match(dockerWorkflow, /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(dockerWorkflow, /"\$GITHUB_SHA" != "\$default_branch_sha"/);
+  assert.match(dockerWorkflow, /exit 1/);
+});
+
+test("Docker image workflow isolates release caches while reusing the default-branch cache", () => {
+  const cacheScope = /\$\{\{ github\.event_name == 'workflow_dispatch' && 'main' \|\| github\.sha \}\}/;
+
+  assert.match(dockerWorkflow, new RegExp(`cache-from:[\\s\\S]*scope=docker-${cacheScope.source}`));
+  assert.match(dockerWorkflow, /cache-from:[\s\S]*type=gha,scope=docker-main/);
+  assert.match(dockerWorkflow, new RegExp(`cache-to: type=gha,mode=max,scope=docker-${cacheScope.source}`));
 });
 
 test("Docker image workflow pins every action to a commit", () => {
