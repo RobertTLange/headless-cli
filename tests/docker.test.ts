@@ -59,6 +59,13 @@ test("Docker image workflow publishes the pinned image for both host architectur
   assert.match(dockerWorkflow, /sbom: true/);
 });
 
+test("Docker image workflow runs for published releases and manual recovery", () => {
+  assert.match(
+    dockerWorkflow,
+    /on:\s+release:\s+types:\s+- published\s+workflow_dispatch:/,
+  );
+});
+
 test("Docker image workflow only manually publishes the default branch", () => {
   assert.match(dockerWorkflow, /if: >-\s+github\.event_name == 'release' \|\|/);
   assert.match(
