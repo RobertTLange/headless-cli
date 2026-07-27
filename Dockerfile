@@ -1,5 +1,7 @@
 FROM node:22-bookworm-slim@sha256:d415caac2f1f77b98caaf9415c5f807e14bc8d7bdea62561ea2fef4fbd08a73c
 
+LABEL org.opencontainers.image.source=https://github.com/RobertTLange/headless-cli
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates curl git ripgrep \
   && rm -rf /var/lib/apt/lists/*

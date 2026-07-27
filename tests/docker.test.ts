@@ -17,9 +17,10 @@ import {
 } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 
-test("Dockerfile exposes Cursor agent from a non-root path", () => {
-  const dockerfile = readFileSync("Dockerfile", "utf8");
+const dockerfile = readFileSync("Dockerfile", "utf8");
+const dockerWorkflow = readFileSync(".github/workflows/docker-image.yml", "utf8");
 
+test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /^FROM node:22-bookworm-slim@sha256:[a-f0-9]{64}$/m);
   assert.match(dockerfile, /@anthropic-ai\/claude-code@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /@google\/gemini-cli@\d+\.\d+\.\d+/);
@@ -39,6 +40,115 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /sha512sum -c -/);
   assert.match(dockerfile, /install -m 0755 \/tmp\/antigravity \/usr\/local\/bin\/agy/);
   assert.match(dockerfile, /ENV AGY_CLI_DISABLE_AUTO_UPDATE=true/);
+});
+
+test("Dockerfile links published images to the source repository", () => {
+  assert.match(
+    dockerfile,
+    /^LABEL org\.opencontainers\.image\.source=https:\/\/github\.com\/RobertTLange\/headless-cli$/m,
+  );
+});
+
+test("Docker image workflow publishes the pinned image for both host architectures", () => {
+  assert.match(dockerWorkflow, /packages:\s+write/);
+  assert.match(dockerWorkflow, /ghcr\.io\/roberttlange\/headless/);
+  assert.match(dockerWorkflow, /platforms:\s+linux\/amd64,linux\/arm64/);
+  assert.match(dockerWorkflow, /docker\/build-push-action@[a-f0-9]{40} # v6/);
+  assert.match(dockerWorkflow, /persist-credentials: false/);
+  assert.match(dockerWorkflow, /provenance: mode=max/);
+  assert.match(dockerWorkflow, /sbom: true/);
+});
+
+test("Docker image workflow runs for published releases and manual recovery", () => {
+  assert.match(
+    dockerWorkflow,
+    /on:\s+release:\s+types:\s+- published\s+workflow_dispatch:/,
+  );
+});
+
+test("Docker image workflow only manually publishes the default branch", () => {
+  assert.match(dockerWorkflow, /if: >-\s+github\.event_name == 'release' \|\|/);
+  assert.match(
+    dockerWorkflow,
+    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/,
+  );
+  assert.match(dockerWorkflow, /environment: docker-publish/);
+});
+
+test("Docker image workflow keeps prereleases off latest", () => {
+  assert.match(dockerWorkflow, /flavor: latest=false/);
+  assert.match(
+    dockerWorkflow,
+    /if: github\.event_name != 'release' \|\| !github\.event\.release\.prerelease/,
+  );
+});
+
+test("Docker image workflow serializes every publish", () => {
+  assert.match(
+    dockerWorkflow,
+    /concurrency:\s+group: docker-image-publish\s+cancel-in-progress: false\s+queue: max/,
+  );
+});
+
+test("Docker image workflow only promotes the freshest stable release", () => {
+  const buildIndex = dockerWorkflow.indexOf("- name: Build and push");
+  const promotionIndex = dockerWorkflow.indexOf("- name: Promote current image to latest");
+  const buildBlock = dockerWorkflow.slice(buildIndex, promotionIndex);
+
+  assert.notEqual(buildIndex, -1);
+  assert.ok(promotionIndex > buildIndex);
+  assert.match(buildBlock, /push: true/);
+  assert.match(buildBlock, /tags: \$\{\{ steps\.meta\.outputs\.tags \}\}/);
+  assert.match(dockerWorkflow, /id: build/);
+  assert.match(dockerWorkflow, /type=ref,event=tag/);
+  assert.match(dockerWorkflow, /type=sha,format=long,prefix=sha-/);
+  assert.match(dockerWorkflow, /gh api "repos\/\$GITHUB_REPOSITORY\/releases\/latest" --jq \.tag_name/);
+  assert.match(dockerWorkflow, /"\$RELEASE_TAG" != "\$latest_release_tag"/);
+  assert.doesNotMatch(dockerWorkflow, /releases\/latest.*\|\| true/);
+  assert.match(dockerWorkflow, /IMAGE_DIGEST: \$\{\{ steps\.build\.outputs\.digest \}\}/);
+  assert.match(
+    dockerWorkflow,
+    /docker buildx imagetools create --tag "\$IMAGE_NAME:latest" "\$IMAGE_NAME@\$IMAGE_DIGEST"/,
+  );
+});
+
+test("Docker image workflow rejects a stale manual dispatch", () => {
+  const validationIndex = dockerWorkflow.indexOf("- name: Validate manual source");
+  const buildIndex = dockerWorkflow.indexOf("- name: Build and push");
+  const promotionIndex = dockerWorkflow.indexOf("- name: Promote current image to latest");
+  const defaultHeadCheckIndices = [
+    ...dockerWorkflow.matchAll(
+      /gh api "repos\/\$GITHUB_REPOSITORY\/commits\/\$DEFAULT_BRANCH" --jq \.sha/g,
+    ),
+  ].map((match) => match.index);
+
+  assert.notEqual(validationIndex, -1);
+  assert.ok(validationIndex < buildIndex);
+  assert.ok(buildIndex < promotionIndex);
+  assert.equal(defaultHeadCheckIndices.length, 2);
+  assert.ok((defaultHeadCheckIndices[0] ?? -1) > validationIndex);
+  assert.ok((defaultHeadCheckIndices[0] ?? -1) < buildIndex);
+  assert.ok((defaultHeadCheckIndices[1] ?? -1) > promotionIndex);
+  assert.match(dockerWorkflow, /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(dockerWorkflow, /"\$GITHUB_SHA" != "\$default_branch_sha"/);
+  assert.match(dockerWorkflow, /exit 1/);
+});
+
+test("Docker image workflow isolates release caches while reusing the default-branch cache", () => {
+  const cacheScope = /\$\{\{ github\.event_name == 'workflow_dispatch' && 'main' \|\| github\.sha \}\}/;
+
+  assert.match(dockerWorkflow, new RegExp(`cache-from:[\\s\\S]*scope=docker-${cacheScope.source}`));
+  assert.match(dockerWorkflow, /cache-from:[\s\S]*type=gha,scope=docker-main/);
+  assert.match(dockerWorkflow, new RegExp(`cache-to: type=gha,mode=max,scope=docker-${cacheScope.source}`));
+});
+
+test("Docker image workflow pins every action to a commit", () => {
+  const actionReferences = [...dockerWorkflow.matchAll(/^\s+uses:\s+([^@\s]+)@(\S+)(?:\s+#.*)?$/gm)];
+
+  assert.equal(actionReferences.length, 6);
+  for (const [, action, revision] of actionReferences) {
+    assert.match(revision ?? "", /^[a-f0-9]{40}$/, `${action} must use a full commit SHA`);
+  }
 });
 
 test("wraps stdin-based agent command in docker with workdir, user, env, and config mounts", () => {
