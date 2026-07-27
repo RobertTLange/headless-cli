@@ -17,12 +17,15 @@ jobs:
   validate-release:
     name: Validate release versions
     runs-on: ubuntu-latest
+    outputs:
+      release-sha: ${{ steps.release-sha.outputs.value }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Validate package and tag versions
         env:
@@ -47,6 +50,10 @@ jobs:
               raise SystemExit(f"release tag {release_tag} does not match package version {npm_version}")
           PY
 
+      - name: Record immutable release commit
+        id: release-sha
+        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   publish-npm:
     name: Publish to npm
     needs:
@@ -54,6 +61,8 @@ jobs:
       - build-python
     runs-on: ubuntu-latest
     environment: npm
+    outputs:
+      verified: ${{ steps.preflight.outputs.verified }}
     permissions:
       contents: read
       id-token: write
@@ -63,6 +72,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ needs.validate-release.outputs.release-sha }}
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -85,6 +95,10 @@ jobs:
           npm pack --pack-destination /tmp
           npx -y --package /tmp/roberttlange-headless-*.tgz headless --help
 
+      - name: Mark npm preflight complete
+        id: preflight
+        run: echo "verified=true" >> "$GITHUB_OUTPUT"
+
       - name: Read package version
         id: package-version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
@@ -104,6 +118,22 @@ jobs:
             exit 1
           fi
 
+      - name: Verify release tag is unchanged
+        env:
+          EXPECTED_SHA: ${{ needs.validate-release.outputs.release-sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          remote_refs=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          release_sha=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$remote_refs")
+          if [[ -z "$release_sha" ]]; then
+            release_sha=$(awk 'NR == 1 {print $1}' <<< "$remote_refs")
+          fi
+          if [[ "$release_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Release tag moved after validation."
+            exit 1
+          fi
+
       - name: Publish to npm
         if: steps.npm-version.outputs.published != 'true'
         env:
@@ -113,11 +143,22 @@ jobs:
 
       - name: Promote freshest release to npm latest
         env:
+          EXPECTED_SHA: ${{ needs.validate-release.outputs.release-sha }}
           GH_TOKEN: ${{ github.token }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
+          remote_refs=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          release_sha=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$remote_refs")
+          if [[ -z "$release_sha" ]]; then
+            release_sha=$(awk 'NR == 1 {print $1}' <<< "$remote_refs")
+          fi
+          if [[ "$release_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Release tag moved after validation."
+            exit 1
+          fi
           latest_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
           if [[ "$RELEASE_TAG" != "$latest_release_tag" ]]; then
             echo "::notice::A newer stable release exists; keeping its npm latest tag."
@@ -137,6 +178,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ needs.validate-release.outputs.release-sha }}
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -229,9 +271,14 @@ jobs:
   publish-pypi:
     name: Publish Python SDK to PyPI
     needs:
+      - validate-release
       - publish-npm
       - build-python
-    if: needs.build-python.outputs.published != 'true'
+    if: >-
+      always() &&
+      needs.build-python.result == 'success' &&
+      needs.publish-npm.outputs.verified == 'true' &&
+      needs.build-python.outputs.published != 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -240,11 +287,33 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-release.outputs.release-sha }}
+
       - name: Download Python distributions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-distributions
           path: python/dist/
+
+      - name: Verify release tag is unchanged
+        env:
+          EXPECTED_SHA: ${{ needs.validate-release.outputs.release-sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          remote_refs=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          release_sha=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$remote_refs")
+          if [[ -z "$release_sha" ]]; then
+            release_sha=$(awk 'NR == 1 {print $1}' <<< "$remote_refs")
+          fi
+          if [[ "$release_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Release tag moved after validation."
+            exit 1
+          fi
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1

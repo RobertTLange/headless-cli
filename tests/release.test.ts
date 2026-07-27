@@ -29,12 +29,19 @@ test("release workflow validates package and tag versions before publishing", ()
   assert.doesNotMatch(releaseWorkflow, /workflow_dispatch:/);
   assert.match(releaseWorkflow, /npm_version != python_version/);
   assert.match(releaseWorkflow, /release_tag != f"v\{npm_version\}"/);
+  assert.equal(releaseWorkflow.match(/ref: \$\{\{ github\.sha \}\}/g)?.length, 1);
+  assert.equal(
+    releaseWorkflow.match(/ref: \$\{\{ needs\.validate-release\.outputs\.release-sha \}\}/g)
+      ?.length,
+    3,
+  );
+  assert.match(releaseWorkflow, /release-sha: \$\{\{ steps\.release-sha\.outputs\.value \}\}/);
 });
 
 test("release workflow pins actions and publishes npm with provenance", () => {
   const actionReferences = [...releaseWorkflow.matchAll(/^\s+uses:\s+([^@\s]+)@(\S+)(?:\s+#.*)?$/gm)];
 
-  assert.equal(actionReferences.length, 9);
+  assert.equal(actionReferences.length, 10);
   for (const [, action, revision] of actionReferences) {
     assert.match(revision ?? "", /^[a-f0-9]{40}$/, `${action} must use a full commit SHA`);
   }
@@ -65,4 +72,36 @@ test("release workflow only moves npm latest to the freshest GitHub release", ()
     releaseWorkflow,
     /npm dist-tag add "@roberttlange\/headless@\$PACKAGE_VERSION" latest/,
   );
+});
+
+test("PyPI waits for npm preflight but not npm publication success", () => {
+  assert.match(
+    releaseWorkflow,
+    /publish-pypi:\s+name: Publish Python SDK to PyPI\s+needs:\s+- validate-release\s+- publish-npm\s+- build-python/,
+  );
+  assert.match(releaseWorkflow, /always\(\) &&\s+needs\.build-python\.result == 'success'/);
+  assert.match(releaseWorkflow, /needs\.publish-npm\.outputs\.verified == 'true'/);
+});
+
+test("registry mutations fail if the released tag moves", () => {
+  const npmPublishIndex = releaseWorkflow.indexOf(
+    'npm publish --access public --provenance --tag "release-$PACKAGE_VERSION"',
+  );
+  const npmPromotionIndex = releaseWorkflow.indexOf(
+    'npm dist-tag add "@roberttlange/headless@$PACKAGE_VERSION" latest',
+  );
+  const pypiPublishIndex = releaseWorkflow.indexOf(
+    "uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247",
+  );
+  const tagChecks = [...releaseWorkflow.matchAll(/git ls-remote --tags/g)].map(
+    (match) => match.index,
+  );
+
+  assert.equal(tagChecks.length, 3);
+  assert.ok((tagChecks[0] ?? Infinity) < npmPublishIndex);
+  assert.ok((tagChecks[1] ?? -1) > npmPublishIndex);
+  assert.ok((tagChecks[1] ?? Infinity) < npmPromotionIndex);
+  assert.ok((tagChecks[2] ?? -1) > npmPromotionIndex);
+  assert.ok((tagChecks[2] ?? Infinity) < pypiPublishIndex);
+  assert.equal(releaseWorkflow.match(/Release tag moved after validation/g)?.length, 3);
 });
