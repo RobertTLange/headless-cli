@@ -17,6 +17,8 @@ import {
 } from "../src/docker.ts";
 import { quoteCommand } from "../src/shell.ts";
 
+const dockerWorkflow = readFileSync(".github/workflows/docker-image.yml", "utf8");
+
 test("Dockerfile exposes Cursor agent from a non-root path", () => {
   const dockerfile = readFileSync("Dockerfile", "utf8");
 
@@ -42,14 +44,29 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
 });
 
 test("Docker image workflow publishes the pinned image for both host architectures", () => {
-  const workflow = readFileSync(".github/workflows/docker-image.yml", "utf8");
+  assert.match(dockerWorkflow, /packages:\s+write/);
+  assert.match(dockerWorkflow, /ghcr\.io\/roberttlange\/headless/);
+  assert.match(dockerWorkflow, /platforms:\s+linux\/amd64,linux\/arm64/);
+  assert.match(dockerWorkflow, /docker\/build-push-action@v6/);
+  assert.match(dockerWorkflow, /provenance: mode=max/);
+  assert.match(dockerWorkflow, /sbom: true/);
+});
 
-  assert.match(workflow, /packages:\s+write/);
-  assert.match(workflow, /ghcr\.io\/roberttlange\/headless/);
-  assert.match(workflow, /platforms:\s+linux\/amd64,linux\/arm64/);
-  assert.match(workflow, /docker\/build-push-action@v6/);
-  assert.match(workflow, /provenance: mode=max/);
-  assert.match(workflow, /sbom: true/);
+test("Docker image workflow only manually publishes the default branch", () => {
+  assert.match(dockerWorkflow, /if: >-\s+github\.event_name == 'release' \|\|/);
+  assert.match(
+    dockerWorkflow,
+    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/,
+  );
+  assert.match(dockerWorkflow, /environment: docker-publish/);
+});
+
+test("Docker image workflow keeps prereleases off latest", () => {
+  assert.match(dockerWorkflow, /flavor: latest=false/);
+  assert.match(
+    dockerWorkflow,
+    /type=raw,value=latest,enable=\$\{\{ github\.event_name != 'release' \|\| !github\.event\.release\.prerelease \}\}/,
+  );
 });
 
 test("wraps stdin-based agent command in docker with workdir, user, env, and config mounts", () => {

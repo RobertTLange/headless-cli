@@ -9,7 +9,11 @@ on:
 jobs:
   publish:
     name: Publish multi-architecture image
+    if: >-
+      github.event_name == 'release' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    environment: docker-publish
     permissions:
       contents: read
       packages: write
@@ -36,9 +40,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/roberttlange/headless
+          flavor: latest=false
           tags: |
-            type=raw,value=latest
             type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.event_name != 'release' || !github.event.release.prerelease }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
