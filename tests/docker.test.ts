@@ -53,7 +53,8 @@ test("Docker image workflow publishes the pinned image for both host architectur
   assert.match(dockerWorkflow, /packages:\s+write/);
   assert.match(dockerWorkflow, /ghcr\.io\/roberttlange\/headless/);
   assert.match(dockerWorkflow, /platforms:\s+linux\/amd64,linux\/arm64/);
-  assert.match(dockerWorkflow, /docker\/build-push-action@v6/);
+  assert.match(dockerWorkflow, /docker\/build-push-action@[a-f0-9]{40} # v6/);
+  assert.match(dockerWorkflow, /persist-credentials: false/);
   assert.match(dockerWorkflow, /provenance: mode=max/);
   assert.match(dockerWorkflow, /sbom: true/);
 });
@@ -73,6 +74,15 @@ test("Docker image workflow keeps prereleases off latest", () => {
     dockerWorkflow,
     /type=raw,value=latest,enable=\$\{\{ github\.event_name != 'release' \|\| !github\.event\.release\.prerelease \}\}/,
   );
+});
+
+test("Docker image workflow pins every action to a commit", () => {
+  const actionReferences = [...dockerWorkflow.matchAll(/^\s+uses:\s+([^@\s]+)@(\S+)(?:\s+#.*)?$/gm)];
+
+  assert.equal(actionReferences.length, 6);
+  for (const [, action, revision] of actionReferences) {
+    assert.match(revision ?? "", /^[a-f0-9]{40}$/, `${action} must use a full commit SHA`);
+  }
 });
 
 test("wraps stdin-based agent command in docker with workdir, user, env, and config mounts", () => {
