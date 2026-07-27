@@ -16,14 +16,20 @@ test("npm, PyPI, and changelog release versions agree", () => {
 
 test("release workflow validates package and tag versions before publishing", () => {
   const validationIndex = releaseWorkflow.indexOf("validate-release:");
+  const npmBuildIndex = releaseWorkflow.indexOf("build-npm:");
   const npmPublishIndex = releaseWorkflow.indexOf("publish-npm:");
   const pythonBuildIndex = releaseWorkflow.indexOf("build-python:");
   const npmPublishBlock = releaseWorkflow.slice(npmPublishIndex, pythonBuildIndex);
 
   assert.notEqual(validationIndex, -1);
+  assert.ok(validationIndex < npmBuildIndex);
   assert.ok(validationIndex < npmPublishIndex);
   assert.ok(validationIndex < pythonBuildIndex);
-  assert.match(npmPublishBlock, /needs:\s+- validate-release\s+- build-python/);
+  assert.match(
+    npmPublishBlock,
+    /needs:\s+- validate-release\s+- build-npm\s+- build-python/,
+  );
+  assert.match(releaseWorkflow, /build-npm:[\s\S]*?needs: validate-release/);
   assert.match(releaseWorkflow, /build-python:[\s\S]*?needs: validate-release/);
   assert.match(releaseWorkflow, /on:\s+release:\s+types:\s+- published/);
   assert.doesNotMatch(releaseWorkflow, /workflow_dispatch:/);
@@ -35,21 +41,29 @@ test("release workflow validates package and tag versions before publishing", ()
       ?.length,
     3,
   );
+  assert.match(
+    releaseWorkflow,
+    /package-version: \$\{\{ steps\.versions\.outputs\.version \}\}/,
+  );
   assert.match(releaseWorkflow, /release-sha: \$\{\{ steps\.release-sha\.outputs\.value \}\}/);
 });
 
 test("release workflow pins actions and publishes npm with provenance", () => {
   const actionReferences = [...releaseWorkflow.matchAll(/^\s+uses:\s+([^@\s]+)@(\S+)(?:\s+#.*)?$/gm)];
 
-  assert.equal(actionReferences.length, 10);
+  assert.equal(actionReferences.length, 13);
   for (const [, action, revision] of actionReferences) {
     assert.match(revision ?? "", /^[a-f0-9]{40}$/, `${action} must use a full commit SHA`);
   }
   assert.match(releaseWorkflow, /id-token: write/);
   assert.match(releaseWorkflow, /environment: npm/);
+  assert.match(releaseWorkflow, /node-version: 24\.18\.0/);
+  assert.match(releaseWorkflow, /test "\$\(npm --version\)" = "11\.16\.0"/);
+  assert.doesNotMatch(releaseWorkflow, /npm install --global npm/);
+  assert.doesNotMatch(releaseWorkflow, /NODE_AUTH_TOKEN/);
   assert.match(
     releaseWorkflow,
-    /npm publish --access public --provenance --tag "release-\$PACKAGE_VERSION"/,
+    /npm publish "\$TARBALL_PATH" --registry https:\/\/registry\.npmjs\.org\/ \\\s+--access public --provenance --tag "\$npm_tag"/,
   );
 });
 
@@ -62,33 +76,55 @@ test("release workflow serializes publishing and fails closed on npm lookup erro
   assert.match(releaseWorkflow, /cat "\$npm_error" >&2\s+exit 1/);
 });
 
-test("release workflow only moves npm latest to the freshest GitHub release", () => {
+test("release workflow only publishes npm latest for the freshest GitHub release", () => {
   assert.match(
     releaseWorkflow,
     /gh api "repos\/\$GITHUB_REPOSITORY\/releases\/latest" --jq \.tag_name/,
   );
-  assert.match(releaseWorkflow, /"\$RELEASE_TAG" != "\$latest_release_tag"/);
-  assert.match(
-    releaseWorkflow,
-    /npm dist-tag add "@roberttlange\/headless@\$PACKAGE_VERSION" latest/,
-  );
+  assert.match(releaseWorkflow, /npm_tag="release-\$PACKAGE_VERSION"/);
+  assert.match(releaseWorkflow, /"\$RELEASE_TAG" == "\$latest_release_tag"/);
+  assert.match(releaseWorkflow, /npm_tag=latest/);
 });
 
 test("PyPI waits for npm preflight but not npm publication success", () => {
+  const pypiIndex = releaseWorkflow.indexOf("publish-pypi:");
+  const pypiBlock = releaseWorkflow.slice(pypiIndex);
+
   assert.match(
     releaseWorkflow,
-    /publish-pypi:\s+name: Publish Python SDK to PyPI\s+needs:\s+- validate-release\s+- publish-npm\s+- build-python/,
+    /publish-pypi:\s+name: Publish Python SDK to PyPI\s+needs:\s+- validate-release\s+- build-npm\s+- build-python/,
   );
   assert.match(releaseWorkflow, /always\(\) &&\s+needs\.build-python\.result == 'success'/);
-  assert.match(releaseWorkflow, /needs\.publish-npm\.outputs\.verified == 'true'/);
+  assert.match(releaseWorkflow, /needs\.build-npm\.result == 'success'/);
+  assert.match(releaseWorkflow, /needs\.build-npm\.outputs\.verified == 'true'/);
+  assert.match(pypiBlock, /permissions:\s+contents: read\s+id-token: write/);
+});
+
+test("npm OIDC is isolated from package build and lifecycle scripts", () => {
+  const npmBuildIndex = releaseWorkflow.indexOf("build-npm:");
+  const npmPublishIndex = releaseWorkflow.indexOf("publish-npm:");
+  const pythonBuildIndex = releaseWorkflow.indexOf("build-python:");
+  const npmBuildBlock = releaseWorkflow.slice(npmBuildIndex, npmPublishIndex);
+  const npmPublishBlock = releaseWorkflow.slice(npmPublishIndex, pythonBuildIndex);
+
+  assert.doesNotMatch(npmBuildBlock, /id-token: write/);
+  assert.doesNotMatch(npmBuildBlock, /environment: npm/);
+  assert.match(npmBuildBlock, /uses: actions\/upload-artifact@/);
+  assert.match(npmBuildBlock, /sha256sum "\$\{tarballs\[0\]\}"/);
+  assert.match(npmPublishBlock, /uses: actions\/download-artifact@/);
+  assert.doesNotMatch(npmPublishBlock, /^\s+npm (?:ci|run check|pack(?:\s|$))/m);
+  assert.match(npmPublishBlock, /metadata\.name !== "@roberttlange\/headless"/);
+  assert.match(npmPublishBlock, /metadata\.version !== process\.env\.EXPECTED_VERSION/);
+  assert.match(
+    npmPublishBlock,
+    /metadata\.publishConfig\?\.registry !== "https:\/\/registry\.npmjs\.org\/"/,
+  );
+  assert.match(npmPublishBlock, /EXPECTED_SHA256: \$\{\{ needs\.build-npm\.outputs\.sha256 \}\}/);
 });
 
 test("registry mutations fail if the released tag moves", () => {
   const npmPublishIndex = releaseWorkflow.indexOf(
-    'npm publish --access public --provenance --tag "release-$PACKAGE_VERSION"',
-  );
-  const npmPromotionIndex = releaseWorkflow.indexOf(
-    'npm dist-tag add "@roberttlange/headless@$PACKAGE_VERSION" latest',
+    'npm publish "$TARBALL_PATH" --registry https://registry.npmjs.org/',
   );
   const pypiPublishIndex = releaseWorkflow.indexOf(
     "uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247",
@@ -97,11 +133,9 @@ test("registry mutations fail if the released tag moves", () => {
     (match) => match.index,
   );
 
-  assert.equal(tagChecks.length, 3);
+  assert.equal(tagChecks.length, 2);
   assert.ok((tagChecks[0] ?? Infinity) < npmPublishIndex);
   assert.ok((tagChecks[1] ?? -1) > npmPublishIndex);
-  assert.ok((tagChecks[1] ?? Infinity) < npmPromotionIndex);
-  assert.ok((tagChecks[2] ?? -1) > npmPromotionIndex);
-  assert.ok((tagChecks[2] ?? Infinity) < pypiPublishIndex);
-  assert.equal(releaseWorkflow.match(/Release tag moved after validation/g)?.length, 3);
+  assert.ok((tagChecks[1] ?? Infinity) < pypiPublishIndex);
+  assert.equal(releaseWorkflow.match(/Release tag moved after validation/g)?.length, 2);
 });

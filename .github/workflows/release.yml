@@ -18,6 +18,7 @@ jobs:
     name: Validate release versions
     runs-on: ubuntu-latest
     outputs:
+      package-version: ${{ steps.versions.outputs.version }}
       release-sha: ${{ steps.release-sha.outputs.value }}
 
     steps:
@@ -28,6 +29,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Validate package and tag versions
+        id: versions
         env:
           RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -48,24 +50,22 @@ jobs:
           release_tag = os.environ["RELEASE_TAG"]
           if release_tag != f"v{npm_version}":
               raise SystemExit(f"release tag {release_tag} does not match package version {npm_version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"version={npm_version}", file=output)
           PY
 
       - name: Record immutable release commit
         id: release-sha
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  publish-npm:
-    name: Publish to npm
-    needs:
-      - validate-release
-      - build-python
+  build-npm:
+    name: Build and verify npm package
+    needs: validate-release
     runs-on: ubuntu-latest
-    environment: npm
     outputs:
+      published: ${{ steps.npm-version.outputs.published }}
+      sha256: ${{ steps.package-artifact.outputs.sha256 }}
       verified: ${{ steps.preflight.outputs.verified }}
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - name: Checkout
@@ -79,7 +79,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
@@ -92,8 +91,17 @@ jobs:
 
       - name: Smoke test npx executable
         run: |
-          npm pack --pack-destination /tmp
-          npx -y --package /tmp/roberttlange-headless-*.tgz headless --help
+          mkdir npm-package
+          npm pack --pack-destination npm-package
+          npx -y --package npm-package/roberttlange-headless-*.tgz headless --help
+
+      - name: Record npm package artifact
+        id: package-artifact
+        run: |
+          shopt -s nullglob
+          tarballs=(npm-package/*.tgz)
+          test "${#tarballs[@]}" -eq 1
+          echo "sha256=$(sha256sum "${tarballs[0]}" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Mark npm preflight complete
         id: preflight
@@ -118,36 +126,76 @@ jobs:
             exit 1
           fi
 
-      - name: Verify release tag is unchanged
+      - name: Upload npm package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: npm-package/*.tgz
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish to npm
+    needs:
+      - validate-release
+      - build-npm
+      - build-python
+    if: needs.build-npm.outputs.published != 'true'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Setup trusted-publishing Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+
+      - name: Verify bundled npm
+        run: test "$(npm --version)" = "11.16.0"
+
+      - name: Download npm package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: npm-package/
+
+      - name: Validate npm package artifact
+        id: package-artifact
         env:
-          EXPECTED_SHA: ${{ needs.validate-release.outputs.release-sha }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          EXPECTED_SHA256: ${{ needs.build-npm.outputs.sha256 }}
+          EXPECTED_VERSION: ${{ needs.validate-release.outputs.package-version }}
         run: |
-          remote_refs=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" \
-            "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
-          release_sha=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$remote_refs")
-          if [[ -z "$release_sha" ]]; then
-            release_sha=$(awk 'NR == 1 {print $1}' <<< "$remote_refs")
-          fi
-          if [[ "$release_sha" != "$EXPECTED_SHA" ]]; then
-            echo "::error::Release tag moved after validation."
-            exit 1
-          fi
+          shopt -s nullglob
+          tarballs=(npm-package/*.tgz)
+          test "${#tarballs[@]}" -eq 1
+          tarball="${tarballs[0]}"
+          test "$(sha256sum "$tarball" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
+          metadata_path="$RUNNER_TEMP/npm-package.json"
+          tar -xOf "$tarball" package/package.json > "$metadata_path"
+          METADATA_PATH="$metadata_path" node - <<'NODE'
+          const fs = require("node:fs");
+          const metadata = JSON.parse(fs.readFileSync(process.env.METADATA_PATH, "utf8"));
+          if (metadata.name !== "@roberttlange/headless") {
+            throw new Error(`unexpected npm package name: ${metadata.name}`);
+          }
+          if (metadata.version !== process.env.EXPECTED_VERSION) {
+            throw new Error(`unexpected npm package version: ${metadata.version}`);
+          }
+          if (metadata.publishConfig?.registry !== "https://registry.npmjs.org/") {
+            throw new Error(`unexpected npm registry: ${metadata.publishConfig?.registry}`);
+          }
+          NODE
+          echo "path=$tarball" >> "$GITHUB_OUTPUT"
 
       - name: Publish to npm
-        if: steps.npm-version.outputs.published != 'true'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
-        run: npm publish --access public --provenance --tag "release-$PACKAGE_VERSION"
-
-      - name: Promote freshest release to npm latest
-        env:
-          EXPECTED_SHA: ${{ needs.validate-release.outputs.release-sha }}
           GH_TOKEN: ${{ github.token }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+          PACKAGE_VERSION: ${{ needs.validate-release.outputs.package-version }}
+          EXPECTED_SHA: ${{ needs.validate-release.outputs.release-sha }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          TARBALL_PATH: ${{ steps.package-artifact.outputs.path }}
         run: |
           remote_refs=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" \
             "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
@@ -160,11 +208,12 @@ jobs:
             exit 1
           fi
           latest_release_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
-          if [[ "$RELEASE_TAG" != "$latest_release_tag" ]]; then
-            echo "::notice::A newer stable release exists; keeping its npm latest tag."
-            exit 0
+          npm_tag="release-$PACKAGE_VERSION"
+          if [[ "$RELEASE_TAG" == "$latest_release_tag" ]]; then
+            npm_tag=latest
           fi
-          npm dist-tag add "@roberttlange/headless@$PACKAGE_VERSION" latest
+          npm publish "$TARBALL_PATH" --registry https://registry.npmjs.org/ \
+            --access public --provenance --tag "$npm_tag"
 
   build-python:
     name: Build and verify Python SDK
@@ -272,18 +321,20 @@ jobs:
     name: Publish Python SDK to PyPI
     needs:
       - validate-release
-      - publish-npm
+      - build-npm
       - build-python
     if: >-
       always() &&
       needs.build-python.result == 'success' &&
-      needs.publish-npm.outputs.verified == 'true' &&
+      needs.build-npm.result == 'success' &&
+      needs.build-npm.outputs.verified == 'true' &&
       needs.build-python.outputs.published != 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/project/headless-cli/
     permissions:
+      contents: read
       id-token: write
 
     steps:
