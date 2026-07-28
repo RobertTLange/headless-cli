@@ -30,14 +30,13 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /ARG CURSOR_AGENT_VERSION=\d{4}\.\d{2}\.\d{2}-[a-f0-9]+/);
   assert.match(dockerfile, /ARG CURSOR_AGENT_SHA256_AMD64=[a-f0-9]{64}/);
   assert.match(dockerfile, /ARG CURSOR_AGENT_SHA256_ARM64=[a-f0-9]{64}/);
-  assert.match(dockerfile, /ARG AGY_RELEASE=\d+\.\d+\.\d+-\d+/);
-  assert.match(dockerfile, /ARG AGY_SHA512_AMD64=[a-f0-9]{128}/);
-  assert.match(dockerfile, /ARG AGY_SHA512_ARM64=[a-f0-9]{128}/);
+  assert.match(dockerfile, /ARG AGY_VERSION=\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /ARG AGY_SHA256_AMD64=[a-f0-9]{64}/);
+  assert.match(dockerfile, /ARG AGY_SHA256_ARM64=[a-f0-9]{64}/);
   assert.match(dockerfile, /sha256sum -c -/);
   assert.match(dockerfile, /ln -sf \/opt\/cursor-agent\/cursor-agent \/usr\/local\/bin\/cursor-agent/);
   assert.match(dockerfile, /ln -sf \/usr\/local\/bin\/cursor-agent \/usr\/local\/bin\/agent/);
-  assert.match(dockerfile, /storage\.googleapis\.com\/antigravity-public\/antigravity-cli/);
-  assert.match(dockerfile, /sha512sum -c -/);
+  assert.match(dockerfile, /github\.com\/google-antigravity\/antigravity-cli\/releases\/download/);
   assert.match(dockerfile, /install -m 0755 \/tmp\/antigravity \/usr\/local\/bin\/agy/);
   assert.match(dockerfile, /ENV AGY_CLI_DISABLE_AUTO_UPDATE=true/);
 });

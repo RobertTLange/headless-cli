@@ -3,6 +3,7 @@
 ## TBD
 
 - Fixed Antigravity one-shot runs to forward Headless's configured command timeout to `agy --print-timeout`, so long reasoning runs are not cut off by Agy's independent five-minute default.
+- Updated the bundled Docker image to Antigravity CLI 1.1.8, using the official release assets and published SHA-256 digests for Linux AMD64 and ARM64.
 
 ## 0.5.0 - 2026-07-27
 
