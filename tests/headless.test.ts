@@ -117,10 +117,25 @@ test("builds ACP adapter command with read-only permission mode", () => {
 });
 
 test("builds Antigravity one-shot command", () => {
-  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", model: "gemini-model", workDir: "/repo/project" }, {}), {
-    command: "agy",
-    args: ["--model", "gemini-model", "-p", "hello", "--dangerously-skip-permissions"],
-  });
+  assert.deepEqual(
+    buildAgentCommand(
+      "antigravity",
+      { prompt: "hello", model: "gemini-model", timeoutSeconds: 900, workDir: "/repo/project" },
+      {},
+    ),
+    {
+      command: "agy",
+      args: [
+        "--model",
+        "gemini-model",
+        "-p",
+        "hello",
+        "--print-timeout",
+        "900s",
+        "--dangerously-skip-permissions",
+      ],
+    },
+  );
 });
 
 test("builds Antigravity command with binary override and sandboxed read-only mode", () => {

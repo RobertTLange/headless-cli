@@ -2,6 +2,8 @@
 
 ## TBD
 
+- Fixed Antigravity one-shot runs to forward Headless's configured command timeout to `agy --print-timeout`, so long reasoning runs are not cut off by Agy's independent five-minute default.
+
 ## 0.5.0 - 2026-07-27
 
 - Added multi-architecture GHCR image publishing for Linux AMD64 and ARM64 releases, with guarded manual recovery, immutable release and commit tags, serialized `latest` promotion, provenance, and SBOM attestations (#23).

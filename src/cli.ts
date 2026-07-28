@@ -1439,6 +1439,7 @@ function applySessionPlan(commandOptions: {
   model?: string;
   allow?: AllowMode;
   reasoningEffort?: ReasoningEffort;
+  timeoutSeconds?: number;
 }, plan: SessionPlan | undefined): typeof commandOptions & {
   sessionAlias?: string;
   sessionId?: string;
@@ -3178,6 +3179,7 @@ async function executeStoredNode(
           model: defaults.model,
           allow,
           reasoningEffort: defaults.reasoningEffort,
+          timeoutSeconds: config.general.timeoutSeconds,
         },
         sessionPlan,
       ),
@@ -4194,6 +4196,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
+        timeoutSeconds: commandTimeoutSeconds,
       }, commandSessionPlan),
       env,
     ), parsed.runId, nodeId);

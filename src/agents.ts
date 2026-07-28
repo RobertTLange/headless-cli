@@ -175,6 +175,9 @@ function withAntigravityAllow(args: string[], allow: AllowMode | undefined): str
 function buildAntigravity(options: BuildOptions, env: Env): BuiltCommand {
   const args = withModel([], options.model);
   args.push("-p", options.prompt);
+  if (options.timeoutSeconds !== undefined) {
+    args.push("--print-timeout", `${options.timeoutSeconds}s`);
+  }
   args.push(...withAntigravityAllow([], options.allow));
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--conversation", options.sessionId);
