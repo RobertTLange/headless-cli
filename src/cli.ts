@@ -4196,7 +4196,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         model: configuredDefaults.model,
         allow,
         reasoningEffort: configuredDefaults.reasoningEffort,
-        timeoutSeconds: commandTimeoutSeconds,
+        timeoutSeconds: parsed.modal ? modalTimeoutSeconds : commandTimeoutSeconds,
       }, commandSessionPlan),
       env,
     ), parsed.runId, nodeId);

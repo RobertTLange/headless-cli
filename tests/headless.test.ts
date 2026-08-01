@@ -2869,6 +2869,39 @@ test("CLI applies --timeout to Modal unless --modal-timeout is set", async () =>
   }
 });
 
+test("CLI forwards the effective Modal timeout to Antigravity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const projectDir = join(dir, "project");
+    mkdirSync(projectDir);
+
+    const timeoutCases = [
+      { timeoutArgs: [], expectedTimeoutSeconds: 3600 },
+      { timeoutArgs: ["--modal-timeout", "1200"], expectedTimeoutSeconds: 1200 },
+      { timeoutArgs: ["--timeout", "60", "--modal-timeout", "1200"], expectedTimeoutSeconds: 1200 },
+    ];
+
+    for (const { timeoutArgs, expectedTimeoutSeconds } of timeoutCases) {
+      const stdout: string[] = [];
+      assert.equal(
+        await runCli(
+          ["antigravity", "--prompt", "hello", "--work-dir", projectDir, "--modal", ...timeoutArgs, "--print-command"],
+          { env: { ...process.env, HOME: dir }, stdout: (text) => stdout.push(text) },
+        ),
+        0,
+      );
+      assert.match(
+        stdout.join(""),
+        new RegExp(
+          `--timeout ${expectedTimeoutSeconds} .* -- agy -p hello --print-timeout ${expectedTimeoutSeconds}s `,
+        ),
+      );
+    }
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI rejects invalid Modal option combinations", async () => {
   const stderr: string[] = [];
   assert.equal(
