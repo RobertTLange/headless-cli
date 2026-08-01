@@ -292,7 +292,7 @@ Options:
 - `--work-dir`, `-C`: run the agent from a specific working directory.
 - `--docker`: run the agent inside Docker; add `--session` for a durable multi-turn container home.
 - `--modal`: run the agent in a Modal CPU sandbox for one-shot headless execution.
-- `--timeout <s>`: stop one-shot local, Docker, Modal, or `--tmux --wait` execution after the given number of seconds.
+- `--timeout <s>`: stop one-shot local, Docker, Modal, or `--tmux --wait` execution after the given number of seconds. For Antigravity one-shot runs, Headless also forwards this budget to `agy --print-timeout`.
 - `--json`: stream the raw agent JSON trace instead of extracting the final message.
 - `--debug`: stream the raw agent JSON trace and append the extracted final message.
 - `--usage`: append normalized token usage and cost JSON after the final message or streamed `--json` trace.

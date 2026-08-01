@@ -117,10 +117,25 @@ test("builds ACP adapter command with read-only permission mode", () => {
 });
 
 test("builds Antigravity one-shot command", () => {
-  assert.deepEqual(buildAgentCommand("antigravity", { prompt: "hello", model: "gemini-model", workDir: "/repo/project" }, {}), {
-    command: "agy",
-    args: ["--model", "gemini-model", "-p", "hello", "--dangerously-skip-permissions"],
-  });
+  assert.deepEqual(
+    buildAgentCommand(
+      "antigravity",
+      { prompt: "hello", model: "gemini-model", timeoutSeconds: 900, workDir: "/repo/project" },
+      {},
+    ),
+    {
+      command: "agy",
+      args: [
+        "--model",
+        "gemini-model",
+        "-p",
+        "hello",
+        "--print-timeout",
+        "900s",
+        "--dangerously-skip-permissions",
+      ],
+    },
+  );
 });
 
 test("builds Antigravity command with binary override and sandboxed read-only mode", () => {
@@ -2849,6 +2864,39 @@ test("CLI applies --timeout to Modal unless --modal-timeout is set", async () =>
       0,
     );
     assert.match(stdout.join(""), /--timeout 44 /);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI forwards the effective Modal timeout to Antigravity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const projectDir = join(dir, "project");
+    mkdirSync(projectDir);
+
+    const timeoutCases = [
+      { timeoutArgs: [], expectedTimeoutSeconds: 3600 },
+      { timeoutArgs: ["--modal-timeout", "1200"], expectedTimeoutSeconds: 1200 },
+      { timeoutArgs: ["--timeout", "60", "--modal-timeout", "1200"], expectedTimeoutSeconds: 1200 },
+    ];
+
+    for (const { timeoutArgs, expectedTimeoutSeconds } of timeoutCases) {
+      const stdout: string[] = [];
+      assert.equal(
+        await runCli(
+          ["antigravity", "--prompt", "hello", "--work-dir", projectDir, "--modal", ...timeoutArgs, "--print-command"],
+          { env: { ...process.env, HOME: dir }, stdout: (text) => stdout.push(text) },
+        ),
+        0,
+      );
+      assert.match(
+        stdout.join(""),
+        new RegExp(
+          `--timeout ${expectedTimeoutSeconds} .* -- agy -p hello --print-timeout ${expectedTimeoutSeconds}s `,
+        ),
+      );
+    }
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
