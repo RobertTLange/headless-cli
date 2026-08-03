@@ -111,6 +111,23 @@ def test_async_namespaces_are_available(fake_headless: tuple[Path, Path]) -> Non
     asyncio.run(exercise())
 
 
+def test_async_run_forwards_fast_mode(fake_headless: tuple[Path, Path]) -> None:
+    binary, record = fake_headless
+    client = AsyncHeadless(binary=binary, env={"FAKE_HEADLESS_RECORD": str(record)})
+
+    async def exercise() -> None:
+        result = await client.run("claude", prompt="review", fast=True)
+        assert result.final_message == "final answer"
+        assert read_record(record)["argv"] == [
+            "claude",
+            "--fast",
+            "--sdk-format",
+            "json",
+        ]
+
+    asyncio.run(exercise())
+
+
 def test_async_cron_add_has_full_typed_parity(
     fake_headless: tuple[Path, Path],
 ) -> None:
@@ -124,6 +141,7 @@ def test_async_cron_add_has_full_typed_parity(
             schedule="0 * * * *",
             prompt_file="triage.md",
             model="gpt-5",
+            fast=True,
             reasoning_effort="xhigh",
             allow="yolo",
             work_dir="/tmp/project",
@@ -156,6 +174,7 @@ def test_async_cron_add_has_full_typed_parity(
         "triage.md",
         "--model",
         "gpt-5",
+        "--fast",
         "--reasoning-effort",
         "xhigh",
         "--allow",

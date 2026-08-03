@@ -88,6 +88,7 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     });
     const run = readRun(env, "auth");
     assert.equal(run?.nodes["worker-1"].dependsOn[0], "explorer");
+    assert.equal(run?.nodes["worker-1"].fast, false);
     assert.equal(run?.nodes["worker-1"].logs?.stdout.endsWith("latest.stdout.log"), true);
     assert.equal(existsSync(join(env.HOME, ".headless", "runs", "auth", "run.json")), true);
     registerNode(env, {
@@ -298,6 +299,7 @@ test("orchestrator run registers declared team and injects run context", async (
         "worker=2",
         "--team",
         "claude/reviewer",
+        "--fast",
         "--prompt",
         "Build auth",
       ],
@@ -320,6 +322,10 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(run?.nodes["worker-1"].status, "done");
     assert.equal(run?.nodes["worker-2"].status, "planned");
     assert.equal(run?.nodes.reviewer.status, "done");
+    assert.equal(run?.nodes.orchestrator.fast, true);
+    assert.equal(run?.nodes["worker-1"].fast, true);
+    assert.equal(run?.nodes["worker-2"].fast, true);
+    assert.equal(run?.nodes.reviewer.fast, true);
     assert.equal(run?.nodes.reviewer.role, "reviewer");
     const orchestratorLog = readFileSync(run?.nodes.orchestrator.logs?.stdout ?? "", "utf8");
     assert.match(orchestratorLog, /node invocation/);
@@ -374,6 +380,139 @@ test("orchestrator run status reporter stays off for json runs", async () => {
     assert.match(stdout.join(""), /"orchestrator final"/);
     assert.doesNotMatch(stderr.join(""), /headless run json-run/);
     assert.equal(readRun(env, "json-run")?.nodes.orchestrator.lastMessage, "orchestrator final");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("direct run-node launches preserve stored fast mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "codex-args.jsonl");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "codex"),
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'worker final' }));",
+        "",
+      ].join("\n"),
+    );
+    const env = {
+      ...process.env,
+      HEADLESS_CAPTURE: captureFile,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "oneshot",
+      status: "planned",
+      planned: true,
+      fast: true,
+    });
+
+    assert.equal(
+      await runCli(
+        ["codex", "--role", "worker", "--run", "auth", "--node", "worker-1", "--coordination", "oneshot", "--prompt", "continue"],
+        { env, stdout: () => undefined },
+      ),
+      0,
+    );
+
+    const args = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.equal(args.includes('service_tier="fast"'), true);
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].fast, true);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("direct run-node launches do not inherit fast mode across agents", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "gemini"),
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ response: 'worker final' }));",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "oneshot",
+      status: "planned",
+      planned: true,
+      fast: true,
+    });
+
+    assert.equal(
+      await runCli(
+        ["gemini", "--role", "worker", "--run", "auth", "--node", "worker-1", "--coordination", "oneshot", "--prompt", "continue"],
+        { env, stdout: () => undefined },
+      ),
+      0,
+    );
+
+    const node = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(node?.agent, "gemini");
+    assert.equal(node?.fast, false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("existing tmux run-node sends preserve stored fast mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await writeExecutable(
+      join(binDir, "tmux"),
+      [
+        "#!/usr/bin/env node",
+        "if (process.argv[2] === 'has-session') process.exit(0);",
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "tmux",
+      status: "busy",
+      planned: true,
+      fast: true,
+      sessionAlias: "worker-1",
+      tmuxSessionName: "headless-codex-worker-1",
+    });
+
+    assert.equal(
+      await runCli(
+        ["codex", "--tmux", "--session", "worker-1", "--role", "worker", "--run", "auth", "--node", "worker-1", "--prompt", "continue"],
+        { env, stdout: () => undefined },
+      ),
+      0,
+    );
+
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].fast, true);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1241,10 +1380,11 @@ test("run message --async uses HEADLESS_BIN for detached child invocations", asy
       runId: "auth",
       nodeId: "worker-1",
       role: "worker",
-      agent: "pi",
+      agent: "codex",
       coordination: "oneshot",
       status: "idle",
       planned: true,
+      fast: true,
     });
 
     assert.equal(
@@ -1256,7 +1396,8 @@ test("run message --async uses HEADLESS_BIN for detached child invocations", asy
     );
     await waitFor(() => readRun(env, "auth")?.nodes["worker-1"].status === "idle");
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(calls[0].slice(0, 7), ["pi", "--role", "worker", "--coordination", "oneshot", "--run", "auth"]);
+    assert.deepEqual(calls[0].slice(0, 7), ["codex", "--role", "worker", "--coordination", "oneshot", "--run", "auth"]);
+    assert.equal(calls[0].includes("--fast"), true);
     assert.deepEqual(calls.at(-1), ["run", "mark", "auth", "worker-1", "--status", "idle"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });

@@ -60,6 +60,14 @@ function withClaudeEffort(args: string[], effort: ReasoningEffort | undefined): 
   return effort ? [...args, "--effort", effort] : args;
 }
 
+function withClaudeFastMode(args: string[], fast = false): string[] {
+  return [...args, "--settings", JSON.stringify({ fastMode: fast })];
+}
+
+function withCodexServiceTier(args: string[], fast = false): string[] {
+  return [...args, "-c", `service_tier="${fast ? "fast" : "default"}"`];
+}
+
 function withClaudeAllow(args: string[], allow: AllowMode | undefined): string[] {
   if (allow === "read-only") {
     return [...args, "--allowedTools", claudeReadOnlyTools];
@@ -267,7 +275,7 @@ function buildClaudeCommand(args: string[], env: Env, extra?: Pick<BuiltCommand,
 }
 
 function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
-  const args = withClaudeModel([], options.model ?? defaultClaudeModel);
+  const args = withClaudeFastMode(withClaudeModel([], options.model ?? defaultClaudeModel), options.fast);
   args.push("-p");
   if (options.sessionMode === "resume" && options.sessionId) {
     args.push("--resume", options.sessionId);
@@ -297,6 +305,7 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
     "exec",
     ...(options.sessionMode === "resume" && options.sessionId ? ["resume"] : []),
     ...withModel([], model),
+    ...withCodexServiceTier([], options.fast),
     ...(options.reasoningEffort ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`] : []),
     "--json",
     "--skip-git-repo-check",
@@ -323,6 +332,7 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : [];
   args.push(...withModel([], model));
+  args.push(...withCodexServiceTier([], options.fast));
   if (options.reasoningEffort) {
     args.push("-c", `model_reasoning_effort="${options.reasoningEffort}"`);
   }
@@ -549,7 +559,7 @@ const harnesses: Record<AgentName, AgentHarness> = {
     seedPaths: [".claude.json", ".claude/settings.json", ".claude/.credentials.json", ".claude/auth.json"],
     buildCommand: buildClaude,
     buildInteractiveCommand: (options, env) => {
-      const args = withClaudeModel([], options.model ?? defaultClaudeModel);
+      const args = withClaudeFastMode(withClaudeModel([], options.model ?? defaultClaudeModel), options.fast);
       if (options.sessionMode === "new" && options.sessionId) {
         args.push("--session-id", options.sessionId);
       }

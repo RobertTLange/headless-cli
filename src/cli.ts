@@ -170,6 +170,7 @@ interface ParsedArgs {
   prompt?: string;
   promptFile?: string;
   model?: string;
+  fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   allow?: AllowMode;
   acpAgent?: string;
@@ -273,6 +274,7 @@ function usage(): string {
     "",
     "Options:",
     "  --model <name>        Agent model override.",
+    "  --fast                Enable Fast mode for Codex or Claude.",
     "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --acp-agent <id>      With acp, resolve an ACP server from the registry by id or name.",
@@ -439,6 +441,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--model":
       case "--agent-model":
         parsed.model = takeValue(args, arg);
+        break;
+      case "--fast":
+        parsed.fast = true;
         break;
       case "--reasoning-effort":
       case "--effort":
@@ -1438,6 +1443,7 @@ function applySessionPlan(commandOptions: {
   workDir?: string;
   model?: string;
   allow?: AllowMode;
+  fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   timeoutSeconds?: number;
 }, plan: SessionPlan | undefined): typeof commandOptions & {
@@ -3053,6 +3059,7 @@ function validateCronCliOptions(parsed: ParsedArgs): void {
       parsed.prompt !== undefined ||
       parsed.promptFile !== undefined ||
       parsed.model !== undefined ||
+      parsed.fast ||
       parsed.reasoningEffort !== undefined ||
       parsed.allow !== undefined ||
       parsed.workDir !== undefined ||
@@ -3116,6 +3123,7 @@ async function executeStoredNode(
     agent: AgentName;
     allow?: AllowMode;
     coordination: CoordinationMode;
+    fast?: boolean;
     model?: string;
     reasoningEffort?: ReasoningEffort;
     runId: string;
@@ -3178,6 +3186,7 @@ async function executeStoredNode(
           workDir: node.workDir,
           model: defaults.model,
           allow,
+          fast: node.fast ?? false,
           reasoningEffort: defaults.reasoningEffort,
           timeoutSeconds: config.general.timeoutSeconds,
         },
@@ -3339,6 +3348,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             prompt: parsed.prompt,
             promptFile: parsed.promptFile,
             model: parsed.model,
+            fast: parsed.fast,
             reasoningEffort: parsed.reasoningEffort,
             allow: parsed.allow,
             workDir: validateWorkDir(parsed.workDir),
@@ -3376,6 +3386,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
         throw toCliError(error);
       }
+    }
+    if (
+      parsed.fast &&
+      (parsed.attach || parsed.rename || parsed.send || parsed.check || parsed.list || parsed.showConfig || parsed.dockerCommand || parsed.runCommand)
+    ) {
+      throw new CliError("--fast can only be used with agent runs or cron add");
     }
     if (parsed.runCommand) {
       if (parsed.sdkFormat && parsed.runCommand !== "list" && parsed.runCommand !== "view") {
@@ -3778,6 +3794,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? (config.general.defaultAgent ?? autoAgentPreference[0])
         : selectDefaultAgent(env, config.general.defaultAgent);
     }
+    if (parsed.fast && parsed.agent !== "claude" && parsed.agent !== "codex") {
+      throw new CliError("--fast is supported only by claude and codex");
+    }
     if (
       parsed.coordination === "tmux" ||
       (!parsed.coordination && config.general.coordination === "tmux" && !parsed.docker && !parsed.modal)
@@ -3892,6 +3911,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.docker) {
       validateDockerWorkDir(cwd ?? process.cwd());
     }
+    const existingTmuxSession = parsed.tmux && parsed.sessionAlias
+      ? await headlessTmuxSessionExists(buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias), env)
+      : false;
+    if (parsed.fast && existingTmuxSession) {
+      throw new CliError("--fast cannot be applied to an existing tmux session");
+    }
+    const storedNode = parsed.runId && nodeId ? readRun(env, parsed.runId)?.nodes[nodeId] : undefined;
+    const storedFastMode = storedNode?.agent === parsed.agent ? storedNode.fast : undefined;
+    const fast = parsed.fast ?? storedFastMode ?? false;
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
@@ -3911,6 +3939,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           planned: true,
           allow: teamDefaults.allow ?? roleDefaultAllow(teamNode.role),
           model: teamDefaults.model,
+          fast: fast && (teamNode.agent === "claude" || teamNode.agent === "codex"),
           reasoningEffort: teamDefaults.reasoningEffort,
           workDir: cwd ?? process.cwd(),
           sessionAlias: teamNode.nodeId,
@@ -3927,6 +3956,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         planned: true,
         allow,
         model: configuredDefaults.model,
+        fast,
         reasoningEffort: configuredDefaults.reasoningEffort,
         workDir: cwd ?? process.cwd(),
         sessionAlias: coordination === "session" ? (parsed.sessionAlias ?? nodeId) : parsed.sessionAlias,
@@ -3958,7 +3988,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const sessionName = parsed.sessionAlias
         ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
         : undefined;
-      if (sessionName && (await headlessTmuxSessionExists(sessionName, env))) {
+      if (sessionName && existingTmuxSession) {
         const existingStrategy = parsed.wait
           ? resolveExistingSessionWaitStrategy(parsed.agent, parsed.sessionAlias, sessionName, env)
           : undefined;
@@ -3988,6 +4018,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               planned: true,
               allow,
               model: configuredDefaults.model,
+              fast,
               reasoningEffort: configuredDefaults.reasoningEffort,
               workDir: cwd ?? process.cwd(),
               sessionAlias: parsed.sessionAlias ?? nodeId,
@@ -4031,6 +4062,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         prompt: tmuxPrompt,
         model: configuredDefaults.model,
         allow,
+        fast,
         reasoningEffort: configuredDefaults.reasoningEffort,
         ...(waitPlan?.identity ?? {}),
       };
@@ -4116,6 +4148,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             planned: true,
             allow,
             model: configuredDefaults.model,
+            fast,
             reasoningEffort: configuredDefaults.reasoningEffort,
             workDir: cwd ?? process.cwd(),
             sessionAlias: parsed.sessionAlias ?? parsed.tmuxName ?? nodeId,
@@ -4195,6 +4228,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         workDir: cwd ?? process.cwd(),
         model: configuredDefaults.model,
         allow,
+        fast,
         reasoningEffort: configuredDefaults.reasoningEffort,
         timeoutSeconds: parsed.modal ? modalTimeoutSeconds : commandTimeoutSeconds,
       }, commandSessionPlan),

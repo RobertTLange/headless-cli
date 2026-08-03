@@ -14,6 +14,7 @@ export interface BuildOptions {
   workDir?: string;
   model?: string;
   allow?: AllowMode;
+  fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   timeoutSeconds?: number;
   sessionAlias?: string;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,8 @@ test("builds read-only commands for supported agents", () => {
       "exec",
       "--model",
       "gpt-5.5",
+      "-c",
+      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -39,6 +41,8 @@ test("builds read-only commands for supported agents", () => {
     args: [
       "--model",
       "claude-opus-4-6",
+      "--settings",
+      '{"fastMode":false}',
       "-p",
       "hello",
       "--output-format",
@@ -106,6 +110,8 @@ test("builds explicit yolo commands for supported agents", () => {
     "exec",
     "--model",
     "gpt-5.5",
+    "-c",
+    'service_tier="default"',
     "--json",
     "--skip-git-repo-check",
     "-",
@@ -113,6 +119,8 @@ test("builds explicit yolo commands for supported agents", () => {
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", allow: "yolo" }, {}).args, [
     "--model",
     "claude-opus-4-6",
+    "--settings",
+    '{"fastMode":false}',
     "-p",
     "hello",
     "--output-format",
@@ -187,13 +195,15 @@ test("defaults to yolo commands for supported agents", () => {
 test("builds read-only interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", allow: "read-only" }, {}), {
     command: "codex",
-    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--search", "--model", "gpt-5.5", "hello"],
+    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--search", "--model", "gpt-5.5", "-c", 'service_tier="default"', "hello"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", allow: "read-only" }, {}), {
     command: "claude",
     args: [
       "--model",
       "claude-opus-4-6",
+      "--settings",
+      '{"fastMode":false}',
       "--allowedTools",
       "Read,Grep,Glob,LS,WebFetch,WebSearch",
       "hello",
@@ -246,6 +256,71 @@ test("CLI rejects invalid reasoning effort", async () => {
 
   assert.equal(code, 2);
   assert.match(stderr.join(""), /unsupported reasoning effort: max/);
+});
+
+test("builds standard-mode commands for Codex and Claude by default", () => {
+  assert.ok(
+    buildAgentCommand("codex", { prompt: "hello" }, {}).args.includes('service_tier="default"'),
+  );
+  assert.ok(
+    buildAgentCommand("claude", { prompt: "hello" }, {}).args.includes('{"fastMode":false}'),
+  );
+  assert.ok(
+    buildInteractiveAgentCommand("codex", { prompt: "hello" }, {}).args.includes('service_tier="default"'),
+  );
+  assert.ok(
+    buildInteractiveAgentCommand("claude", { prompt: "hello" }, {}).args.includes('{"fastMode":false}'),
+  );
+});
+
+test("CLI enables fast mode only for Codex and Claude", async () => {
+  const codexOutput: string[] = [];
+  const codexCode = await runCli(["codex", "--fast", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => codexOutput.push(text),
+  });
+  assert.equal(codexCode, 0);
+  assert.match(codexOutput.join(""), /service_tier="fast"/);
+
+  const claudeOutput: string[] = [];
+  const claudeCode = await runCli(["claude", "--fast", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => claudeOutput.push(text),
+  });
+  assert.equal(claudeCode, 0);
+  assert.match(claudeOutput.join(""), /--settings '\{"fastMode":true\}'/);
+
+  const stderr: string[] = [];
+  const unsupportedCode = await runCli(["gemini", "--fast", "--prompt", "hello"], {
+    stderr: (text) => stderr.push(text),
+  });
+  assert.equal(unsupportedCode, 2);
+  assert.match(stderr.join(""), /--fast is supported only by claude and codex/);
+
+  const dir = mkdtempSync(join(tmpdir(), "headless-fast-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    await writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env node\nprocess.exit(process.argv[2] === 'has-session' ? 0 : 1);\n");
+    const tmuxStderr: string[] = [];
+    const existingTmuxCode = await runCli(["codex", "--tmux", "--session", "existing", "--fast", "--run", "fast", "--role", "orchestrator", "--team", "worker", "--prompt", "hello"], {
+      env: { ...process.env, HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stderr: (text) => tmuxStderr.push(text),
+    });
+    assert.equal(existingTmuxCode, 2);
+    assert.match(tmuxStderr.join(""), /--fast cannot be applied to an existing tmux session/);
+    assert.equal(existsSync(join(dir, "home", ".headless", "runs", "fast", "run.json")), false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI forwards fast mode to tmux commands", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(["claude", "--tmux", "--fast", "--prompt", "hello", "--print-command"], {
+    stdout: (text) => stdout.push(text),
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /--settings '\\''\{"fastMode":true\}'\\''/);
 });
 
 test("CLI print-command includes allow mode flags", async () => {
@@ -340,7 +415,7 @@ test("CLI tmux print-command includes allow mode flags", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search --model gpt-5\.5 hello/);
+  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search --model gpt-5\.5 -c '\\''service_tier="default"'\\'' hello/);
 });
 
 test("CLI Antigravity tmux print-command includes allow mode flags", async () => {
