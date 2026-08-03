@@ -748,13 +748,19 @@ test("builds native session commands for supported agents", () => {
 });
 
 test("CLI passes Antigravity model selection through to agy", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const stdout: string[] = [];
-  const code = await runCli(["antigravity", "--model", "gemini-pro", "--prompt", "hello", "--print-command"], {
-    stdout: (text) => stdout.push(text),
-  });
+  try {
+    const code = await runCli(["antigravity", "--model", "gemini-pro", "--prompt", "hello", "--print-command"], {
+      env: { ...process.env, HOME: join(dir, "home") },
+      stdout: (text) => stdout.push(text),
+    });
 
-  assert.equal(code, 0);
-  assert.match(stdout.join(""), /^agy --model gemini-pro -p hello --print-timeout \d+s --dangerously-skip-permissions\n$/);
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), /^agy --model gemini-pro -p hello --dangerously-skip-permissions\n$/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("builds interactive commands for tmux mode", () => {
@@ -5558,6 +5564,8 @@ test("CLI --tmux preserves multiline prompt-file text through the tmux shell com
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-next",
+      "-c",
+      'service_tier="default"',
       "line one\nline two",
     ]);
   } finally {
