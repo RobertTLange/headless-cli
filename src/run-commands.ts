@@ -356,6 +356,7 @@ function buildNodeInvocationCommand(env: Env, runId: string, nodeId: string, nod
       prompt,
       ...(node.allow ? ["--allow", node.allow] : []),
       ...(node.model ? ["--model", node.model] : []),
+      ...(node.fast ? ["--fast"] : []),
       ...(node.reasoningEffort ? ["--reasoning-effort", node.reasoningEffort] : []),
       ...(node.workDir ? ["--work-dir", node.workDir] : []),
       ...(node.coordination === "session" ? ["--session", node.sessionAlias ?? nodeId] : []),

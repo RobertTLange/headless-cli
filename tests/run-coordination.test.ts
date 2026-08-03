@@ -1247,10 +1247,11 @@ test("run message --async uses HEADLESS_BIN for detached child invocations", asy
       runId: "auth",
       nodeId: "worker-1",
       role: "worker",
-      agent: "pi",
+      agent: "codex",
       coordination: "oneshot",
       status: "idle",
       planned: true,
+      fast: true,
     });
 
     assert.equal(
@@ -1262,7 +1263,8 @@ test("run message --async uses HEADLESS_BIN for detached child invocations", asy
     );
     await waitFor(() => readRun(env, "auth")?.nodes["worker-1"].status === "idle");
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(calls[0].slice(0, 7), ["pi", "--role", "worker", "--coordination", "oneshot", "--run", "auth"]);
+    assert.deepEqual(calls[0].slice(0, 7), ["codex", "--role", "worker", "--coordination", "oneshot", "--run", "auth"]);
+    assert.equal(calls[0].includes("--fast"), true);
     assert.deepEqual(calls.at(-1), ["run", "mark", "auth", "worker-1", "--status", "idle"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
