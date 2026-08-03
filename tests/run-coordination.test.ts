@@ -88,6 +88,7 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     });
     const run = readRun(env, "auth");
     assert.equal(run?.nodes["worker-1"].dependsOn[0], "explorer");
+    assert.equal(run?.nodes["worker-1"].fast, false);
     assert.equal(run?.nodes["worker-1"].logs?.stdout.endsWith("latest.stdout.log"), true);
     assert.equal(existsSync(join(env.HOME, ".headless", "runs", "auth", "run.json")), true);
     registerNode(env, {
@@ -298,6 +299,7 @@ test("orchestrator run registers declared team and injects run context", async (
         "worker=2",
         "--team",
         "claude/reviewer",
+        "--fast",
         "--prompt",
         "Build auth",
       ],
@@ -320,6 +322,10 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(run?.nodes["worker-1"].status, "done");
     assert.equal(run?.nodes["worker-2"].status, "planned");
     assert.equal(run?.nodes.reviewer.status, "done");
+    assert.equal(run?.nodes.orchestrator.fast, true);
+    assert.equal(run?.nodes["worker-1"].fast, true);
+    assert.equal(run?.nodes["worker-2"].fast, true);
+    assert.equal(run?.nodes.reviewer.fast, true);
     assert.equal(run?.nodes.reviewer.role, "reviewer");
     const orchestratorLog = readFileSync(run?.nodes.orchestrator.logs?.stdout ?? "", "utf8");
     assert.match(orchestratorLog, /node invocation/);

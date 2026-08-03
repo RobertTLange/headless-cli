@@ -30,7 +30,7 @@ headless cron start
 headless cron stop
 ```
 
-`cron add` accepts the normal one-shot Headless options that are safe for detached execution: `--model`, `--reasoning-effort`, `--allow`, `--work-dir`, `--docker`, `--docker-*`, `--modal`, `--modal-*`, `--timeout`, `--json`, `--debug`, and `--usage`.
+`cron add` accepts the normal one-shot Headless options that are safe for detached execution: `--model`, `--fast` (Codex and Claude only), `--reasoning-effort`, `--allow`, `--work-dir`, `--docker`, `--docker-*`, `--modal`, `--modal-*`, `--timeout`, `--json`, `--debug`, and `--usage`.
 
 `cron add` uses `--name` as the optional cron job id. It rejects `--tmux`, `--wait`, `--delete`, `--session`, `--run`, `--node`, `--role`, `--coordination`, `--team`, and run-management commands in v1. Scheduled tmux/session reuse needs a separate design.
 

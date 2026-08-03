@@ -32,6 +32,7 @@ export interface RunNode {
   unplanned: boolean;
   allow?: AllowMode;
   model?: string;
+  fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   workDir?: string;
   sessionAlias?: string;
@@ -111,6 +112,7 @@ export interface RegisterNodeInput {
   planned?: boolean;
   allow?: AllowMode;
   model?: string;
+  fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   workDir?: string;
   sessionAlias?: string;
@@ -230,6 +232,7 @@ export function registerNode(env: Env, input: RegisterNodeInput): RunNode {
       unplanned: !(input.planned ?? existing?.planned ?? false),
       allow: input.allow ?? existing?.allow,
       model: input.model ?? existing?.model,
+      fast: input.fast ?? existing?.fast ?? false,
       reasoningEffort: input.reasoningEffort ?? existing?.reasoningEffort,
       workDir: input.workDir ?? existing?.workDir,
       sessionAlias: input.sessionAlias ?? existing?.sessionAlias,
