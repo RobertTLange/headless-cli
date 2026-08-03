@@ -3912,6 +3912,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.docker) {
       validateDockerWorkDir(cwd ?? process.cwd());
     }
+    const existingTmuxSession = parsed.tmux && parsed.sessionAlias
+      ? await headlessTmuxSessionExists(buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias), env)
+      : false;
+    if (parsed.fast && existingTmuxSession) {
+      throw new CliError("--fast cannot be applied to an existing tmux session");
+    }
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
@@ -3980,11 +3986,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const sessionName = parsed.sessionAlias
         ? buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias)
         : undefined;
-      const existingTmuxSession = sessionName && (await headlessTmuxSessionExists(sessionName, env));
-      if (existingTmuxSession) {
-        if (parsed.fast) {
-          throw new CliError("--fast cannot be applied to an existing tmux session");
-        }
+      if (sessionName && existingTmuxSession) {
         const existingStrategy = parsed.wait
           ? resolveExistingSessionWaitStrategy(parsed.agent, parsed.sessionAlias, sessionName, env)
           : undefined;

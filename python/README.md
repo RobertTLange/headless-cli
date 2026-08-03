@@ -23,6 +23,7 @@ result = headless.run(
     "codex",
     prompt="Review this repository",
     model="gpt-5",
+    fast=True,
     reasoning_effort="high",
     allow="read-only",
 )
@@ -44,6 +45,10 @@ Protocol compatibility is checked on the first structured operation and
 cached for the client lifetime. If the installed CLI is too old, the SDK
 raises `HeadlessVersionError` with an upgrade command. Constructing a client
 never starts a subprocess.
+
+`run(..., fast=False)` and `cron.add(..., fast=False)` default to standard mode. Pass
+`fast=True` to forward Headless' `--fast` flag for Codex or Claude; the CLI rejects it
+for other agents.
 
 Structured methods raise on SDK error envelopes by default. Pass
 `check=False` to receive a typed `SdkError` value instead.

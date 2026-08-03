@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -301,12 +301,13 @@ test("CLI enables fast mode only for Codex and Claude", async () => {
     mkdirSync(binDir);
     await writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env node\nprocess.exit(process.argv[2] === 'has-session' ? 0 : 1);\n");
     const tmuxStderr: string[] = [];
-    const existingTmuxCode = await runCli(["codex", "--tmux", "--session", "existing", "--fast", "--prompt", "hello"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    const existingTmuxCode = await runCli(["codex", "--tmux", "--session", "existing", "--fast", "--run", "fast", "--role", "orchestrator", "--team", "worker", "--prompt", "hello"], {
+      env: { ...process.env, HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` },
       stderr: (text) => tmuxStderr.push(text),
     });
     assert.equal(existingTmuxCode, 2);
     assert.match(tmuxStderr.join(""), /--fast cannot be applied to an existing tmux session/);
+    assert.equal(existsSync(join(dir, "home", ".headless", "runs", "fast", "run.json")), false);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

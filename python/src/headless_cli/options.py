@@ -21,6 +21,7 @@ def build_run_args(
     prompt: str | None = None,
     prompt_file: str | PathLike[str] | None = None,
     model: str | None = None,
+    fast: bool = False,
     reasoning_effort: str | None = None,
     allow: str | None = None,
     acp_agent: str | None = None,
@@ -67,6 +68,8 @@ def build_run_args(
     if prompt_file is not None:
         append_value(args, "--prompt-file", prompt_file)
     append_value(args, "--model", model)
+    if fast:
+        args.append("--fast")
     append_value(args, "--reasoning-effort", reasoning_effort)
     append_value(args, "--allow", allow)
     append_value(args, "--acp-agent", acp_agent)

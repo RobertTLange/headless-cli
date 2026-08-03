@@ -147,6 +147,7 @@ class AsyncCron:
         prompt: str | None = None,
         prompt_file: str | PathLike[str] | None = None,
         model: str | None = None,
+        fast: bool = False,
         reasoning_effort: ReasoningEffort | None = None,
         allow: AllowMode | None = None,
         work_dir: str | PathLike[str] | None = None,
@@ -177,6 +178,8 @@ class AsyncCron:
         append_value(args, "--prompt", prompt)
         append_value(args, "--prompt-file", prompt_file)
         append_value(args, "--model", model)
+        if fast:
+            args.append("--fast")
         append_value(args, "--reasoning-effort", reasoning_effort)
         append_value(args, "--allow", allow)
         append_value(args, "--work-dir", work_dir)
