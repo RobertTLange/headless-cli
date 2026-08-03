@@ -385,6 +385,139 @@ test("orchestrator run status reporter stays off for json runs", async () => {
   }
 });
 
+test("direct run-node launches preserve stored fast mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "codex-args.jsonl");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "codex"),
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.appendFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'worker final' }));",
+        "",
+      ].join("\n"),
+    );
+    const env = {
+      ...process.env,
+      HEADLESS_CAPTURE: captureFile,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "oneshot",
+      status: "planned",
+      planned: true,
+      fast: true,
+    });
+
+    assert.equal(
+      await runCli(
+        ["codex", "--role", "worker", "--run", "auth", "--node", "worker-1", "--coordination", "oneshot", "--prompt", "continue"],
+        { env, stdout: () => undefined },
+      ),
+      0,
+    );
+
+    const args = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.equal(args.includes('service_tier="fast"'), true);
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].fast, true);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("direct run-node launches do not inherit fast mode across agents", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "gemini"),
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ response: 'worker final' }));",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "oneshot",
+      status: "planned",
+      planned: true,
+      fast: true,
+    });
+
+    assert.equal(
+      await runCli(
+        ["gemini", "--role", "worker", "--run", "auth", "--node", "worker-1", "--coordination", "oneshot", "--prompt", "continue"],
+        { env, stdout: () => undefined },
+      ),
+      0,
+    );
+
+    const node = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(node?.agent, "gemini");
+    assert.equal(node?.fast, false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("existing tmux run-node sends preserve stored fast mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await writeExecutable(
+      join(binDir, "tmux"),
+      [
+        "#!/usr/bin/env node",
+        "if (process.argv[2] === 'has-session') process.exit(0);",
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+    const env = { ...process.env, HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "tmux",
+      status: "busy",
+      planned: true,
+      fast: true,
+      sessionAlias: "worker-1",
+      tmuxSessionName: "headless-codex-worker-1",
+    });
+
+    assert.equal(
+      await runCli(
+        ["codex", "--tmux", "--session", "worker-1", "--role", "worker", "--run", "auth", "--node", "worker-1", "--prompt", "continue"],
+        { env, stdout: () => undefined },
+      ),
+      0,
+    );
+
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].fast, true);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("json Antigravity usage is included in persisted run-node metrics", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   const originalFetch = globalThis.fetch;
