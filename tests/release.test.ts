@@ -32,7 +32,6 @@ test("release workflow validates package and tag versions before publishing", ()
   assert.match(releaseWorkflow, /build-npm:[\s\S]*?needs: validate-release/);
   assert.match(releaseWorkflow, /build-python:[\s\S]*?needs: validate-release/);
   assert.match(releaseWorkflow, /on:\s+release:\s+types:\s+- published/);
-  assert.doesNotMatch(releaseWorkflow, /workflow_dispatch:/);
   assert.match(releaseWorkflow, /npm_version != python_version/);
   assert.match(releaseWorkflow, /release_tag != f"v\{npm_version\}"/);
   assert.equal(releaseWorkflow.match(/ref: \$\{\{ github\.sha \}\}/g)?.length, 1);
@@ -48,10 +47,35 @@ test("release workflow validates package and tag versions before publishing", ()
   assert.match(releaseWorkflow, /release-sha: \$\{\{ steps\.release-sha\.outputs\.value \}\}/);
 });
 
+test("PyPI recovery reuses artifacts from the matching immutable release run", () => {
+  assert.match(
+    releaseWorkflow,
+    /workflow_dispatch:\s+inputs:\s+release_tag:[\s\S]*?source_run_id:/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /recover-pypi:[\s\S]*?if: github\.event_name == 'workflow_dispatch'/,
+  );
+  assert.match(releaseWorkflow, /environment:\s+name: pypi/);
+  assert.match(releaseWorkflow, /actions: read/);
+  assert.match(releaseWorkflow, /run-id: \$\{\{ inputs\.source_run_id \}\}/);
+  assert.match(releaseWorkflow, /github-token: \$\{\{ github\.token \}\}/);
+  assert.match(releaseWorkflow, /source\["workflow_id"\] != workflow\["id"\]/);
+  assert.match(releaseWorkflow, /source\["path"\] != workflow\["path"\]/);
+  assert.match(releaseWorkflow, /workflow\["path"\] != "\.github\/workflows\/release\.yml"/);
+  assert.match(releaseWorkflow, /source\["event"\] != "release"/);
+  assert.match(releaseWorkflow, /source\["head_sha"\] != tag_sha/);
+  assert.match(releaseWorkflow, /tag-sha=\{tag_sha\}/);
+  assert.match(releaseWorkflow, /release\["draft"\] or release\["prerelease"\]/);
+  assert.match(releaseWorkflow, /release\["tag_name"\] != release_tag/);
+  assert.match(releaseWorkflow, /headless_cli-\{version\}-py3-none-any\.whl/);
+  assert.match(releaseWorkflow, /headless_cli-\{version\}\.tar\.gz/);
+});
+
 test("release workflow pins actions and publishes npm with provenance", () => {
   const actionReferences = [...releaseWorkflow.matchAll(/^\s+uses:\s+([^@\s]+)@(\S+)(?:\s+#.*)?$/gm)];
 
-  assert.equal(actionReferences.length, 13);
+  assert.equal(actionReferences.length, 15);
   for (const [, action, revision] of actionReferences) {
     assert.match(revision ?? "", /^[a-f0-9]{40}$/, `${action} must use a full commit SHA`);
   }
@@ -131,15 +155,21 @@ test("registry mutations fail if the released tag moves", () => {
     'npm publish "$TARBALL_PATH" --registry https://registry.npmjs.org/',
   );
   const pypiPublishIndex = releaseWorkflow.indexOf(
-    "uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247",
+    "uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
   );
   const tagChecks = [...releaseWorkflow.matchAll(/git ls-remote --tags/g)].map(
     (match) => match.index,
   );
 
-  assert.equal(tagChecks.length, 2);
+  assert.equal(tagChecks.length, 3);
   assert.ok((tagChecks[0] ?? Infinity) < npmPublishIndex);
   assert.ok((tagChecks[1] ?? -1) > npmPublishIndex);
   assert.ok((tagChecks[1] ?? Infinity) < pypiPublishIndex);
+  const recoveryPublishIndex = releaseWorkflow.lastIndexOf(
+    "uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+  );
+  assert.ok((tagChecks[2] ?? -1) > pypiPublishIndex);
+  assert.ok((tagChecks[2] ?? Infinity) < recoveryPublishIndex);
   assert.equal(releaseWorkflow.match(/Release tag moved after validation/g)?.length, 2);
+  assert.equal(releaseWorkflow.match(/Release tag moved after recovery validation/g)?.length, 1);
 });

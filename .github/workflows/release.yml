@@ -4,6 +4,16 @@ on:
   release:
     types:
       - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing stable release tag to recover
+        required: true
+        type: string
+      source_run_id:
+        description: Failed release run containing verified Python artifacts
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,6 +26,7 @@ concurrency:
 jobs:
   validate-release:
     name: Validate release versions
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     outputs:
       package-version: ${{ steps.versions.outputs.version }}
@@ -370,6 +381,124 @@ jobs:
           fi
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: python/dist
+
+  recover-pypi:
+    name: Recover PyPI publication
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/headless-cli/
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Validate recovery source
+        id: recovery-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          release_tag = os.environ["RELEASE_TAG"]
+          source_run_id = os.environ["SOURCE_RUN_ID"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", release_tag):
+              raise SystemExit("release_tag must be a stable vX.Y.Z tag")
+          if not source_run_id.isascii() or not source_run_id.isdigit():
+              raise SystemExit("source_run_id must be numeric")
+          def gh_json(endpoint: str) -> dict[str, object]:
+              output = subprocess.run(
+                  ["gh", "api", endpoint], check=True, capture_output=True, text=True
+              ).stdout
+              value = json.loads(output)
+              if not isinstance(value, dict):
+                  raise SystemExit(f"unexpected GitHub response for {endpoint}")
+              return value
+          remote_refs = subprocess.run(
+              [
+                  "git", "ls-remote", "--tags",
+                  f"https://github.com/{repository}.git",
+                  f"refs/tags/{release_tag}", f"refs/tags/{release_tag}^{{}}",
+              ],
+              check=True, capture_output=True, text=True,
+          ).stdout.splitlines()
+          peeled = [line.split()[0] for line in remote_refs if line.endswith("^{}")]
+          direct = [line.split()[0] for line in remote_refs if not line.endswith("^{}")]
+          tag_sha = (peeled or direct or [None])[0]
+          if tag_sha is None:
+              raise SystemExit(f"release tag {release_tag} does not exist")
+          source = gh_json(f"repos/{repository}/actions/runs/{source_run_id}")
+          workflow = gh_json(f"repos/{repository}/actions/workflows/release.yml")
+          if source["workflow_id"] != workflow["id"]:
+              raise SystemExit("source run does not belong to the release workflow")
+          if workflow["path"] != ".github/workflows/release.yml":
+              raise SystemExit("unexpected release workflow path")
+          if source["event"] != "release" or source["path"] != workflow["path"]:
+              raise SystemExit("source run is not a release workflow run")
+          if source["status"] != "completed" or source["head_branch"] != release_tag:
+              raise SystemExit("source run is not a completed run for the requested tag")
+          if source["head_sha"] != tag_sha:
+              raise SystemExit("source run commit does not match the immutable release tag")
+          release = gh_json(f"repos/{repository}/releases/tags/{release_tag}")
+          if release["draft"] or release["prerelease"]:
+              raise SystemExit("PyPI recovery requires a published stable release")
+          if release["tag_name"] != release_tag:
+              raise SystemExit("GitHub release tag does not match recovery input")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"tag-sha={tag_sha}", file=output)
+          PY
+
+      - name: Download verified Python distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-distributions
+          path: python/dist/
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Validate recovered artifact names
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          expected = {f"headless_cli-{version}-py3-none-any.whl", f"headless_cli-{version}.tar.gz"}
+          actual = {path.name for path in pathlib.Path("python/dist").iterdir() if path.is_file()}
+          if actual != expected:
+              raise SystemExit(f"unexpected Python artifacts: {sorted(actual)}")
+          PY
+
+      - name: Verify recovery tag is unchanged
+        env:
+          EXPECTED_SHA: ${{ steps.recovery-source.outputs.tag-sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          remote_refs=$(git ls-remote --tags "https://github.com/$GITHUB_REPOSITORY.git" \
+            "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          release_sha=$(awk '$2 ~ /\^\{\}$/ {print $1}' <<< "$remote_refs")
+          if [[ -z "$release_sha" ]]; then
+            release_sha=$(awk 'NR == 1 {print $1}' <<< "$remote_refs")
+          fi
+          if [[ "$release_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Release tag moved after recovery validation."
+            exit 1
+          fi
+
+      - name: Publish recovered distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: python/dist
