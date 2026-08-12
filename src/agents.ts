@@ -296,8 +296,12 @@ function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
   return buildClaudeCommand(args, env);
 }
 
+function codexModel(options: BuildOptions, env: Env): string | undefined {
+  return options.model || env.CODEX_MODEL || (options.profile ? undefined : defaultCodexModel);
+}
+
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL || defaultCodexModel;
+  const model = codexModel(options, env);
   const args = [
     ...(options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]
@@ -325,7 +329,7 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL || defaultCodexModel;
+  const model = codexModel(options, env);
   const args =
     options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]

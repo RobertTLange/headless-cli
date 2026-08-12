@@ -91,15 +91,21 @@ test("builds codex command using CODEX_MODEL override", () => {
   assert.equal(command.stdinText, "hello");
 });
 
-test("builds Codex one-shot and interactive commands with a profile", () => {
+test("builds Codex profile commands without overriding the profile model", () => {
   assert.deepEqual(
-    buildAgentCommand("codex", { prompt: "hello", profile: "research profile" }, {}).args.slice(0, 5),
-    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research profile", "exec", "--model"],
+    buildAgentCommand("codex", { prompt: "hello", profile: "research" }, {}).args.slice(0, 4),
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "exec"],
   );
   assert.deepEqual(
-    buildInteractiveAgentCommand("codex", { prompt: "hello", profile: "research profile" }, {}).args.slice(0, 4),
-    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research profile", "--model"],
+    buildInteractiveAgentCommand("codex", { prompt: "hello", profile: "research" }, {}).args.slice(0, 4),
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "-c"],
   );
+});
+
+test("builds Codex profile commands with explicit model overrides", () => {
+  const command = buildAgentCommand("codex", { prompt: "hello", profile: "research", model: "custom" }, {});
+
+  assert.deepEqual(command.args.slice(1, 7), ["--profile", "research", "exec", "--model", "custom", "-c"]);
 });
 
 test("rejects Codex profiles for other agent harnesses", () => {
@@ -3223,6 +3229,34 @@ test("CLI --print-command --json includes configured effort and env-backed model
     assert.equal(payload.reasoningEffort, "high");
     assert.match(payload.command, /--model gpt-5\.4/);
     assert.match(payload.command, /model_reasoning_effort/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --print-command --json leaves profile-provided Codex identity unknown", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(binary, "#!/usr/bin/env node\n");
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--profile", "research", "--prompt", "hello", "--print-command", "--json"], {
+      env: { PATH: binDir },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const payload = JSON.parse(stdout.join(""));
+    assert.equal(payload.profile, "research");
+    assert.equal(payload.provider, undefined);
+    assert.equal(payload.model, undefined);
+    assert.doesNotMatch(payload.command, /--model/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

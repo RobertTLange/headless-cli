@@ -1110,9 +1110,15 @@ function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
   return merged;
 }
 
-function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env): { provider?: string; model?: string } {
+function usageContext(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+  profile?: string,
+): { provider?: string; model?: string } {
   if (agent === "codex") {
-    return { provider: "openai", model: defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
+    const model = defaults.model ?? env.CODEX_MODEL;
+    return profile ? { model } : { provider: "openai", model: model ?? "gpt-5.5" };
   }
   if (agent === "claude") {
     return { provider: "anthropic", model: claudeModel(defaults.model ?? "claude-opus-4-6") };
@@ -1337,9 +1343,9 @@ function createWaitingSpinner(label: string, write: (text: string) => void): Wai
   };
 }
 
-function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: Env): string {
+function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: Env, profile?: string): string {
   if (agent === "codex") {
-    return defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5";
+    return defaults.model ?? env.CODEX_MODEL ?? profile ?? "gpt-5.5";
   }
   if (agent === "claude") {
     return claudeModel(defaults.model ?? "claude-opus-4-6") ?? "claude-opus-4-6";
@@ -1363,8 +1369,14 @@ function paintWaitingSpinnerPart(text: string, colorCode: string, enabled: boole
   return enabled ? `\u001b[${colorCode}m${text}\u001b[0m` : text;
 }
 
-function waitingSpinnerLabel(agent: AgentName, defaults: InvocationDefaults, env: Env, color: boolean): string {
-  const model = spinnerModelLabel(agent, defaults, env);
+function waitingSpinnerLabel(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+  color: boolean,
+  profile?: string,
+): string {
+  const model = spinnerModelLabel(agent, defaults, env, profile);
   const reasoning = defaults.reasoningEffort ?? "default";
   return [
     "[",
@@ -1384,7 +1396,7 @@ function renderPrintCommandJson(
   command: BuiltCommand,
   profile?: string,
 ): string {
-  const usage = usageContext(agent, defaults, env);
+  const usage = usageContext(agent, defaults, env, profile);
   return `${JSON.stringify({
     agent,
     provider: usage.provider,
@@ -4375,7 +4387,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       : undefined;
     const waitingSpinner =
       stdoutHandling === "capture" && stderrIsTTY && !statusReporter && !parsed.sdkFormat
-        ? createWaitingSpinner(waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined), stderr)
+        ? createWaitingSpinner(
+            waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined, effectiveProfile),
+            stderr,
+          )
         : undefined;
     const displayStderr = (text: string) => {
       waitingSpinner?.clear();
@@ -4500,7 +4515,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           (result.usageTrace && result.usageTrace !== commandTrace
             ? extractFinalMessage(parsed.agent, result.usageTrace)
             : "");
-        const metrics = extractRunNodeMetrics(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env));
+        const metrics = extractRunNodeMetrics(
+          parsed.agent,
+          usageTrace,
+          usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+        );
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
@@ -4525,7 +4544,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           );
           return exitCode;
         }
-        const context = usageContext(parsed.agent, configuredDefaults, env);
+        const context = usageContext(parsed.agent, configuredDefaults, env, effectiveProfile);
         stdout(
           renderSdkResult("invoke", {
             agent: parsed.agent,
@@ -4549,7 +4568,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           if (stdoutReceived && !stdoutEndsWithNewline) {
             stdout("\n");
           }
-          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+          stdout(
+            await buildUsageOutput(
+              parsed.agent,
+              usageTrace,
+              usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+            ),
+          );
         }
         return result.code;
       }
@@ -4565,7 +4590,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           stdout(`${finalMessage}\n`);
         }
         if (parsed.usage) {
-          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+          stdout(
+            await buildUsageOutput(
+              parsed.agent,
+              usageTrace,
+              usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+            ),
+          );
         }
         return result.code;
       }
