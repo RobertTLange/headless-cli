@@ -2,6 +2,8 @@
 
 ## TBD
 
+## 0.6.0 - 2026-08-12
+
 - Added Codex profile selection with `--profile`, including local, cron, tmux, named-session, Docker, and Modal execution while preserving explicit Headless model overrides.
 - Added remote Codex profile and model-catalog seeding plus automatic `SAKANA_API_KEY` forwarding for Fugu runs in Docker and Modal.
 - Hardened durable Docker profile refreshes with private host-owned profile directories, bounded regular-file reads, symlink-safe atomic replacement, and stale provider-config cleanup.

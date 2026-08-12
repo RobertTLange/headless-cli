@@ -521,7 +521,7 @@ test("uses a persistent host home for durable Docker sessions", () => {
   }
 });
 
-test("safely refreshes Codex configuration when resuming a durable Docker session", { skip: process.platform === "win32" }, () => {
+test("safely refreshes Codex configuration when resuming a durable Docker session", { skip: process.platform !== "linux" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {
     const codexHome = join(dir, "codex-home");

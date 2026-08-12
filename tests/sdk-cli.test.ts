@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
+
+const packageVersion = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
+).version;
 
 interface SdkEnvelope {
   protocolVersion: number;
@@ -32,7 +36,7 @@ test("SDK version output uses a versioned result envelope", async () => {
     type: "result",
     command: "version",
     exitCode: 0,
-    data: { version: "0.5.0" },
+    data: { version: packageVersion },
   });
 });
 
@@ -55,7 +59,7 @@ test("plain version keeps ignoring trailing arguments for compatibility", async 
   });
 
   assert.equal(code, 0);
-  assert.equal(stdout.join(""), "0.5.0\n");
+  assert.equal(stdout.join(""), `${packageVersion}\n`);
 });
 
 test("SDK capabilities report the supported protocol and command families", async () => {
