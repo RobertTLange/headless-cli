@@ -417,6 +417,7 @@ test("direct run-node launches preserve stored fast mode", async () => {
       status: "planned",
       planned: true,
       fast: true,
+      profile: "research",
     });
 
     assert.equal(
@@ -429,7 +430,9 @@ test("direct run-node launches preserve stored fast mode", async () => {
 
     const args = JSON.parse(readFileSync(captureFile, "utf8"));
     assert.equal(args.includes('service_tier="fast"'), true);
+    assert.deepEqual(args.slice(1, 3), ["--profile", "research"]);
     assert.equal(readRun(env, "auth")?.nodes["worker-1"].fast, true);
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].profile, "research");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -459,6 +462,7 @@ test("direct run-node launches do not inherit fast mode across agents", async ()
       status: "planned",
       planned: true,
       fast: true,
+      profile: "research",
     });
 
     assert.equal(
@@ -472,6 +476,7 @@ test("direct run-node launches do not inherit fast mode across agents", async ()
     const node = readRun(env, "auth")?.nodes["worker-1"];
     assert.equal(node?.agent, "gemini");
     assert.equal(node?.fast, false);
+    assert.equal(node?.profile, undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -858,7 +863,7 @@ test("run message resumes stored session nodes", async () => {
     };
     assert.equal(
       await runCli(
-        ["codex", "--role", "worker", "--run", "auth", "--node", "worker-1", "--coordination", "session", "--prompt", "start"],
+        ["codex", "--profile", "research", "--role", "worker", "--run", "auth", "--node", "worker-1", "--coordination", "session", "--prompt", "start"],
         { env, stdout: () => undefined },
       ),
       0,
@@ -880,6 +885,58 @@ test("run message resumes stored session nodes", async () => {
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(calls[1].includes("resume"), true);
     assert.equal(calls[1].includes("thread-1"), true);
+    assert.deepEqual(calls[1].slice(1, 3), ["--profile", "research"]);
+    assert.equal(readRun(env, "auth")?.nodes["worker-1"].profile, "research");
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run message applies a planned session node profile on its first turn", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const captureFile = join(dir, "codex-args.json");
+    mkdirSync(home);
+    await writeExecutable(
+      join(binDir, "codex"),
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "fs.writeFileSync(process.env.HEADLESS_CAPTURE, JSON.stringify(process.argv.slice(2)));",
+        "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'started final' }));",
+        "",
+      ].join("\n"),
+    );
+    const env = {
+      ...process.env,
+      HEADLESS_CAPTURE: captureFile,
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "session",
+      status: "planned",
+      planned: true,
+      profile: "research",
+    });
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "start"], {
+        env,
+        stdout: () => undefined,
+      }),
+      0,
+    );
+
+    const args = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.deepEqual(args.slice(1, 3), ["--profile", "research"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

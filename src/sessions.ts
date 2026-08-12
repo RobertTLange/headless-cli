@@ -25,6 +25,7 @@ export interface StoredSession {
   agent: AgentName;
   alias: string;
   nativeId?: string;
+  profile?: string;
   tmuxWaitStrategy?: StoredTmuxWaitStrategy;
   workDir?: string;
   createdAt: string;
@@ -49,7 +50,7 @@ export function readStoredSession(env: Env, agent: AgentName, alias: string): St
 
 export function writeStoredSession(
   env: Env,
-  session: Pick<StoredSession, "agent" | "alias" | "nativeId" | "workDir">,
+  session: Pick<StoredSession, "agent" | "alias" | "nativeId" | "profile" | "workDir">,
 ): StoredSession {
   const path = sessionStorePath(env);
   if (!path) {
@@ -63,6 +64,7 @@ export function writeStoredSession(
     agent: session.agent,
     alias: session.alias,
     nativeId: session.nativeId,
+    profile: session.profile ?? existing?.profile,
     tmuxWaitStrategy: existing?.tmuxWaitStrategy,
     workDir: session.workDir,
     createdAt: existing?.createdAt ?? now,
@@ -76,7 +78,7 @@ export function writeStoredSession(
 
 export function writeStoredTmuxSession(
   env: Env,
-  session: Pick<StoredSession, "agent" | "alias" | "tmuxWaitStrategy" | "workDir">,
+  session: Pick<StoredSession, "agent" | "alias" | "profile" | "tmuxWaitStrategy" | "workDir">,
 ): StoredSession {
   const path = sessionStorePath(env);
   if (!path) {
@@ -90,6 +92,7 @@ export function writeStoredTmuxSession(
     agent: session.agent,
     alias: session.alias,
     nativeId: existing?.nativeId,
+    profile: session.profile ?? existing?.profile,
     tmuxWaitStrategy: session.tmuxWaitStrategy,
     workDir: session.workDir,
     createdAt: existing?.createdAt ?? now,
@@ -175,14 +178,16 @@ function normalizeStoredSession(value: unknown, agent: AgentName, alias: string)
     return undefined;
   }
   const nativeId = boundedOptionalString(value.nativeId, 4096);
+  const profile = boundedOptionalString(value.profile, 256);
   const workDir = boundedOptionalString(value.workDir, 4096);
-  if (nativeId === null || workDir === null) return undefined;
+  if (nativeId === null || profile === null || workDir === null) return undefined;
   return {
     agent,
     alias,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     ...(nativeId === undefined ? {} : { nativeId }),
+    ...(profile === undefined ? {} : { profile }),
     ...(workDir === undefined ? {} : { workDir }),
   };
 }

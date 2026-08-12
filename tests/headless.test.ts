@@ -31,7 +31,7 @@ import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE, dockerSessionHomePath } from "../src/docker.ts";
 import { launchLockPath } from "../src/launch-lock.ts";
-import { writeStoredSession } from "../src/sessions.ts";
+import { readStoredSession, writeStoredSession } from "../src/sessions.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
 
@@ -89,6 +89,53 @@ test("builds codex command using CODEX_MODEL override", () => {
 
   assert.deepEqual(command.args.slice(2, 4), ["--model", "gpt-next"]);
   assert.equal(command.stdinText, "hello");
+});
+
+test("builds Codex one-shot and interactive commands with a profile", () => {
+  assert.deepEqual(
+    buildAgentCommand("codex", { prompt: "hello", profile: "research profile" }, {}).args.slice(0, 5),
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research profile", "exec", "--model"],
+  );
+  assert.deepEqual(
+    buildInteractiveAgentCommand("codex", { prompt: "hello", profile: "research profile" }, {}).args.slice(0, 4),
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research profile", "--model"],
+  );
+});
+
+test("rejects Codex profiles for other agent harnesses", () => {
+  assert.throws(
+    () => buildAgentCommand("claude", { prompt: "hello", profile: "research" }, {}),
+    /--profile is supported only by codex/,
+  );
+  assert.throws(
+    () => buildInteractiveAgentCommand("gemini", { prompt: "hello", profile: "research" }, {}),
+    /--profile is supported only by codex/,
+  );
+});
+
+test("CLI rejects profiles for non-Codex agents and management commands", async () => {
+  for (const argv of [
+    ["claude", "--profile", "research", "--prompt", "hello", "--print-command"],
+    ["attach", "--profile", "research"],
+    ["run", "list", "--profile", "research"],
+  ]) {
+    const stderr: string[] = [];
+    assert.equal(await runCli(argv, { stderr: (text) => stderr.push(text) }), 2);
+    assert.match(stderr.join(""), /--profile (?:is supported only by codex|can only be used with codex agent runs or cron add)/);
+  }
+});
+
+test("CLI rejects empty and oversized Codex profile names", async () => {
+  for (const profile of ["   ", "x".repeat(257)]) {
+    const stderr: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--profile", profile, "--prompt", "hello", "--print-command"], {
+        stderr: (text) => stderr.push(text),
+      }),
+      2,
+    );
+    assert.match(stderr.join(""), /invalid Codex profile/);
+  }
 });
 
 test("builds ACP adapter command from custom command", () => {
@@ -2013,7 +2060,7 @@ test("CLI accepts stdin fallback", async () => {
   );
 });
 
-test("CLI --session creates and resumes a Codex alias", async () => {
+test("CLI --session creates and resumes a Codex alias with its stored profile", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
     const home = join(dir, "home");
@@ -2039,10 +2086,11 @@ test("CLI --session creates and resumes a Codex alias", async () => {
 
     const stdout: string[] = [];
     const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
-    assert.equal(await runCli(["codex", "--session", "work", "--prompt", "hello"], { env, stdout: (text) => stdout.push(text) }), 0);
+    assert.equal(await runCli(["codex", "--profile", "research", "--session", "work", "--prompt", "hello"], { env, stdout: (text) => stdout.push(text) }), 0);
     assert.equal(stdout.join(""), "started\n");
     const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
     assert.equal(store.agents.codex.work.nativeId, "thread-1");
+    assert.equal(store.agents.codex.work.profile, "research");
 
     stdout.length = 0;
     assert.equal(await runCli(["codex", "--session", "work", "--prompt", "again"], { env, stdout: (text) => stdout.push(text) }), 0);
@@ -2050,6 +2098,7 @@ test("CLI --session creates and resumes a Codex alias", async () => {
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(calls[1].includes("resume"), true);
     assert.equal(calls[1].includes("thread-1"), true);
+    assert.deepEqual(calls[1].slice(1, 3), ["--profile", "research"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2693,6 +2742,8 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
         "hello",
         "--reasoning-effort",
         "high",
+        "--profile",
+        "research profile",
         "--work-dir",
         projectDir,
         "--docker",
@@ -2715,7 +2766,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, /^printf %s hello \| docker run --rm --interactive --tmpfs '\/headless-home:rw,mode=1777' --user \d+:\d+ /);
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
-    assert.match(output, /headless-agent codex/);
+    assert.match(output, /headless-agent codex --dangerously-bypass-approvals-and-sandbox --profile 'research profile'/);
     assert.match(output, /exec --model gpt-5\.5 -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -2812,6 +2863,8 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
         "hello",
         "--reasoning-effort",
         "high",
+        "--profile",
+        "research profile",
         "--work-dir",
         projectDir,
         "--modal",
@@ -2838,7 +2891,7 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
     assert.equal(code, 0);
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
-    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex/);
+    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex --dangerously-bypass-approvals-and-sandbox --profile 'research profile'/);
     assert.match(output, /exec --model gpt-5\.5 -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -5483,7 +5536,7 @@ test("CLI --tmux --session starts or sends to a named tmux session", async () =>
     };
     const stdout: string[] = [];
     assert.equal(
-      await runCli(["codex", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
+      await runCli(["codex", "--profile", "research", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
         env,
         stdout: (text) => stdout.push(text),
       }),
@@ -5503,6 +5556,8 @@ test("CLI --tmux --session starts or sends to a named tmux session", async () =>
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(calls[0], ["has-session", "-t", "headless-codex-work"]);
     assert.deepEqual(calls[1].slice(0, 4), ["new-session", "-d", "-s", "headless-codex-work"]);
+    assert.match(calls[1][6], /--profile research/);
+    assert.equal(readStoredSession(env, "codex", "work")?.profile, "research");
     assert.deepEqual(calls.at(-3), ["set-buffer", "-b", "headless-codex-work-send", "again"]);
     assert.deepEqual(calls.at(-1), ["send-keys", "-t", "headless-codex-work", "Enter"]);
   } finally {

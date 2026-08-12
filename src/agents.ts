@@ -302,6 +302,7 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
     ...(options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]
       : ["--dangerously-bypass-approvals-and-sandbox"]),
+    ...(options.profile ? ["--profile", options.profile] : []),
     "exec",
     ...(options.sessionMode === "resume" && options.sessionId ? ["resume"] : []),
     ...withModel([], model),
@@ -331,6 +332,9 @@ function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
       : options.allow === "yolo" || options.allow === undefined
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : [];
+  if (options.profile) {
+    args.push("--profile", options.profile);
+  }
   args.push(...withModel([], model));
   args.push(...withCodexServiceTier([], options.fast));
   if (options.reasoningEffort) {
@@ -654,6 +658,7 @@ export function getAgentConfig(name: AgentName): AgentConfig {
 }
 
 export function buildAgentCommand(name: AgentName, options: BuildOptions, env: Env = process.env): BuiltCommand {
+  validateProfileAgent(name, options.profile);
   return getAgentHarness(name).buildCommand(options, env);
 }
 
@@ -662,7 +667,14 @@ export function buildInteractiveAgentCommand(
   options: BuildOptions,
   env: Env = process.env,
 ): BuiltCommand {
+  validateProfileAgent(name, options.profile);
   return getAgentHarness(name).buildInteractiveCommand(options, env);
+}
+
+function validateProfileAgent(name: AgentName, profile: string | undefined): void {
+  if (profile !== undefined && name !== "codex") {
+    throw new Error("--profile is supported only by codex");
+  }
 }
 
 // How each harness lets `--tmux --wait` identify this run's native transcript

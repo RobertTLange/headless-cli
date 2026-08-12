@@ -68,9 +68,11 @@ test("secure session stores validate records and write private files atomically"
       agent: "codex",
       alias: "work",
       nativeId: "trusted",
+      profile: "research",
       workDir: dir,
     });
     assert.equal(readStoredSession(env, "codex", "work")?.nativeId, "trusted");
+    assert.equal(readStoredSession(env, "codex", "work")?.profile, "research");
     assert.equal(statSync(storePath).mode & 0o777, 0o600);
 
     const longAlias = "a".repeat(300);
