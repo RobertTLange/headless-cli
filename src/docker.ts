@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
+import { readCodexBaseFiles, readCodexProfileFiles } from "./codex-profile.js";
 import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
@@ -48,6 +49,7 @@ export interface DockerAgentCommandOptions {
   hostUser?: string;
   image: string;
   persistentHome?: string;
+  profile?: string;
   runDirHost?: string;
   runId?: string;
   sessionBootstrap?: DockerSessionBootstrap;
@@ -102,6 +104,10 @@ export function ensureDockerSessionHome(path: string): string {
 
 export function ensureDockerSessionStoreDirectory(sessionHome: string): void {
   ensurePrivateOwnedDirectory(join(sessionHome, ".headless"));
+}
+
+export function ensureDockerSessionProfileDirectory(sessionHome: string): string {
+  return ensurePrivateOwnedDirectory(join(sessionHome, ".codex"));
 }
 
 export function validateDockerSessionRootWorkDir(sessionHome: string, workDir: string): void {
@@ -333,7 +339,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     const containerRunDir = `/headless-runs/${options.runId}`;
     args.push("--volume", `${options.runDirHost}:${containerRunDir}`, "--env", `HEADLESS_RUN_DIR=${containerRunDir}`);
   }
-  args.push(...agentConfigMountArgs(options.agent, options.env));
+  args.push(...agentConfigMountArgs(options.agent, options.env, options.profile));
   args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
   args.push(...dockerEnvArgs(dockerEnvEntries));
   args.push(...options.dockerArgs);
@@ -341,7 +347,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     options.image,
     "sh",
     "-lc",
-    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap),
+    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap, options.profile),
     "headless-agent",
     options.command.command,
     ...options.command.args,
@@ -360,14 +366,38 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   return dockerCommand;
 }
 
-function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBootstrap?: DockerSessionBootstrap): string {
+function bootstrapScript(
+  agent: AgentName,
+  persistentHome: boolean,
+  sessionBootstrap?: DockerSessionBootstrap,
+  profile?: string,
+): string {
   const copyFlags = persistentHome ? "-R -n" : "-R";
   const commands = [
     "set -eu",
     `export HOME="${containerHome}"`,
     `mkdir -p "${containerHome}"`,
-    `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
   ];
+  if (persistentHome && agent === "codex" && profile) {
+    commands.push(
+      'if [ -L "$HOME/.codex" ] || { [ -e "$HOME/.codex" ] && [ ! -d "$HOME/.codex" ]; }; then echo "unsafe durable Codex configuration directory" >&2; exit 1; fi',
+      'mkdir -p "$HOME/.codex"',
+      'if [ "$(stat -c %u "$HOME/.codex")" != "$(id -u)" ]; then echo "durable Codex configuration directory is not owned by the container user" >&2; exit 1; fi',
+      'refresh_codex_file() { source="$1"; destination="$2"; refresh_tmp="$(mktemp "$HOME/.codex/.headless-refresh.XXXXXX")"; trap \'rm -f "$refresh_tmp"\' EXIT HUP INT TERM; cp "$source" "$refresh_tmp"; chmod 600 "$refresh_tmp"; mv -fT "$refresh_tmp" "$destination"; trap - EXIT HUP INT TERM; }',
+    );
+  }
+  commands.push(
+    `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
+  );
+  if (persistentHome && agent === "codex" && profile) {
+    commands.push(
+      `if [ -f "${hostHomeMountRoot}/.codex/config.toml" ]; then refresh_codex_file "${hostHomeMountRoot}/.codex/config.toml" "$HOME/.codex/config.toml"; else rm -f "$HOME/.codex/config.toml"; fi`,
+    );
+    const profileRelPath = `.codex/${profile}.config.toml`;
+    commands.push(
+      `if [ -f "${hostHomeMountRoot}/${profileRelPath}" ]; then refresh_codex_file "${hostHomeMountRoot}/${profileRelPath}" "$HOME/${profileRelPath}"; fi`,
+    );
+  }
   if (persistentHome) {
     const agentHomeVariables = dockerSessionAgentHomeEnvNames(agent);
     if (agentHomeVariables.length > 0) {
@@ -391,9 +421,9 @@ function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBoots
   return commands.join("; ");
 }
 
-function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
+function agentConfigMountArgs(agent: AgentName, env: Env, profile?: string): string[] {
   const home = env.HOME;
-  if (!home) {
+  if (!home && !(agent === "codex" && env.CODEX_HOME)) {
     return [];
   }
 
@@ -401,8 +431,9 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
   const dockerSeedFiles = config.dockerSeedFiles ?? {};
   const mounted = new Set<string>();
   const args: string[] = [];
-  for (const relPath of config.seedPaths) {
-    const hostPath = join(home, relPath);
+  const seedPaths = home && !(agent === "codex" && env.CODEX_HOME) ? config.seedPaths : [];
+  for (const relPath of seedPaths) {
+    const hostPath = join(home as string, relPath);
     if (!existsSync(hostPath) || mounted.has(hostPath)) {
       continue;
     }
@@ -428,6 +459,24 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
     args.push("--volume", `${hostPath}:${join(hostHomeMountRoot, relPath)}:ro`);
     if (statSync(hostPath).isDirectory()) {
       break;
+    }
+  }
+  if (agent === "codex" && env.CODEX_HOME) {
+    for (const file of readCodexBaseFiles(env)) {
+      args.push("--volume", `${file.path}:${join(hostHomeMountRoot, file.relPath)}:ro`);
+    }
+  }
+  if (agent === "codex" && profile) {
+    const files = readCodexProfileFiles(env, profile);
+    args.push(
+      "--volume",
+      `${files.path}:${join(hostHomeMountRoot, ".codex", `${profile}.config.toml`)}:ro`,
+    );
+    if (files.catalog) {
+      const containerCatalogPath = isAbsolute(files.catalog.configuredPath)
+        ? resolve(files.catalog.configuredPath)
+        : resolve(containerHome, ".codex", files.catalog.configuredPath);
+      args.push("--volume", `${files.catalog.path}:${containerCatalogPath}:ro`);
     }
   }
   return args;

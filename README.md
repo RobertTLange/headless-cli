@@ -71,6 +71,9 @@ headless --prompt "Inspect this repository"
 # Choose an agent, model, and normalized reasoning effort.
 headless codex --prompt "Run the tests and fix failures" --model gpt-5 --reasoning-effort high
 
+# Select a Codex configuration profile for this invocation.
+headless codex --prompt "Review the architecture" --profile research
+
 # Opt into provider Fast mode for a Codex or Claude run. It is off by default.
 headless codex --fast --prompt "Run the focused test suite"
 headless claude --fast --prompt "Review this pull request"
@@ -141,7 +144,7 @@ headless cron kill inbox-triage
 headless cron rm inbox-triage --force
 ```
 
-Cron jobs accept detached-safe one-shot options such as `--model`, `--fast` (Codex and Claude only), `--reasoning-effort`, `--allow`, `--work-dir`, `--docker`, `--modal`, `--timeout`, `--json`, `--debug`, and `--usage`. Interactive tmux/session/run-management flags are intentionally rejected for scheduled jobs.
+Cron jobs accept detached-safe one-shot options such as `--model`, Codex-only `--profile`, `--fast` (Codex and Claude only), `--reasoning-effort`, `--allow`, `--work-dir`, `--docker`, `--modal`, `--timeout`, `--json`, `--debug`, and `--usage`. Interactive tmux/session/run-management flags are intentionally rejected for scheduled jobs.
 
 ## Multi-Agent Orchestration
 

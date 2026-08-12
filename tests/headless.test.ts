@@ -31,7 +31,7 @@ import { runCli } from "../src/cli.ts";
 import { parseHeadlessConfig } from "../src/config.ts";
 import { DEFAULT_DOCKER_IMAGE, dockerSessionHomePath } from "../src/docker.ts";
 import { launchLockPath } from "../src/launch-lock.ts";
-import { writeStoredSession } from "../src/sessions.ts";
+import { readStoredSession, writeStoredSession } from "../src/sessions.ts";
 import { quoteCommand } from "../src/shell.ts";
 import type { AgentName } from "../src/types.ts";
 
@@ -89,6 +89,68 @@ test("builds codex command using CODEX_MODEL override", () => {
 
   assert.deepEqual(command.args.slice(2, 4), ["--model", "gpt-next"]);
   assert.equal(command.stdinText, "hello");
+});
+
+test("builds Codex profile commands without overriding the profile model", () => {
+  assert.deepEqual(
+    buildAgentCommand("codex", { prompt: "hello", profile: "research" }, {}).args.slice(0, 4),
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "exec"],
+  );
+  assert.deepEqual(
+    buildInteractiveAgentCommand("codex", { prompt: "hello", profile: "research" }, {}).args.slice(0, 4),
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "-c"],
+  );
+});
+
+test("builds Codex profile commands with explicit model overrides", () => {
+  const command = buildAgentCommand("codex", { prompt: "hello", profile: "research", model: "custom" }, {});
+
+  assert.deepEqual(command.args.slice(1, 7), ["--profile", "research", "exec", "--model", "custom", "-c"]);
+});
+
+test("rejects Codex profiles for other agent harnesses", () => {
+  assert.throws(
+    () => buildAgentCommand("claude", { prompt: "hello", profile: "research" }, {}),
+    /--profile is supported only by codex/,
+  );
+  assert.throws(
+    () => buildInteractiveAgentCommand("gemini", { prompt: "hello", profile: "research" }, {}),
+    /--profile is supported only by codex/,
+  );
+});
+
+test("CLI rejects profiles for non-Codex agents and management commands", async () => {
+  for (const argv of [
+    ["claude", "--profile", "research", "--prompt", "hello", "--print-command"],
+    ["attach", "--profile", "research"],
+    ["run", "list", "--profile", "research"],
+  ]) {
+    const stderr: string[] = [];
+    assert.equal(await runCli(argv, { stderr: (text) => stderr.push(text) }), 2);
+    assert.match(stderr.join(""), /--profile (?:is supported only by codex|can only be used with codex agent runs or cron add)/);
+  }
+});
+
+test("CLI rejects Codex profile names outside the plain-name grammar", async () => {
+  const invalidProfiles = [
+    "   ",
+    "research profile",
+    "research.profile",
+    "research/profile",
+    "-research",
+    "fugü",
+    "x".repeat(257),
+  ];
+  for (const profile of invalidProfiles) {
+    const stderr: string[] = [];
+    assert.equal(
+      await runCli(["codex", "--profile", profile, "--prompt", "hello", "--print-command"], {
+        stderr: (text) => stderr.push(text),
+      }),
+      2,
+    );
+    assert.match(stderr.join(""), /invalid Codex profile/);
+  }
 });
 
 test("builds ACP adapter command from custom command", () => {
@@ -2013,7 +2075,7 @@ test("CLI accepts stdin fallback", async () => {
   );
 });
 
-test("CLI --session creates and resumes a Codex alias", async () => {
+test("CLI --session creates and resumes a Codex alias with its stored profile", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
     const home = join(dir, "home");
@@ -2039,10 +2101,11 @@ test("CLI --session creates and resumes a Codex alias", async () => {
 
     const stdout: string[] = [];
     const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HOME: home, PATH: `${binDir}:${process.env.PATH ?? ""}` };
-    assert.equal(await runCli(["codex", "--session", "work", "--prompt", "hello"], { env, stdout: (text) => stdout.push(text) }), 0);
+    assert.equal(await runCli(["codex", "--profile", "research", "--session", "work", "--prompt", "hello"], { env, stdout: (text) => stdout.push(text) }), 0);
     assert.equal(stdout.join(""), "started\n");
     const store = JSON.parse(readFileSync(join(home, ".headless", "sessions.json"), "utf8"));
     assert.equal(store.agents.codex.work.nativeId, "thread-1");
+    assert.equal(store.agents.codex.work.profile, "research");
 
     stdout.length = 0;
     assert.equal(await runCli(["codex", "--session", "work", "--prompt", "again"], { env, stdout: (text) => stdout.push(text) }), 0);
@@ -2050,6 +2113,7 @@ test("CLI --session creates and resumes a Codex alias", async () => {
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(calls[1].includes("resume"), true);
     assert.equal(calls[1].includes("thread-1"), true);
+    assert.deepEqual(calls[1].slice(1, 3), ["--profile", "research"]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2684,6 +2748,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     mkdirSync(join(homeDir, ".codex"), { recursive: true });
     mkdirSync(projectDir);
     writeFileSync(join(homeDir, ".codex", "config.toml"), "model = 'test'\n");
+    writeFileSync(join(homeDir, ".codex", "research.config.toml"), "model = 'profile-model'\n");
 
     const stdout: string[] = [];
     const code = await runCli(
@@ -2693,6 +2758,8 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
         "hello",
         "--reasoning-effort",
         "high",
+        "--profile",
+        "research",
         "--work-dir",
         projectDir,
         "--docker",
@@ -2705,7 +2772,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
         "--print-command",
       ],
       {
-        env: { ...process.env, HOME: homeDir },
+        env: { ...process.env, CODEX_HOME: undefined, HOME: homeDir },
         stdout: (text) => stdout.push(text),
       },
     );
@@ -2715,8 +2782,8 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, /^printf %s hello \| docker run --rm --interactive --tmpfs '\/headless-home:rw,mode=1777' --user \d+:\d+ /);
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
-    assert.match(output, /headless-agent codex/);
-    assert.match(output, /exec --model gpt-5\.5 -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /headless-agent codex --dangerously-bypass-approvals-and-sandbox --profile research/);
+    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2801,7 +2868,9 @@ test("CLI rejects plain Docker workdirs that overlap the container home", { skip
 test("CLI --modal print-command wraps the selected agent command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
+    const homeDir = join(dir, "home");
     const projectDir = join(dir, "project");
+    mkdirSync(homeDir);
     mkdirSync(projectDir);
 
     const stdout: string[] = [];
@@ -2812,6 +2881,8 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
         "hello",
         "--reasoning-effort",
         "high",
+        "--profile",
+        "research",
         "--work-dir",
         projectDir,
         "--modal",
@@ -2831,15 +2902,18 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
         "provider-secret",
         "--print-command",
       ],
-      { stdout: (text) => stdout.push(text) },
+      {
+        env: { ...process.env, CODEX_HOME: undefined, HOME: homeDir },
+        stdout: (text) => stdout.push(text),
+      },
     );
 
     const output = stdout.join("");
     assert.equal(code, 0);
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
-    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex/);
-    assert.match(output, /exec --model gpt-5\.5 -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex --dangerously-bypass-approvals-and-sandbox --profile research/);
+    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -3170,6 +3244,34 @@ test("CLI --print-command --json includes configured effort and env-backed model
     assert.equal(payload.reasoningEffort, "high");
     assert.match(payload.command, /--model gpt-5\.4/);
     assert.match(payload.command, /model_reasoning_effort/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --print-command --json leaves profile-provided Codex identity unknown", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const binary = join(binDir, "codex");
+      await writeFile(binary, "#!/usr/bin/env node\n");
+      await chmod(binary, 0o755);
+    });
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--profile", "research", "--prompt", "hello", "--print-command", "--json"], {
+      env: { PATH: binDir },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const payload = JSON.parse(stdout.join(""));
+    assert.equal(payload.profile, "research");
+    assert.equal(payload.provider, undefined);
+    assert.equal(payload.model, undefined);
+    assert.doesNotMatch(payload.command, /--model/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -3634,6 +3736,50 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
         pricingStatus: "priced",
       },
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --usage does not attribute or price a Codex profile as OpenAI", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    const binary = join(binDir, "codex");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+        "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 4, output_tokens: 2 } }));",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: { models: { "gpt-5": { cost: { input: 1, output: 1 } } } },
+        }),
+      );
+
+    const stdout: string[] = [];
+    const code = await runCli(
+      ["codex", "--profile", "fugu", "--model", "gpt-5", "--prompt", "hello", "--usage"],
+      {
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      },
+    );
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1] as string).usage;
+    assert.equal(usage.provider, null);
+    assert.equal(usage.pricingStatus, "missing");
+    assert.equal(usage.cost, null);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });
@@ -5479,11 +5625,12 @@ test("CLI --tmux --session starts or sends to a named tmux session", async () =>
       ...process.env,
       HEADLESS_TMUX_ACTIVE: stateFile,
       HEADLESS_TMUX_CAPTURE: captureFile,
+      HOME: join(dir, "home"),
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
     };
     const stdout: string[] = [];
     assert.equal(
-      await runCli(["codex", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
+      await runCli(["codex", "--profile", "research", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
         env,
         stdout: (text) => stdout.push(text),
       }),
@@ -5503,8 +5650,35 @@ test("CLI --tmux --session starts or sends to a named tmux session", async () =>
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(calls[0], ["has-session", "-t", "headless-codex-work"]);
     assert.deepEqual(calls[1].slice(0, 4), ["new-session", "-d", "-s", "headless-codex-work"]);
+    assert.match(calls[1][6], /--profile research/);
+    assert.equal(readStoredSession(env, "codex", "work")?.profile, "research");
     assert.deepEqual(calls.at(-3), ["set-buffer", "-b", "headless-codex-work-send", "again"]);
     assert.deepEqual(calls.at(-1), ["send-keys", "-t", "headless-codex-work", "Enter"]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --session does not persist ordinary launches", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(tmux, '#!/bin/sh\n[ "$1" = "has-session" ] && exit 1\nexit 0\n');
+      await chmod(tmux, 0o755);
+    });
+    const env = { HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` };
+
+    assert.equal(
+      await runCli(["codex", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
+        env,
+        stdout: () => {},
+      }),
+      0,
+    );
+    assert.equal(readStoredSession(env, "codex", "work"), undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

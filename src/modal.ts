@@ -21,6 +21,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 
 import { getAgentConfig } from "./agents.js";
+import { codexProfileSeedFiles, readCodexBaseFiles } from "./codex-profile.js";
 import { collectForwardedEnvEntries } from "./env.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
@@ -60,6 +61,7 @@ export interface ExecuteModalOptions {
   memoryMiB: number;
   modalEnv: string[];
   modalSecrets: string[];
+  profile?: string;
   maxCapturedStdoutBytes?: number;
   stdout: (text: string) => unknown;
   stdoutHandling: StdoutHandling;
@@ -226,17 +228,28 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
   const workDir = realpathSync(options.workDir);
   const timeoutMs = options.timeoutSeconds * 1000;
   const env = collectModalEnv(options.env, options.command.env, options.modalEnv, { workDir });
-  const client = await (options.clientFactory ?? createModalClient)();
-  const app = await client.apps.fromName(options.appName, { createIfMissing: true });
-  const imageSecret = options.imageSecret ? await client.secrets.fromName(options.imageSecret) : undefined;
-  const image = client.images.fromRegistry(options.image, imageSecret);
-  const secrets = await Promise.all(options.modalSecrets.map((name) => client.secrets.fromName(name)));
+  let client: ModalClientLike | undefined;
   let sandbox: ModalSandboxLike | undefined;
   const stdoutDrainController = new AbortController();
   const baselineDir = mkdtempSync(join(tmpdir(), "headless-modal-baseline-"));
   const resultDir = mkdtempSync(join(tmpdir(), "headless-modal-result-"));
 
   try {
+    const seedArchive = await createAgentSeedArchive(options.agent, options.env, options.profile);
+    const credentialArchive = await createCredentialSeedArchive(
+      options.env,
+      options.command.env,
+      options.modalEnv,
+      workDir,
+    );
+    const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
+    extractArchiveLocally(workspaceArchive, baselineDir);
+
+    client = await (options.clientFactory ?? createModalClient)();
+    const app = await client.apps.fromName(options.appName, { createIfMissing: true });
+    const imageSecret = options.imageSecret ? await client.secrets.fromName(options.imageSecret) : undefined;
+    const image = client.images.fromRegistry(options.image, imageSecret);
+    const secrets = await Promise.all(options.modalSecrets.map((name) => client?.secrets.fromName(name)));
     sandbox = await client.sandboxes.create(app, image, {
       command: ["sleep", "infinity"],
       cpu: options.cpu,
@@ -248,17 +261,13 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
       workdir: "/",
     });
 
-    const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
-    extractArchiveLocally(workspaceArchive, baselineDir);
     await runRemoteTar(sandbox, ["mkdir", "-p", remoteWorkDir], timeoutMs);
     await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteWorkDir], timeoutMs, workspaceArchive);
 
-    const seedArchive = await createAgentSeedArchive(options.agent, options.env);
     if (seedArchive.length > 0) {
       await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
       await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, seedArchive);
     }
-    const credentialArchive = await createCredentialSeedArchive(options.env, options.command.env, options.modalEnv, workDir);
     if (credentialArchive.length > 0) {
       await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
       await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, credentialArchive);
@@ -305,7 +314,7 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
     if (sandbox) {
       await sandbox.terminate();
     }
-    client.close?.();
+    client?.close?.();
     rmSync(baselineDir, { force: true, recursive: true });
     rmSync(resultDir, { force: true, recursive: true });
   }
@@ -325,14 +334,15 @@ async function createWorkspaceArchive(workDir: string, includeGit: boolean): Pro
   return await runLocalTar(workDir, selected);
 }
 
-async function createAgentSeedArchive(agent: AgentName, env: Env): Promise<Uint8Array> {
+async function createAgentSeedArchive(agent: AgentName, env: Env, profile?: string): Promise<Uint8Array> {
   const home = env.HOME;
-  if (!home) {
+  if (!home && !(agent === "codex" && env.CODEX_HOME)) {
     return new Uint8Array();
   }
   const paths: string[] = [];
-  for (const relPath of getAgentConfig(agent).seedPaths) {
-    const path = join(home, relPath);
+  const seedPaths = home && !(agent === "codex" && env.CODEX_HOME) ? getAgentConfig(agent).seedPaths : [];
+  for (const relPath of seedPaths) {
+    const path = join(home as string, relPath);
     if (!existsSync(path)) {
       continue;
     }
@@ -341,15 +351,15 @@ async function createAgentSeedArchive(agent: AgentName, env: Env): Promise<Uint8
       break;
     }
   }
-  const generatedFiles = collectGeneratedSeedFiles(agent, env, paths);
+  const generatedFiles = collectGeneratedSeedFiles(agent, env, paths, profile);
   if (generatedFiles.length === 0) {
-    return paths.length > 0 ? await runLocalTar(home, paths) : new Uint8Array();
+    return paths.length > 0 ? await runLocalTar(home as string, paths) : new Uint8Array();
   }
 
   const seedDir = mkdtempSync(join(tmpdir(), "headless-modal-seed-"));
   try {
     for (const relPath of paths) {
-      const source = join(home, relPath);
+      const source = join(home as string, relPath);
       const target = join(seedDir, relPath);
       mkdirSync(dirname(target), { recursive: true });
       cpSync(source, target, { recursive: true, verbatimSymlinks: true });
@@ -484,10 +494,24 @@ function forwardedEnvValue(env: Env, commandEnv: Env | undefined, explicitEnv: s
   return collectForwardedEnvEntries(env, commandEnv, explicitEnv).find((entry) => entry.name === name)?.actualValue;
 }
 
-function collectGeneratedSeedFiles(agent: AgentName, env: Env, selectedPaths: string[]): GeneratedSeedFile[] {
-  if (agent !== "claude" || !env.HOME || selectedPaths.includes(".claude/.credentials.json")) {
-    return [];
+function collectGeneratedSeedFiles(
+  agent: AgentName,
+  env: Env,
+  selectedPaths: string[],
+  profile?: string,
+): GeneratedSeedFile[] {
+  if (agent === "codex") {
+    const baseFiles = env.CODEX_HOME ? readCodexBaseFiles(env) : [];
+    const profileFiles = profile
+      ? codexProfileSeedFiles(env, profile, join(remoteHome, ".codex"))
+      : [];
+    return [...baseFiles, ...profileFiles].map((file) => ({
+      content: file.content,
+      mode: 0o600,
+      relPath: file.relPath,
+    }));
   }
+  if (agent !== "claude" || !env.HOME || selectedPaths.includes(".claude/.credentials.json")) return [];
   const content = readClaudeKeychainCredentials(env);
   return content ? [{ content, mode: 0o600, relPath: ".claude/.credentials.json" }] : [];
 }

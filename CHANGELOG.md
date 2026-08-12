@@ -2,6 +2,9 @@
 
 ## TBD
 
+- Added Codex profile selection with `--profile`, including local, cron, tmux, named-session, Docker, and Modal execution while preserving explicit Headless model overrides.
+- Added remote Codex profile and model-catalog seeding plus automatic `SAKANA_API_KEY` forwarding for Fugu runs in Docker and Modal.
+- Hardened durable Docker profile refreshes with private host-owned profile directories, bounded regular-file reads, symlink-safe atomic replacement, and stale provider-config cleanup.
 - Added an explicit Fast-mode opt-in for Codex and Claude: `--fast` in the CLI and `fast=False` sync/async Python SDK arguments. Standard mode is explicitly enforced by default, including scheduled, Docker, Modal, and newly launched tmux runs; existing tmux sessions reject Fast changes they cannot apply.
 - Fixed Antigravity one-shot runs to forward Headless's effective local, Docker, or Modal command timeout to `agy --print-timeout`, so long reasoning runs are not cut off by Agy's independent five-minute default.
 - Updated the bundled Docker image to Antigravity CLI 1.1.8, using the official release assets and published SHA-256 digests for Linux AMD64 and ARM64.

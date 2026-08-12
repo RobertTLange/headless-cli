@@ -119,6 +119,8 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
         "Summarize repository changes",
         "--model",
         "gpt-5.5",
+        "--profile",
+        "research",
         "--fast",
         "--reasoning-effort",
         "high",
@@ -148,6 +150,8 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
       "Summarize repository changes",
       "--model",
       "gpt-5.5",
+      "--profile",
+      "research",
       "--fast",
       "--reasoning-effort",
       "high",
@@ -186,6 +190,16 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
       2,
     );
     assert.match(stderr, /--fast is supported only by claude and codex/);
+
+    stderr = "";
+    assert.equal(
+      await runCli(
+        ["cron", "add", "claude", "--every", "1h", "--prompt", "x", "--profile", "research"],
+        { env, stderr: (text) => { stderr += text; } },
+      ),
+      2,
+    );
+    assert.match(stderr, /--profile is supported only by codex/);
 
   } finally {
     rmSync(dir, { force: true, recursive: true });

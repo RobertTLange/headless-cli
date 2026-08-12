@@ -43,6 +43,7 @@ import {
   type HeadlessConfig,
   type InvocationDefaults,
 } from "./config.js";
+import { validateCodexProfileName } from "./codex-profile.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -52,6 +53,7 @@ import {
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
   ensureDockerSessionHome,
+  ensureDockerSessionProfileDirectory,
   ensureDockerSessionStoreDirectory,
   readDockerCursorSessionId,
   validateDockerSessionRootWorkDir,
@@ -74,6 +76,7 @@ import {
   fetchModelsDevPricing,
   isAntigravityStructuredOutput,
   priceUsageSummary,
+  type UsageContext,
 } from "./output.js";
 import {
   deriveNativeTranscriptActivity,
@@ -170,6 +173,7 @@ interface ParsedArgs {
   prompt?: string;
   promptFile?: string;
   model?: string;
+  profile?: string;
   fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   allow?: AllowMode;
@@ -274,6 +278,7 @@ function usage(): string {
     "",
     "Options:",
     "  --model <name>        Agent model override.",
+    "  --profile <name>      Codex configuration profile.",
     "  --fast                Enable Fast mode for Codex or Claude.",
     "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
@@ -441,6 +446,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--model":
       case "--agent-model":
         parsed.model = takeValue(args, arg);
+        break;
+      case "--profile":
+        parsed.profile = parseProfile(takeValue(args, arg));
         break;
       case "--fast":
         parsed.fast = true;
@@ -724,6 +732,14 @@ function parseReasoningEffort(value: string): ReasoningEffort {
   throw new CliError(`unsupported reasoning effort: ${value}`);
 }
 
+function parseProfile(value: string): string {
+  try {
+    return validateCodexProfileName(value);
+  } catch (error) {
+    throw new CliError((error as Error).message);
+  }
+}
+
 function parseSdkFormat(value: string): SdkFormat {
   if (value === "json" || value === "ndjson") {
     return value;
@@ -740,6 +756,7 @@ function requestsSdkOutput(argv: string[]): boolean {
     "--schedule",
     "--model",
     "--agent-model",
+    "--profile",
     "--reasoning-effort",
     "--effort",
     "--allow",
@@ -1097,9 +1114,17 @@ function commandEnv(baseEnv: Env, command: BuiltCommand): Env {
   return merged;
 }
 
-function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env): { provider?: string; model?: string } {
+function usageContext(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+  profile?: string,
+): UsageContext {
   if (agent === "codex") {
-    return { provider: "openai", model: defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5" };
+    const model = defaults.model ?? env.CODEX_MODEL;
+    return profile
+      ? { model, useDefaultProvider: false }
+      : { provider: "openai", model: model ?? "gpt-5.5" };
   }
   if (agent === "claude") {
     return { provider: "anthropic", model: claudeModel(defaults.model ?? "claude-opus-4-6") };
@@ -1119,14 +1144,14 @@ function usageContext(agent: AgentName, defaults: InvocationDefaults, env: Env):
   return { model: defaults.model };
 }
 
-async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
+async function buildUsageOutput(agent: AgentName, stdout: string, context: UsageContext): Promise<string> {
   return `${JSON.stringify({ usage: await buildUsageReport(agent, stdout, context) })}\n`;
 }
 
 async function buildUsageReport(
   agent: AgentName,
   stdout: string,
-  context: { provider?: string; model?: string },
+  context: UsageContext,
 ): Promise<ReturnType<typeof priceUsageSummary>> {
   const summary = extractUsageSummary(agent, stdout, context);
   if (summary.usageStatus === "missing" || summary.pricingStatus === "native") {
@@ -1324,9 +1349,9 @@ function createWaitingSpinner(label: string, write: (text: string) => void): Wai
   };
 }
 
-function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: Env): string {
+function spinnerModelLabel(agent: AgentName, defaults: InvocationDefaults, env: Env, profile?: string): string {
   if (agent === "codex") {
-    return defaults.model ?? env.CODEX_MODEL ?? "gpt-5.5";
+    return defaults.model ?? env.CODEX_MODEL ?? profile ?? "gpt-5.5";
   }
   if (agent === "claude") {
     return claudeModel(defaults.model ?? "claude-opus-4-6") ?? "claude-opus-4-6";
@@ -1350,8 +1375,14 @@ function paintWaitingSpinnerPart(text: string, colorCode: string, enabled: boole
   return enabled ? `\u001b[${colorCode}m${text}\u001b[0m` : text;
 }
 
-function waitingSpinnerLabel(agent: AgentName, defaults: InvocationDefaults, env: Env, color: boolean): string {
-  const model = spinnerModelLabel(agent, defaults, env);
+function waitingSpinnerLabel(
+  agent: AgentName,
+  defaults: InvocationDefaults,
+  env: Env,
+  color: boolean,
+  profile?: string,
+): string {
+  const model = spinnerModelLabel(agent, defaults, env, profile);
   const reasoning = defaults.reasoningEffort ?? "default";
   return [
     "[",
@@ -1369,13 +1400,15 @@ function renderPrintCommandJson(
   defaults: InvocationDefaults,
   env: Env,
   command: BuiltCommand,
+  profile?: string,
 ): string {
-  const usage = usageContext(agent, defaults, env);
+  const usage = usageContext(agent, defaults, env, profile);
   return `${JSON.stringify({
     agent,
     provider: usage.provider,
     model: usage.model,
     reasoningEffort: defaults.reasoningEffort,
+    profile,
     command: quoteCommand(command),
   })}\n`;
 }
@@ -1384,6 +1417,7 @@ interface SessionPlan {
   alias: string;
   mode: "new" | "resume";
   nativeId?: string;
+  profile?: string;
   startedAt?: string;
 }
 
@@ -1399,7 +1433,12 @@ function validateSessionAlias(alias: string | undefined): string | undefined {
   return alias;
 }
 
-function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env): SessionPlan | undefined {
+function buildSessionPlan(
+  agent: AgentName,
+  alias: string | undefined,
+  env: Env,
+  profile?: string,
+): SessionPlan | undefined {
   const validAlias = validateSessionAlias(alias);
   if (!validAlias) {
     return undefined;
@@ -1409,12 +1448,13 @@ function buildSessionPlan(agent: AgentName, alias: string | undefined, env: Env)
   }
   const stored = readStoredSession(env, agent, validAlias);
   if (stored?.nativeId) {
-    return { alias: validAlias, mode: "resume", nativeId: stored.nativeId };
+    return { alias: validAlias, mode: "resume", nativeId: stored.nativeId, profile: profile ?? stored.profile };
   }
   return {
     alias: validAlias,
     mode: "new",
     nativeId: agent === "claude" ? randomUUID() : undefined,
+    profile: profile ?? stored?.profile,
   };
 }
 
@@ -1442,6 +1482,7 @@ function applySessionPlan(commandOptions: {
   promptFile?: string;
   workDir?: string;
   model?: string;
+  profile?: string;
   allow?: AllowMode;
   fast?: boolean;
   reasoningEffort?: ReasoningEffort;
@@ -1459,6 +1500,7 @@ function applySessionPlan(commandOptions: {
     sessionAlias: plan.alias,
     sessionId: plan.nativeId,
     sessionMode: plan.mode,
+    profile: plan.profile,
   };
 }
 
@@ -1489,6 +1531,7 @@ async function persistSessionPlan(
     agent,
     alias: plan.alias,
     nativeId,
+    profile: plan.profile,
     workDir: cwd ?? process.cwd(),
   });
 }
@@ -3059,6 +3102,7 @@ function validateCronCliOptions(parsed: ParsedArgs): void {
       parsed.prompt !== undefined ||
       parsed.promptFile !== undefined ||
       parsed.model !== undefined ||
+      parsed.profile !== undefined ||
       parsed.fast ||
       parsed.reasoningEffort !== undefined ||
       parsed.allow !== undefined ||
@@ -3125,6 +3169,7 @@ async function executeStoredNode(
     coordination: CoordinationMode;
     fast?: boolean;
     model?: string;
+    profile?: string;
     reasoningEffort?: ReasoningEffort;
     runId: string;
     nodeId: string;
@@ -3171,7 +3216,12 @@ async function executeStoredNode(
     node.coordination === "session"
       ? await prepareSessionPlan(
           node.agent,
-          buildSessionPlan(node.agent, node.sessionAlias ?? node.nodeId, env),
+          buildSessionPlan(
+            node.agent,
+            node.sessionAlias ?? node.nodeId,
+            env,
+            node.profile,
+          ),
           node.workDir,
           env,
           "local",
@@ -3185,6 +3235,7 @@ async function executeStoredNode(
           prompt,
           workDir: node.workDir,
           model: defaults.model,
+          profile: node.profile,
           allow,
           fast: node.fast ?? false,
           reasoningEffort: defaults.reasoningEffort,
@@ -3348,6 +3399,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             prompt: parsed.prompt,
             promptFile: parsed.promptFile,
             model: parsed.model,
+            profile: parsed.profile,
             fast: parsed.fast,
             reasoningEffort: parsed.reasoningEffort,
             allow: parsed.allow,
@@ -3392,6 +3444,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       (parsed.attach || parsed.rename || parsed.send || parsed.check || parsed.list || parsed.showConfig || parsed.dockerCommand || parsed.runCommand)
     ) {
       throw new CliError("--fast can only be used with agent runs or cron add");
+    }
+    if (
+      parsed.profile !== undefined &&
+      (parsed.attach || parsed.rename || parsed.send || parsed.check || parsed.list || parsed.showConfig || parsed.dockerCommand || parsed.runCommand)
+    ) {
+      throw new CliError("--profile can only be used with codex agent runs or cron add");
     }
     if (parsed.runCommand) {
       if (parsed.sdkFormat && parsed.runCommand !== "list" && parsed.runCommand !== "view") {
@@ -3797,6 +3855,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.fast && parsed.agent !== "claude" && parsed.agent !== "codex") {
       throw new CliError("--fast is supported only by claude and codex");
     }
+    if (parsed.profile !== undefined && parsed.agent !== "codex") {
+      throw new CliError("--profile is supported only by codex");
+    }
     if (
       parsed.coordination === "tmux" ||
       (!parsed.coordination && config.general.coordination === "tmux" && !parsed.docker && !parsed.modal)
@@ -3914,12 +3975,21 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const existingTmuxSession = parsed.tmux && parsed.sessionAlias
       ? await headlessTmuxSessionExists(buildHeadlessTmuxSessionName(parsed.agent, parsed.sessionAlias), env)
       : false;
+    if (parsed.profile !== undefined && existingTmuxSession) {
+      throw new CliError("--profile cannot be applied to an existing tmux session");
+    }
     if (parsed.fast && existingTmuxSession) {
       throw new CliError("--fast cannot be applied to an existing tmux session");
     }
     const storedNode = parsed.runId && nodeId ? readRun(env, parsed.runId)?.nodes[nodeId] : undefined;
     const storedFastMode = storedNode?.agent === parsed.agent ? storedNode.fast : undefined;
     const fast = parsed.fast ?? storedFastMode ?? false;
+    const storedProfile = storedNode?.agent === parsed.agent ? storedNode.profile : undefined;
+    const profile = parsed.profile ?? storedProfile ?? (
+      parsed.agent === "codex" && parsed.sessionAlias
+        ? readStoredSession(env, parsed.agent, parsed.sessionAlias)?.profile
+        : undefined
+    );
     const prompt = await resolvePrompt(parsed, deps, { forceText: parsed.tmux || parsed.role !== undefined || parsed.runId !== undefined });
     const allow = configuredDefaults.allow ?? roleDefaultAllow(parsed.role);
     if (parsed.runId && parsed.role === "orchestrator" && allow === "read-only") {
@@ -3939,6 +4009,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           planned: true,
           allow: teamDefaults.allow ?? roleDefaultAllow(teamNode.role),
           model: teamDefaults.model,
+          profile: teamNode.agent === "codex" ? profile : undefined,
           fast: fast && (teamNode.agent === "claude" || teamNode.agent === "codex"),
           reasoningEffort: teamDefaults.reasoningEffort,
           workDir: cwd ?? process.cwd(),
@@ -3956,6 +4027,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         planned: true,
         allow,
         model: configuredDefaults.model,
+        profile,
         fast,
         reasoningEffort: configuredDefaults.reasoningEffort,
         workDir: cwd ?? process.cwd(),
@@ -4018,6 +4090,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               planned: true,
               allow,
               model: configuredDefaults.model,
+              profile,
               fast,
               reasoningEffort: configuredDefaults.reasoningEffort,
               workDir: cwd ?? process.cwd(),
@@ -4061,6 +4134,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const tmuxCommandOptions = {
         prompt: tmuxPrompt,
         model: configuredDefaults.model,
+        profile,
         allow,
         fast,
         reasoningEffort: configuredDefaults.reasoningEffort,
@@ -4127,10 +4201,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         claimLock?.release();
       }
       const tmuxWaitStrategy = waitSnapshot ? storedTmuxWaitStrategy(waitSnapshot.strategy) : undefined;
-      if (code === 0 && tmuxWaitStrategy && parsed.sessionAlias && sessionStorePath(env)) {
+      if (code === 0 && parsed.sessionAlias && (profile || tmuxWaitStrategy) && sessionStorePath(env)) {
         writeStoredTmuxSession(env, {
           agent: parsed.agent,
           alias: parsed.sessionAlias,
+          profile,
           tmuxWaitStrategy,
           workDir: cwd,
         });
@@ -4148,6 +4223,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             planned: true,
             allow,
             model: configuredDefaults.model,
+            profile,
             fast,
             reasoningEffort: configuredDefaults.reasoningEffort,
             workDir: cwd ?? process.cwd(),
@@ -4209,17 +4285,21 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
       validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
       ensureDockerSessionStoreDirectory(dockerSessionHome);
+      if (parsed.agent === "codex" && profile) {
+        ensureDockerSessionProfileDirectory(dockerSessionHome);
+      }
     }
     const sessionEnv = dockerSessionHome
       ? { ...env, HOME: dockerSessionHome, [SECURE_SESSION_STORE_ENV]: "1" }
       : env;
-    let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv);
+    let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv, parsed.profile);
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
     }
     const commandSessionPlan = dockerSessionHome && sessionPlan
       ? { ...sessionPlan, nativeId: dockerSessionNativeId(parsed.agent, sessionPlan.nativeId, dockerSessionHome) }
       : sessionPlan;
+    const effectiveProfile = sessionPlan?.profile ?? profile;
     let command = withRunEnvironment(buildAgentCommand(
       parsed.agent,
       applySessionPlan({
@@ -4227,6 +4307,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
         workDir: cwd ?? process.cwd(),
         model: configuredDefaults.model,
+        profile: effectiveProfile,
         allow,
         fast,
         reasoningEffort: configuredDefaults.reasoningEffort,
@@ -4248,6 +4329,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         hostUser: detectDockerHostUser(),
         image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
         persistentHome: dockerSessionHome,
+        profile: effectiveProfile,
         runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
         runId: parsed.runId,
         sessionBootstrap:
@@ -4272,7 +4354,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             workDir: cwd ?? process.cwd(),
           })
         : command;
-      stdout(parsed.json ? renderPrintCommandJson(parsed.agent, configuredDefaults, env, printableCommand) : `${quoteCommand(printableCommand)}\n`);
+      stdout(parsed.json ? renderPrintCommandJson(parsed.agent, configuredDefaults, env, printableCommand, effectiveProfile) : `${quoteCommand(printableCommand)}\n`);
       return 0;
     }
     if (parsed.docker && !commandExists("docker", env)) {
@@ -4315,7 +4397,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       : undefined;
     const waitingSpinner =
       stdoutHandling === "capture" && stderrIsTTY && !statusReporter && !parsed.sdkFormat
-        ? createWaitingSpinner(waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined), stderr)
+        ? createWaitingSpinner(
+            waitingSpinnerLabel(parsed.agent, configuredDefaults, env, env.NO_COLOR === undefined, effectiveProfile),
+            stderr,
+          )
         : undefined;
     const displayStderr = (text: string) => {
       waitingSpinner?.clear();
@@ -4360,6 +4445,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
             modalEnv: parsed.modalEnv,
             modalSecrets: parsed.modalSecrets,
+            profile: effectiveProfile,
             maxCapturedStdoutBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
             waitForStdoutDrain:
               parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
@@ -4440,7 +4526,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           (result.usageTrace && result.usageTrace !== commandTrace
             ? extractFinalMessage(parsed.agent, result.usageTrace)
             : "");
-        const metrics = extractRunNodeMetrics(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env));
+        const metrics = extractRunNodeMetrics(
+          parsed.agent,
+          usageTrace,
+          usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+        );
         updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
         if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
           completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
@@ -4465,13 +4555,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           );
           return exitCode;
         }
-        const context = usageContext(parsed.agent, configuredDefaults, env);
+        const context = usageContext(parsed.agent, configuredDefaults, env, effectiveProfile);
         stdout(
           renderSdkResult("invoke", {
             agent: parsed.agent,
             provider: context.provider,
             model: context.model,
             reasoningEffort: configuredDefaults.reasoningEffort,
+            profile: effectiveProfile,
             finalMessage,
             nativeSessionId: capturedNativeSessionId,
             ...(parsed.usage
@@ -4488,7 +4579,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           if (stdoutReceived && !stdoutEndsWithNewline) {
             stdout("\n");
           }
-          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+          stdout(
+            await buildUsageOutput(
+              parsed.agent,
+              usageTrace,
+              usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+            ),
+          );
         }
         return result.code;
       }
@@ -4504,7 +4601,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           stdout(`${finalMessage}\n`);
         }
         if (parsed.usage) {
-          stdout(await buildUsageOutput(parsed.agent, usageTrace, usageContext(parsed.agent, configuredDefaults, env)));
+          stdout(
+            await buildUsageOutput(
+              parsed.agent,
+              usageTrace,
+              usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+            ),
+          );
         }
         return result.code;
       }

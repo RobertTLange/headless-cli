@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import type { AgentName, Env } from "./types.js";
+import { validateCodexProfileName } from "./codex-profile.js";
 
 export type StoredTmuxWaitStrategy =
   | { kind: "pin"; sessionId: string }
@@ -25,6 +26,7 @@ export interface StoredSession {
   agent: AgentName;
   alias: string;
   nativeId?: string;
+  profile?: string;
   tmuxWaitStrategy?: StoredTmuxWaitStrategy;
   workDir?: string;
   createdAt: string;
@@ -49,7 +51,7 @@ export function readStoredSession(env: Env, agent: AgentName, alias: string): St
 
 export function writeStoredSession(
   env: Env,
-  session: Pick<StoredSession, "agent" | "alias" | "nativeId" | "workDir">,
+  session: Pick<StoredSession, "agent" | "alias" | "nativeId" | "profile" | "workDir">,
 ): StoredSession {
   const path = sessionStorePath(env);
   if (!path) {
@@ -63,6 +65,7 @@ export function writeStoredSession(
     agent: session.agent,
     alias: session.alias,
     nativeId: session.nativeId,
+    profile: session.profile ?? existing?.profile,
     tmuxWaitStrategy: existing?.tmuxWaitStrategy,
     workDir: session.workDir,
     createdAt: existing?.createdAt ?? now,
@@ -76,7 +79,7 @@ export function writeStoredSession(
 
 export function writeStoredTmuxSession(
   env: Env,
-  session: Pick<StoredSession, "agent" | "alias" | "tmuxWaitStrategy" | "workDir">,
+  session: Pick<StoredSession, "agent" | "alias" | "profile" | "tmuxWaitStrategy" | "workDir">,
 ): StoredSession {
   const path = sessionStorePath(env);
   if (!path) {
@@ -90,6 +93,7 @@ export function writeStoredTmuxSession(
     agent: session.agent,
     alias: session.alias,
     nativeId: existing?.nativeId,
+    profile: session.profile ?? existing?.profile,
     tmuxWaitStrategy: session.tmuxWaitStrategy,
     workDir: session.workDir,
     createdAt: existing?.createdAt ?? now,
@@ -175,14 +179,16 @@ function normalizeStoredSession(value: unknown, agent: AgentName, alias: string)
     return undefined;
   }
   const nativeId = boundedOptionalString(value.nativeId, 4096);
+  const profile = boundedOptionalProfile(value.profile);
   const workDir = boundedOptionalString(value.workDir, 4096);
-  if (nativeId === null || workDir === null) return undefined;
+  if (nativeId === null || profile === null || workDir === null) return undefined;
   return {
     agent,
     alias,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     ...(nativeId === undefined ? {} : { nativeId }),
+    ...(profile === undefined ? {} : { profile }),
     ...(workDir === undefined ? {} : { workDir }),
   };
 }
@@ -190,6 +196,16 @@ function normalizeStoredSession(value: unknown, agent: AgentName, alias: string)
 function boundedOptionalString(value: unknown, maxLength: number): string | undefined | null {
   if (value === undefined) return undefined;
   return typeof value === "string" && value.length <= maxLength ? value : null;
+}
+
+function boundedOptionalProfile(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return null;
+  try {
+    return validateCodexProfileName(value);
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

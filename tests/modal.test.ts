@@ -67,7 +67,7 @@ test("builds a printable Modal sandbox summary command", () => {
 test("collects Modal env from curated, command, explicit, and HOME entries", () => {
   assert.deepEqual(
     collectModalEnv(
-      { OPENAI_API_KEY: "sk-test", EXTRA_TOKEN: "extra", HOME: "/home/rob" },
+      { OPENAI_API_KEY: "sk-test", SAKANA_API_KEY: "sakana-test", EXTRA_TOKEN: "extra", HOME: "/home/rob" },
       { CURSOR_API_KEY: "cursor" },
       ["EXTRA_TOKEN", "INLINE_TOKEN=value"],
     ),
@@ -77,6 +77,7 @@ test("collects Modal env from curated, command, explicit, and HOME entries", () 
       HOME: "/home/node",
       INLINE_TOKEN: "value",
       OPENAI_API_KEY: "sk-test",
+      SAKANA_API_KEY: "sakana-test",
     },
   );
 });
@@ -361,6 +362,105 @@ test("executeModalAgent seeds forwarded file-backed credentials", async () => {
   }
 });
 
+test("executeModalAgent seeds a selected Codex profile and rewrites its catalog path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-profile-"));
+  try {
+    const home = join(dir, "home");
+    const codexHome = join(dir, "codex-home");
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    const profilePath = join(codexHome, "fugu.config.toml");
+    const catalogPath = join(codexHome, "fugu.json");
+    mkdirSync(home);
+    mkdirSync(codexHome);
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    writeFileSync(join(work, "input.txt"), "local");
+    writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nname = "Sakana"\n');
+    writeFileSync(profilePath, `model_catalog_json = ${JSON.stringify(catalogPath)}\n`);
+    writeFileSync(catalogPath, '{"models":[]}\n');
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+
+    await executeModalAgent({
+      agent: "codex",
+      appName: "headless-test",
+      command: { command: "codex", args: ["--profile", "fugu", "exec", "-"], stdinText: "prompt" },
+      cpu: DEFAULT_MODAL_CPU,
+      env: { CODEX_HOME: codexHome, HOME: home },
+      image: DEFAULT_MODAL_IMAGE,
+      includeGit: false,
+      memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+      modalEnv: [],
+      modalSecrets: [],
+      profile: "fugu",
+      stderr: () => {},
+      stdout: () => {},
+      stdoutHandling: "capture",
+      timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+      workDir: work,
+      clientFactory: async () => client,
+    });
+
+    assert.equal(
+      readFileSync(join(remote, "host-home", ".codex", "fugu.config.toml"), "utf8"),
+      'model_catalog_json = "/home/node/.codex/fugu.json"\n',
+    );
+    assert.equal(
+      readFileSync(join(remote, "host-home", ".codex", "fugu.json"), "utf8"),
+      '{"models":[]}\n',
+    );
+    assert.equal(
+      readFileSync(join(remote, "host-home", ".codex", "config.toml"), "utf8"),
+      '[model_providers.sakana]\nname = "Sakana"\n',
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("executeModalAgent validates a selected Codex profile before creating a sandbox", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-profile-preflight-"));
+  try {
+    const codexHome = join(dir, "codex-home");
+    const work = join(dir, "work");
+    mkdirSync(codexHome);
+    mkdirSync(work);
+    let clientCreated = false;
+
+    await assert.rejects(
+      () =>
+        executeModalAgent({
+          agent: "codex",
+          appName: "headless-test",
+          command: { command: "codex", args: ["--profile", "missing", "exec", "-"] },
+          cpu: DEFAULT_MODAL_CPU,
+          env: { CODEX_HOME: codexHome },
+          image: DEFAULT_MODAL_IMAGE,
+          includeGit: false,
+          memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+          modalEnv: [],
+          modalSecrets: [],
+          profile: "missing",
+          stderr: () => {},
+          stdout: () => {},
+          stdoutHandling: "capture",
+          timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+          workDir: work,
+          clientFactory: async () => {
+            clientCreated = true;
+            throw new Error("Modal client should not be created");
+          },
+        }),
+      /missing\.config\.toml/,
+    );
+    assert.equal(clientCreated, false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent seeds only the selected AWS profile", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-aws-profile-"));
   try {
@@ -471,8 +571,8 @@ test("executeModalAgent rejects non-git workdirs instead of recursively uploadin
       /Modal workspace upload requires a git workdir/,
     );
     assert.equal(existsSync(join(remote, "workspace", ".env")), false);
-    assert.equal(sandbox.terminated, true);
-    assert.equal(client.closed, true);
+    assert.equal(sandbox.terminated, false);
+    assert.equal(client.closed, false);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

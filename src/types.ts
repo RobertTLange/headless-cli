@@ -13,6 +13,7 @@ export interface BuildOptions {
   promptFile?: string;
   workDir?: string;
   model?: string;
+  profile?: string;
   allow?: AllowMode;
   fast?: boolean;
   reasoningEffort?: ReasoningEffort;

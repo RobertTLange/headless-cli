@@ -27,7 +27,7 @@ printf "Review this diff" | headless pi --model claude-opus
 
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `antigravity`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
-When `--model` is omitted, Headless defaults Codex to `gpt-5.5`, Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`. Antigravity has no built-in Headless model default; pass one of the names reported by `agy models` with `--model` when you want a per-run override.
+When both `--model` and `--profile` are omitted, Headless defaults Codex to `gpt-5.5`. With `--profile`, Codex uses the profile's model unless `--model`, `CODEX_MODEL`, or Headless configuration supplies an explicit override. Headless defaults Claude to `claude-opus-4-6`, Cursor to the `gpt-5.5` family with medium effort, Gemini to `gemini-3.1-pro-preview`, OpenCode to `openai/gpt-5.4`, and Pi to `openai-codex/gpt-5.5`. Antigravity has no built-in Headless model default; pass one of the names reported by `agy models` with `--model` when you want a per-run override.
 
 ## ACP Agents
 
@@ -62,6 +62,8 @@ By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--
 Pass `--reasoning-effort low|medium|high|xhigh` or `--effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Antigravity, Gemini, and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
 
 Fast mode is off by default and is controlled per invocation, not through `~/.headless/config.toml`. Pass `--fast` to opt into the provider's native Fast mode for Codex or Claude; other agents reject the flag. Headless explicitly sends Codex `service_tier="default"` or `service_tier="fast"`, and Claude `fastMode: false` or `true`, so an inherited provider config cannot silently enable Fast mode. The same option works for Docker, Modal, tmux, and `cron add` runs.
+
+Pass `--profile <name>` to select a Codex configuration profile for one-shot, tmux, session, coordinated-run, Docker, Modal, or `cron add` invocations. Named sessions and coordinated run nodes remember the profile for later turns. Profiles are CLI-only: Headless does not define a profile default in `~/.headless/config.toml`, and non-Codex agents reject the option.
 
 ## Output Modes
 
@@ -133,7 +135,7 @@ headless cron rm inbox-triage --force
 
 Paused jobs do not schedule new executions. `kill` terminates the active execution if present, clears pending work, and disables the job. `rm` refuses to delete a job with an active execution unless `--force` is set.
 
-Cron jobs accept detached-safe one-shot options: `--model`, `--fast` (Codex and Claude only), `--reasoning-effort`, `--allow`, `--work-dir`, Docker and Modal options, `--timeout`, `--json`, `--debug`, and `--usage`. Interactive options such as `--tmux`, `--wait`, `--delete`, `--session`, and run-management flags are rejected for scheduled jobs.
+Cron jobs accept detached-safe one-shot options: `--model`, Codex-only `--profile`, `--fast` (Codex and Claude only), `--reasoning-effort`, `--allow`, `--work-dir`, Docker and Modal options, `--timeout`, `--json`, `--debug`, and `--usage`. Interactive options such as `--tmux`, `--wait`, `--delete`, `--session`, and run-management flags are rejected for scheduled jobs.
 
 If a job's next tick arrives while that job is still running, Headless records one pending execution. Further ticks keep the pending flag true instead of creating an unbounded backlog. When the active execution exits, the daemon immediately starts the single pending execution.
 
@@ -285,6 +287,7 @@ Options:
 - `--prompt`, `-p`: prompt text.
 - `--prompt-file`: read prompt from a file.
 - `--model`, `--agent-model`: model override passed to the agent CLI.
+- `--profile`: Codex configuration profile for this invocation; persisted by named sessions and coordinated run nodes.
 - `--fast`: opt into Fast mode for Codex or Claude; off by default and not config-driven.
 - `--reasoning-effort`, `--effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
 - `--allow`: permission mode, either `read-only` or `yolo`.
@@ -337,4 +340,4 @@ See [orchestration.md](orchestration.md) for `--role`, `--run`, `--node`, `--tea
 - `HEADLESS_BIN`: fallback binary path for detached Headless child invocations.
 - `HEADLESS_RUN_DIR`: concrete directory for the active run store, mainly used by Docker run coordination.
 
-Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.
+Docker and Modal modes also pass common agent/provider credential variables when present, including `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `SAKANA_API_KEY`, Cursor/Pi credential variables, common AWS variables, and OpenAI-compatible endpoint variables. Use `--docker-env` or `--modal-env` for anything else. Modal mode additionally supports named Modal Secrets with `--modal-secret`.

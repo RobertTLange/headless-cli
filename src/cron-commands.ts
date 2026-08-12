@@ -33,6 +33,7 @@ export interface CronCommandInput {
   prompt?: string;
   promptFile?: string;
   model?: string;
+  profile?: string;
   fast?: boolean;
   reasoningEffort?: ReasoningEffort;
   allow?: AllowMode;
@@ -84,6 +85,9 @@ async function cronAdd(input: CronCommandInput, handlers: CronCommandHandlers): 
   }
   if (input.fast && input.agent !== "claude" && input.agent !== "codex") {
     throw new Error("--fast is supported only by claude and codex");
+  }
+  if (input.profile !== undefined && input.agent !== "codex") {
+    throw new Error("--profile is supported only by codex");
   }
   if (input.prompt !== undefined && input.promptFile !== undefined) {
     throw new Error("use either --prompt or --prompt-file, not both");
@@ -355,6 +359,7 @@ function buildScheduledArgs(input: CronCommandInput): string[] {
   if (input.prompt !== undefined) args.push("--prompt", input.prompt);
   if (input.promptFile !== undefined) args.push("--prompt-file", input.promptFile);
   if (input.model !== undefined) args.push("--model", input.model);
+  if (input.profile !== undefined) args.push("--profile", input.profile);
   if (input.fast) args.push("--fast");
   if (input.reasoningEffort !== undefined) args.push("--reasoning-effort", input.reasoningEffort);
   if (input.allow !== undefined) args.push("--allow", input.allow);

@@ -13,6 +13,7 @@ import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import { commandFromCustom, resolveAcpCommand } from "./acp.js";
 import { BUILTIN_AGENT_DEFAULTS } from "./config.js";
+import { validateCodexProfileName } from "./codex-profile.js";
 
 const agentOrder: AgentName[] = ["acp", "antigravity", "claude", "codex", "cursor", "gemini", "opencode", "pi"];
 const defaultClaudeModel = BUILTIN_AGENT_DEFAULTS.claude.model;
@@ -296,12 +297,17 @@ function buildClaude(options: BuildOptions, env: Env): BuiltCommand {
   return buildClaudeCommand(args, env);
 }
 
+function codexModel(options: BuildOptions, env: Env): string | undefined {
+  return options.model || env.CODEX_MODEL || (options.profile ? undefined : defaultCodexModel);
+}
+
 function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL || defaultCodexModel;
+  const model = codexModel(options, env);
   const args = [
     ...(options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]
       : ["--dangerously-bypass-approvals-and-sandbox"]),
+    ...(options.profile ? ["--profile", options.profile] : []),
     "exec",
     ...(options.sessionMode === "resume" && options.sessionId ? ["resume"] : []),
     ...withModel([], model),
@@ -324,13 +330,16 @@ function buildCodex(options: BuildOptions, env: Env): BuiltCommand {
 }
 
 function buildInteractiveCodex(options: BuildOptions, env: Env): BuiltCommand {
-  const model = options.model || env.CODEX_MODEL || defaultCodexModel;
+  const model = codexModel(options, env);
   const args =
     options.allow === "read-only"
       ? ["--sandbox", "read-only", "--ask-for-approval", "never", "--search"]
       : options.allow === "yolo" || options.allow === undefined
         ? ["--dangerously-bypass-approvals-and-sandbox"]
         : [];
+  if (options.profile) {
+    args.push("--profile", options.profile);
+  }
   args.push(...withModel([], model));
   args.push(...withCodexServiceTier([], options.fast));
   if (options.reasoningEffort) {
@@ -654,6 +663,7 @@ export function getAgentConfig(name: AgentName): AgentConfig {
 }
 
 export function buildAgentCommand(name: AgentName, options: BuildOptions, env: Env = process.env): BuiltCommand {
+  validateProfileAgent(name, options.profile);
   return getAgentHarness(name).buildCommand(options, env);
 }
 
@@ -662,7 +672,15 @@ export function buildInteractiveAgentCommand(
   options: BuildOptions,
   env: Env = process.env,
 ): BuiltCommand {
+  validateProfileAgent(name, options.profile);
   return getAgentHarness(name).buildInteractiveCommand(options, env);
+}
+
+function validateProfileAgent(name: AgentName, profile: string | undefined): void {
+  if (profile !== undefined && name !== "codex") {
+    throw new Error("--profile is supported only by codex");
+  }
+  if (profile !== undefined) validateCodexProfileName(profile);
 }
 
 // How each harness lets `--tmux --wait` identify this run's native transcript

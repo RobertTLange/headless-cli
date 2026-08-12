@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   dockerSessionHomePath,
   dockerSessionNativeId,
   ensureDockerSessionHome,
+  ensureDockerSessionProfileDirectory,
   ensureDockerSessionStoreDirectory,
   DEFAULT_DOCKER_IMAGE,
   readDockerCursorSessionId,
@@ -25,7 +26,7 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /@anthropic-ai\/claude-code@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /@google\/gemini-cli@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /@mariozechner\/pi-coding-agent@\d+\.\d+\.\d+/);
-  assert.match(dockerfile, /@openai\/codex@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /@openai\/codex@0\.147\.0/);
   assert.match(dockerfile, /opencode-ai@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /ARG CURSOR_AGENT_VERSION=\d{4}\.\d{2}\.\d{2}-[a-f0-9]+/);
   assert.match(dockerfile, /ARG CURSOR_AGENT_SHA256_AMD64=[a-f0-9]{64}/);
@@ -262,6 +263,32 @@ test("wraps argument-mode commands without stdin or unrelated env", () => {
   }
 });
 
+test("forwards Sakana credentials to Docker without rendering the secret value", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "project");
+    mkdirSync(home);
+    mkdirSync(workDir);
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: { command: "codex", args: ["exec", "-"] },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { HOME: home, SAKANA_API_KEY: "sakana-secret" },
+      image: DEFAULT_DOCKER_IMAGE,
+      workDir,
+    });
+
+    const rendered = quoteCommand(command);
+    assert.match(rendered, /--env SAKANA_API_KEY/);
+    assert.doesNotMatch(rendered, /sakana-secret/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("uses a writable container home while keeping host agent config read-only", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {
@@ -290,6 +317,44 @@ test("uses a writable container home while keeping host agent config read-only",
     assert.ok(command.args.includes("/headless-home:rw,mode=1777"));
     assert.ok(command.args.includes("HOME=/headless-home"));
     assert.ok(!command.args.includes(`${join(home, ".codex")}:${join(home, ".codex")}:ro`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("mounts a selected Codex profile and its relative catalog for Docker", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const codexHome = join(dir, "codex-home");
+    const workDir = join(dir, "project");
+    const profilePath = join(codexHome, "fugu.config.toml");
+    const catalogPath = join(codexHome, "fugu.json");
+    mkdirSync(home);
+    mkdirSync(codexHome);
+    mkdirSync(workDir);
+    writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nname = "Sakana"\n');
+    writeFileSync(profilePath, 'model_catalog_json = "fugu.json"\n');
+    writeFileSync(catalogPath, '{"models":[]}\n');
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: { command: "codex", args: ["--profile", "fugu", "exec", "-"] },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { CODEX_HOME: codexHome, HOME: home },
+      image: DEFAULT_DOCKER_IMAGE,
+      profile: "fugu",
+      workDir,
+    });
+
+    assert.ok(
+      command.args.includes(`${profilePath}:/tmp/headless-host-home/.codex/fugu.config.toml:ro`),
+    );
+    assert.ok(
+      command.args.includes(`${join(codexHome, "config.toml")}:/tmp/headless-host-home/.codex/config.toml:ro`),
+    );
+    assert.ok(command.args.includes(`${catalogPath}:/headless-home/.codex/fugu.json:ro`));
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -451,6 +516,89 @@ test("uses a persistent host home for durable Docker sessions", () => {
       dockerSessionNativeId("pi", join(persistentHome, ".pi", "agent", "sessions", "turn.jsonl"), persistentHome),
       "/headless-home/.pi/agent/sessions/turn.jsonl",
     );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("safely refreshes Codex configuration when resuming a durable Docker session", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const codexHome = join(dir, "codex-home");
+    const persistentHome = join(dir, "sessions", "codex", "work");
+    const workDir = join(dir, "project");
+    mkdirSync(codexHome);
+    mkdirSync(workDir);
+    writeFileSync(join(codexHome, "auth.json"), "{}");
+    writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nbase_url = "https://example.test"\n');
+    writeFileSync(join(codexHome, "fugu.config.toml"), 'model = "fugu"\n');
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: { command: "codex", args: ["--profile", "fugu", "exec", "-"] },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { CODEX_HOME: codexHome },
+      image: DEFAULT_DOCKER_IMAGE,
+      persistentHome,
+      profile: "fugu",
+      workDir,
+    });
+
+    const bootstrap = command.args.find((arg) => arg.includes("cp -R -n")) ?? "";
+    assert.match(
+      bootstrap,
+      /if \[ -L "\$HOME\/\.codex" \]/,
+    );
+    assert.match(bootstrap, /stat -c %u "\$HOME\/\.codex"/);
+    assert.match(bootstrap, /mktemp "\$HOME\/\.codex\/\.headless-refresh\.XXXXXX"/);
+    assert.match(bootstrap, /mv -fT "\$refresh_tmp" "\$destination"/);
+    assert.match(bootstrap, /rm -f "\$HOME\/\.codex\/config\.toml"/);
+    assert.doesNotMatch(bootstrap, /cp -f .*\.codex\/(?:auth|config|fugu\.config)/);
+
+    const seedHome = join(dir, "seed-home");
+    const victimConfig = join(workDir, "victim-config.toml");
+    const victimProfile = join(workDir, "victim-profile.toml");
+    mkdirSync(join(seedHome, ".codex"), { recursive: true });
+    ensureDockerSessionHome(persistentHome);
+    const profileDirectory = ensureDockerSessionProfileDirectory(persistentHome);
+    assert.equal(profileDirectory, realpathSync(join(persistentHome, ".codex")));
+    assert.equal(statSync(profileDirectory).mode & 0o777, 0o700);
+    writeFileSync(join(seedHome, ".codex", "config.toml"), "fresh config\n");
+    writeFileSync(join(seedHome, ".codex", "fugu.config.toml"), "fresh profile\n");
+    writeFileSync(victimConfig, "workspace config\n");
+    writeFileSync(victimProfile, "workspace profile\n");
+    symlinkSync(victimConfig, join(persistentHome, ".codex", "config.toml"));
+    symlinkSync(victimProfile, join(persistentHome, ".codex", "fugu.config.toml"));
+    const localBootstrap = bootstrap
+      .replaceAll("/tmp/headless-host-home", seedHome)
+      .replaceAll("/headless-home", persistentHome);
+
+    const refresh = spawnSync("sh", ["-c", localBootstrap, "headless-agent", "true"], { encoding: "utf8" });
+    assert.equal(refresh.status, 0, refresh.stderr);
+    assert.equal(readFileSync(victimConfig, "utf8"), "workspace config\n");
+    assert.equal(readFileSync(victimProfile, "utf8"), "workspace profile\n");
+    assert.equal(lstatSync(join(persistentHome, ".codex", "config.toml")).isSymbolicLink(), false);
+    assert.equal(lstatSync(join(persistentHome, ".codex", "fugu.config.toml")).isSymbolicLink(), false);
+
+    unlinkSync(join(seedHome, ".codex", "config.toml"));
+    const removeStale = spawnSync("sh", ["-c", localBootstrap, "headless-agent", "true"], { encoding: "utf8" });
+    assert.equal(removeStale.status, 0, removeStale.stderr);
+    assert.equal(existsSync(join(persistentHome, ".codex", "config.toml")), false);
+
+    const poisonedHome = join(dir, "poisoned-home");
+    const poisonedTarget = join(workDir, "poisoned-target");
+    mkdirSync(poisonedHome);
+    mkdirSync(poisonedTarget);
+    writeFileSync(join(poisonedTarget, "unchanged"), "safe\n");
+    symlinkSync(poisonedTarget, join(poisonedHome, ".codex"));
+    const poisonedBootstrap = bootstrap
+      .replaceAll("/tmp/headless-host-home", seedHome)
+      .replaceAll("/headless-home", poisonedHome);
+    const reject = spawnSync("sh", ["-c", poisonedBootstrap, "headless-agent", "true"], { encoding: "utf8" });
+    assert.notEqual(reject.status, 0);
+    assert.match(reject.stderr, /unsafe durable Codex configuration directory/);
+    assert.equal(readFileSync(join(poisonedTarget, "unchanged"), "utf8"), "safe\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

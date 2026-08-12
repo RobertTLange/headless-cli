@@ -12,7 +12,7 @@ RUN npm install -g \
   @anthropic-ai/claude-code@2.1.119 \
   @google/gemini-cli@0.39.1 \
   @mariozechner/pi-coding-agent@0.70.2 \
-  @openai/codex@0.125.0 \
+  @openai/codex@0.147.0 \
   opencode-ai@1.14.25
 
 ARG TARGETARCH

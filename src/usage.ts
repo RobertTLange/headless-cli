@@ -15,12 +15,19 @@ interface PricingModel {
 }
 
 interface UsagePart {
+  allowProviderSearch?: boolean;
   provider?: string;
   model?: string;
   inputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   outputTokens: number;
+}
+
+export interface UsageContext {
+  provider?: string;
+  model?: string;
+  useDefaultProvider?: boolean;
 }
 
 export interface UsageCostBreakdown {
@@ -110,7 +117,7 @@ function latestRecordWith(records: JsonRecord[], predicate: (record: JsonRecord)
   return records.filter(predicate).at(-1);
 }
 
-function requestedProviderModel(context: { provider?: string; model?: string } = {}): { provider?: string; model?: string } {
+function requestedProviderModel(context: UsageContext = {}): { provider?: string; model?: string } {
   if (!context.model) {
     return { provider: context.provider, model: context.model };
   }
@@ -157,6 +164,7 @@ function summarizeUsage(options: {
   pricingStatus?: UsageSummary["pricingStatus"];
   reasoningOutputIncludedInOutput?: boolean;
   modelBreakdowns?: UsagePart[];
+  useDefaultProvider?: boolean;
 }): UsageSummary {
   const cacheReadTokens = options.cacheReadTokens ?? 0;
   const cacheWriteTokens = options.cacheWriteTokens ?? 0;
@@ -165,7 +173,8 @@ function summarizeUsage(options: {
   const totalTokens = options.inputTokens + cacheReadTokens + cacheWriteTokens + options.outputTokens + extraReasoningTokens;
   return {
     agent: options.agent,
-    provider: options.provider ?? defaultProvider(options.agent) ?? null,
+    provider:
+      options.provider ?? (options.useDefaultProvider === false ? null : (defaultProvider(options.agent) ?? null)),
     model: options.model ?? null,
     inputTokens: options.inputTokens,
     cacheReadTokens,
@@ -187,7 +196,7 @@ function firstModelFromUsage(record: JsonRecord): string | undefined {
   return Object.keys(modelUsage).at(0);
 }
 
-function extractModel(records: JsonRecord[], context: { provider?: string; model?: string }): string | undefined {
+function extractModel(records: JsonRecord[], context: UsageContext): string | undefined {
   const requested = requestedProviderModel(context);
   if (requested.model) return requested.model;
 
@@ -200,7 +209,7 @@ function extractModel(records: JsonRecord[], context: { provider?: string; model
   return undefined;
 }
 
-function extractProvider(records: JsonRecord[], context: { provider?: string; model?: string }, agent: AgentName): string | undefined {
+function extractProvider(records: JsonRecord[], context: UsageContext, agent: AgentName): string | undefined {
   const requested = requestedProviderModel(context);
   if (requested.provider) return requested.provider;
   for (const record of records) {
@@ -209,7 +218,7 @@ function extractProvider(records: JsonRecord[], context: { provider?: string; mo
     const messageProvider = asString(asRecord(record.message).provider).trim();
     if (messageProvider) return messageProvider;
   }
-  return defaultProvider(agent);
+  return context.useDefaultProvider === false ? undefined : defaultProvider(agent);
 }
 
 function antigravityPricingModel(model: string): { provider?: string; model?: string } {
@@ -224,7 +233,7 @@ function antigravityPricingModel(model: string): { provider?: string; model?: st
 
 function extractAntigravityUsage(
   records: JsonRecord[],
-  context: { provider?: string; model?: string },
+  context: UsageContext,
 ): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) => {
     if (asString(item.type) !== "headless.antigravity.usage") return false;
@@ -269,7 +278,7 @@ function extractAntigravityUsage(
   });
 }
 
-function extractClaudeUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
+function extractClaudeUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) =>
     hasNumericField(asRecord(item.usage), [
       "input_tokens",
@@ -297,7 +306,7 @@ function extractClaudeUsage(records: JsonRecord[], context: { provider?: string;
   });
 }
 
-function extractCodexUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
+function extractCodexUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) =>
     hasNumericField(asRecord(item.usage), [
       "input_tokens",
@@ -310,18 +319,33 @@ function extractCodexUsage(records: JsonRecord[], context: { provider?: string; 
   const usage = asRecord(record.usage);
   const requested = requestedProviderModel(context);
   const cacheReadTokens = asNumber(usage.cached_input_tokens);
+  const inputTokens = nonOverlappingInputTokens(asNumber(usage.input_tokens), cacheReadTokens);
+  const outputTokens = asNumber(usage.output_tokens);
+  const model = extractModel(records, context);
   return summarizeUsage({
     agent: "codex",
-    provider: requested.provider ?? "openai",
-    model: extractModel(records, context),
-    inputTokens: nonOverlappingInputTokens(asNumber(usage.input_tokens), cacheReadTokens),
+    provider: requested.provider,
+    model,
+    inputTokens,
     cacheReadTokens,
-    outputTokens: asNumber(usage.output_tokens),
+    outputTokens,
     reasoningOutputTokens: asNumber(usage.reasoning_output_tokens),
+    useDefaultProvider: context.useDefaultProvider,
+    modelBreakdowns: [
+      {
+        allowProviderSearch: context.useDefaultProvider !== false,
+        provider: requested.provider,
+        model,
+        inputTokens,
+        cacheReadTokens,
+        cacheWriteTokens: 0,
+        outputTokens,
+      },
+    ],
   });
 }
 
-function extractCursorUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
+function extractCursorUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) =>
     hasNumericField(asRecord(item.usage), ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens"]),
   );
@@ -338,7 +362,7 @@ function extractCursorUsage(records: JsonRecord[], context: { provider?: string;
   });
 }
 
-function extractGeminiUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
+function extractGeminiUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) => {
     const stats = asRecord(item.stats);
     if (hasNumericField(stats, ["input_tokens", "input", "cached", "output_tokens"])) return true;
@@ -389,7 +413,7 @@ function extractGeminiUsage(records: JsonRecord[], context: { provider?: string;
   });
 }
 
-function extractOpencodeUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
+function extractOpencodeUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) => {
     const tokens = asRecord(asRecord(item.part).tokens);
     const cache = asRecord(tokens.cache);
@@ -418,7 +442,7 @@ function extractOpencodeUsage(records: JsonRecord[], context: { provider?: strin
   });
 }
 
-function extractPiUsage(records: JsonRecord[], context: { provider?: string; model?: string }): UsageSummary | undefined {
+function extractPiUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
   const record = latestRecordWith(records, (item) =>
     hasNumericField(asRecord(asRecord(item.message).usage), ["input", "cacheRead", "cacheWrite", "output"]),
   );
@@ -453,7 +477,7 @@ function extractPiUsage(records: JsonRecord[], context: { provider?: string; mod
 export function extractUsageSummary(
   agent: AgentName,
   stdout: string,
-  context: { provider?: string; model?: string } = {},
+  context: UsageContext = {},
 ): UsageSummary {
   const records = parseJsonValues(stdout).flatMap(flattenRecords);
   const summary =
@@ -480,6 +504,7 @@ export function extractUsageSummary(
       inputTokens: 0,
       outputTokens: 0,
       usageStatus: "missing",
+      useDefaultProvider: context.useDefaultProvider,
     })
   );
 }
@@ -545,6 +570,7 @@ function addCost(left: UsageCostBreakdown, right: UsageCostBreakdown): UsageCost
 }
 
 function priceUsagePart(part: UsagePart, pricingData: PricingData): UsageCostBreakdown | undefined {
+  if (!part.provider && part.allowProviderSearch === false) return undefined;
   const pricing = findPricingModel(pricingData, part.provider ?? null, part.model ?? null);
   const cost = pricing?.model.cost;
   if (!cost) return undefined;
