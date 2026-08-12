@@ -262,6 +262,32 @@ test("wraps argument-mode commands without stdin or unrelated env", () => {
   }
 });
 
+test("forwards Sakana credentials to Docker without rendering the secret value", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const workDir = join(dir, "project");
+    mkdirSync(home);
+    mkdirSync(workDir);
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: { command: "codex", args: ["exec", "-"] },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { HOME: home, SAKANA_API_KEY: "sakana-secret" },
+      image: DEFAULT_DOCKER_IMAGE,
+      workDir,
+    });
+
+    const rendered = quoteCommand(command);
+    assert.match(rendered, /--env SAKANA_API_KEY/);
+    assert.doesNotMatch(rendered, /sakana-secret/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("uses a writable container home while keeping host agent config read-only", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {
