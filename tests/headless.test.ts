@@ -3742,6 +3742,40 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
   }
 });
 
+test("CLI --usage does not attribute a Codex profile to OpenAI", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    const binary = join(binDir, "codex");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ type: 'agent_message', text: 'final answer' }));",
+        "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 4, output_tokens: 2 } }));",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    globalThis.fetch = async () => new Response("{}");
+
+    const stdout: string[] = [];
+    const code = await runCli(["codex", "--profile", "fugu", "--prompt", "hello", "--usage"], {
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      stdout: (text) => stdout.push(text),
+    });
+
+    assert.equal(code, 0);
+    const usage = JSON.parse(stdout.join("").trim().split("\n")[1] as string).usage;
+    assert.equal(usage.provider, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --json --usage streams raw trace and appends usage without requiring a final message", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;

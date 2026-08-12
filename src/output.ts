@@ -387,4 +387,4 @@ export function extractNativeSessionId(agent: AgentName, stdout: string): string
 }
 
 export { extractUsageSummary, fetchModelsDevPricing, priceUsageSummary } from "./usage.js";
-export type { UsageCostBreakdown, UsageSummary } from "./usage.js";
+export type { UsageContext, UsageCostBreakdown, UsageSummary } from "./usage.js";

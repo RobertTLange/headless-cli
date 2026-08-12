@@ -75,6 +75,7 @@ import {
   fetchModelsDevPricing,
   isAntigravityStructuredOutput,
   priceUsageSummary,
+  type UsageContext,
 } from "./output.js";
 import {
   deriveNativeTranscriptActivity,
@@ -1117,10 +1118,12 @@ function usageContext(
   defaults: InvocationDefaults,
   env: Env,
   profile?: string,
-): { provider?: string; model?: string } {
+): UsageContext {
   if (agent === "codex") {
     const model = defaults.model ?? env.CODEX_MODEL;
-    return profile ? { model } : { provider: "openai", model: model ?? "gpt-5.5" };
+    return profile
+      ? { model, useDefaultProvider: false }
+      : { provider: "openai", model: model ?? "gpt-5.5" };
   }
   if (agent === "claude") {
     return { provider: "anthropic", model: claudeModel(defaults.model ?? "claude-opus-4-6") };
@@ -1140,14 +1143,14 @@ function usageContext(
   return { model: defaults.model };
 }
 
-async function buildUsageOutput(agent: AgentName, stdout: string, context: { provider?: string; model?: string }): Promise<string> {
+async function buildUsageOutput(agent: AgentName, stdout: string, context: UsageContext): Promise<string> {
   return `${JSON.stringify({ usage: await buildUsageReport(agent, stdout, context) })}\n`;
 }
 
 async function buildUsageReport(
   agent: AgentName,
   stdout: string,
-  context: { provider?: string; model?: string },
+  context: UsageContext,
 ): Promise<ReturnType<typeof priceUsageSummary>> {
   const summary = extractUsageSummary(agent, stdout, context);
   if (summary.usageStatus === "missing" || summary.pricingStatus === "native") {
