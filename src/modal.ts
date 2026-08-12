@@ -228,17 +228,28 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
   const workDir = realpathSync(options.workDir);
   const timeoutMs = options.timeoutSeconds * 1000;
   const env = collectModalEnv(options.env, options.command.env, options.modalEnv, { workDir });
-  const client = await (options.clientFactory ?? createModalClient)();
-  const app = await client.apps.fromName(options.appName, { createIfMissing: true });
-  const imageSecret = options.imageSecret ? await client.secrets.fromName(options.imageSecret) : undefined;
-  const image = client.images.fromRegistry(options.image, imageSecret);
-  const secrets = await Promise.all(options.modalSecrets.map((name) => client.secrets.fromName(name)));
+  let client: ModalClientLike | undefined;
   let sandbox: ModalSandboxLike | undefined;
   const stdoutDrainController = new AbortController();
   const baselineDir = mkdtempSync(join(tmpdir(), "headless-modal-baseline-"));
   const resultDir = mkdtempSync(join(tmpdir(), "headless-modal-result-"));
 
   try {
+    const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
+    extractArchiveLocally(workspaceArchive, baselineDir);
+    const seedArchive = await createAgentSeedArchive(options.agent, options.env, options.profile);
+    const credentialArchive = await createCredentialSeedArchive(
+      options.env,
+      options.command.env,
+      options.modalEnv,
+      workDir,
+    );
+
+    client = await (options.clientFactory ?? createModalClient)();
+    const app = await client.apps.fromName(options.appName, { createIfMissing: true });
+    const imageSecret = options.imageSecret ? await client.secrets.fromName(options.imageSecret) : undefined;
+    const image = client.images.fromRegistry(options.image, imageSecret);
+    const secrets = await Promise.all(options.modalSecrets.map((name) => client?.secrets.fromName(name)));
     sandbox = await client.sandboxes.create(app, image, {
       command: ["sleep", "infinity"],
       cpu: options.cpu,
@@ -250,17 +261,13 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
       workdir: "/",
     });
 
-    const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
-    extractArchiveLocally(workspaceArchive, baselineDir);
     await runRemoteTar(sandbox, ["mkdir", "-p", remoteWorkDir], timeoutMs);
     await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteWorkDir], timeoutMs, workspaceArchive);
 
-    const seedArchive = await createAgentSeedArchive(options.agent, options.env, options.profile);
     if (seedArchive.length > 0) {
       await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
       await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, seedArchive);
     }
-    const credentialArchive = await createCredentialSeedArchive(options.env, options.command.env, options.modalEnv, workDir);
     if (credentialArchive.length > 0) {
       await runRemoteTar(sandbox, ["mkdir", "-p", remoteHostHome], timeoutMs);
       await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, credentialArchive);
@@ -307,7 +314,7 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
     if (sandbox) {
       await sandbox.terminate();
     }
-    client.close?.();
+    client?.close?.();
     rmSync(baselineDir, { force: true, recursive: true });
     rmSync(resultDir, { force: true, recursive: true });
   }

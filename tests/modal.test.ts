@@ -420,6 +420,48 @@ test("executeModalAgent seeds a selected Codex profile and rewrites its catalog 
   }
 });
 
+test("executeModalAgent validates a selected Codex profile before creating a sandbox", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-profile-preflight-"));
+  try {
+    const codexHome = join(dir, "codex-home");
+    const work = join(dir, "work");
+    mkdirSync(codexHome);
+    mkdirSync(work);
+    initGitWorkdir(work);
+    let clientCreated = false;
+
+    await assert.rejects(
+      () =>
+        executeModalAgent({
+          agent: "codex",
+          appName: "headless-test",
+          command: { command: "codex", args: ["--profile", "missing", "exec", "-"] },
+          cpu: DEFAULT_MODAL_CPU,
+          env: { CODEX_HOME: codexHome },
+          image: DEFAULT_MODAL_IMAGE,
+          includeGit: false,
+          memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+          modalEnv: [],
+          modalSecrets: [],
+          profile: "missing",
+          stderr: () => {},
+          stdout: () => {},
+          stdoutHandling: "capture",
+          timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+          workDir: work,
+          clientFactory: async () => {
+            clientCreated = true;
+            throw new Error("Modal client should not be created");
+          },
+        }),
+      /missing\.config\.toml/,
+    );
+    assert.equal(clientCreated, false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent seeds only the selected AWS profile", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-aws-profile-"));
   try {
@@ -530,8 +572,8 @@ test("executeModalAgent rejects non-git workdirs instead of recursively uploadin
       /Modal workspace upload requires a git workdir/,
     );
     assert.equal(existsSync(join(remote, "workspace", ".env")), false);
-    assert.equal(sandbox.terminated, true);
-    assert.equal(client.closed, true);
+    assert.equal(sandbox.terminated, false);
+    assert.equal(client.closed, false);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
