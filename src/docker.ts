@@ -373,15 +373,25 @@ function bootstrapScript(
     "set -eu",
     `export HOME="${containerHome}"`,
     `mkdir -p "${containerHome}"`,
-    `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
   ];
   if (persistentHome && agent === "codex" && profile) {
     commands.push(
-      `if [ -f "${hostHomeMountRoot}/.codex/config.toml" ]; then mkdir -p "$HOME/.codex"; cp -f "${hostHomeMountRoot}/.codex/config.toml" "$HOME/.codex/config.toml"; fi`,
+      'if [ -L "$HOME/.codex" ] || { [ -e "$HOME/.codex" ] && [ ! -d "$HOME/.codex" ]; }; then echo "unsafe durable Codex configuration directory" >&2; exit 1; fi',
+      'mkdir -p "$HOME/.codex"',
+      'if [ "$(stat -c %u "$HOME/.codex")" != "$(id -u)" ]; then echo "durable Codex configuration directory is not owned by the container user" >&2; exit 1; fi',
+      'refresh_codex_file() { source="$1"; destination="$2"; refresh_tmp="$(mktemp "$HOME/.codex/.headless-refresh.XXXXXX")"; trap \'rm -f "$refresh_tmp"\' EXIT HUP INT TERM; cp "$source" "$refresh_tmp"; chmod 600 "$refresh_tmp"; mv -fT "$refresh_tmp" "$destination"; trap - EXIT HUP INT TERM; }',
+    );
+  }
+  commands.push(
+    `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
+  );
+  if (persistentHome && agent === "codex" && profile) {
+    commands.push(
+      `if [ -f "${hostHomeMountRoot}/.codex/config.toml" ]; then refresh_codex_file "${hostHomeMountRoot}/.codex/config.toml" "$HOME/.codex/config.toml"; else rm -f "$HOME/.codex/config.toml"; fi`,
     );
     const profileRelPath = `.codex/${profile}.config.toml`;
     commands.push(
-      `if [ -f "${hostHomeMountRoot}/${profileRelPath}" ]; then mkdir -p "$HOME/.codex"; cp -f "${hostHomeMountRoot}/${profileRelPath}" "$HOME/${profileRelPath}"; fi`,
+      `if [ -f "${hostHomeMountRoot}/${profileRelPath}" ]; then refresh_codex_file "${hostHomeMountRoot}/${profileRelPath}" "$HOME/${profileRelPath}"; fi`,
     );
   }
   if (persistentHome) {

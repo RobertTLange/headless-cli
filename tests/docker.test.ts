@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -520,7 +520,7 @@ test("uses a persistent host home for durable Docker sessions", () => {
   }
 });
 
-test("refreshes a Codex profile when resuming a durable Docker session", () => {
+test("safely refreshes Codex configuration when resuming a durable Docker session", { skip: process.platform === "win32" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {
     const codexHome = join(dir, "codex-home");
@@ -547,13 +547,54 @@ test("refreshes a Codex profile when resuming a durable Docker session", () => {
     const bootstrap = command.args.find((arg) => arg.includes("cp -R -n")) ?? "";
     assert.match(
       bootstrap,
-      /cp -f "\/tmp\/headless-host-home\/\.codex\/fugu\.config\.toml" "\$HOME\/\.codex\/fugu\.config\.toml"/,
+      /if \[ -L "\$HOME\/\.codex" \]/,
     );
-    assert.match(
-      bootstrap,
-      /cp -f "\/tmp\/headless-host-home\/\.codex\/config\.toml" "\$HOME\/\.codex\/config\.toml"/,
-    );
-    assert.doesNotMatch(bootstrap, /cp -f .*auth\.json/);
+    assert.match(bootstrap, /stat -c %u "\$HOME\/\.codex"/);
+    assert.match(bootstrap, /mktemp "\$HOME\/\.codex\/\.headless-refresh\.XXXXXX"/);
+    assert.match(bootstrap, /mv -fT "\$refresh_tmp" "\$destination"/);
+    assert.match(bootstrap, /rm -f "\$HOME\/\.codex\/config\.toml"/);
+    assert.doesNotMatch(bootstrap, /cp -f .*\.codex\/(?:auth|config|fugu\.config)/);
+
+    const seedHome = join(dir, "seed-home");
+    const victimConfig = join(workDir, "victim-config.toml");
+    const victimProfile = join(workDir, "victim-profile.toml");
+    mkdirSync(join(seedHome, ".codex"), { recursive: true });
+    mkdirSync(join(persistentHome, ".codex"), { recursive: true });
+    writeFileSync(join(seedHome, ".codex", "config.toml"), "fresh config\n");
+    writeFileSync(join(seedHome, ".codex", "fugu.config.toml"), "fresh profile\n");
+    writeFileSync(victimConfig, "workspace config\n");
+    writeFileSync(victimProfile, "workspace profile\n");
+    symlinkSync(victimConfig, join(persistentHome, ".codex", "config.toml"));
+    symlinkSync(victimProfile, join(persistentHome, ".codex", "fugu.config.toml"));
+    const localBootstrap = bootstrap
+      .replaceAll("/tmp/headless-host-home", seedHome)
+      .replaceAll("/headless-home", persistentHome);
+
+    const refresh = spawnSync("sh", ["-c", localBootstrap, "headless-agent", "true"], { encoding: "utf8" });
+    assert.equal(refresh.status, 0, refresh.stderr);
+    assert.equal(readFileSync(victimConfig, "utf8"), "workspace config\n");
+    assert.equal(readFileSync(victimProfile, "utf8"), "workspace profile\n");
+    assert.equal(lstatSync(join(persistentHome, ".codex", "config.toml")).isSymbolicLink(), false);
+    assert.equal(lstatSync(join(persistentHome, ".codex", "fugu.config.toml")).isSymbolicLink(), false);
+
+    unlinkSync(join(seedHome, ".codex", "config.toml"));
+    const removeStale = spawnSync("sh", ["-c", localBootstrap, "headless-agent", "true"], { encoding: "utf8" });
+    assert.equal(removeStale.status, 0, removeStale.stderr);
+    assert.equal(existsSync(join(persistentHome, ".codex", "config.toml")), false);
+
+    const poisonedHome = join(dir, "poisoned-home");
+    const poisonedTarget = join(workDir, "poisoned-target");
+    mkdirSync(poisonedHome);
+    mkdirSync(poisonedTarget);
+    writeFileSync(join(poisonedTarget, "unchanged"), "safe\n");
+    symlinkSync(poisonedTarget, join(poisonedHome, ".codex"));
+    const poisonedBootstrap = bootstrap
+      .replaceAll("/tmp/headless-host-home", seedHome)
+      .replaceAll("/headless-home", poisonedHome);
+    const reject = spawnSync("sh", ["-c", poisonedBootstrap, "headless-agent", "true"], { encoding: "utf8" });
+    assert.notEqual(reject.status, 0);
+    assert.match(reject.stderr, /unsafe durable Codex configuration directory/);
+    assert.equal(readFileSync(join(poisonedTarget, "unchanged"), "utf8"), "safe\n");
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
