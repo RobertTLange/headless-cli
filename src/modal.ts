@@ -235,8 +235,6 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
   const resultDir = mkdtempSync(join(tmpdir(), "headless-modal-result-"));
 
   try {
-    const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
-    extractArchiveLocally(workspaceArchive, baselineDir);
     const seedArchive = await createAgentSeedArchive(options.agent, options.env, options.profile);
     const credentialArchive = await createCredentialSeedArchive(
       options.env,
@@ -244,6 +242,8 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
       options.modalEnv,
       workDir,
     );
+    const workspaceArchive = await createWorkspaceArchive(workDir, options.includeGit);
+    extractArchiveLocally(workspaceArchive, baselineDir);
 
     client = await (options.clientFactory ?? createModalClient)();
     const app = await client.apps.fromName(options.appName, { createIfMissing: true });

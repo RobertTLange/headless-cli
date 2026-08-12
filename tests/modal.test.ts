@@ -427,7 +427,6 @@ test("executeModalAgent validates a selected Codex profile before creating a san
     const work = join(dir, "work");
     mkdirSync(codexHome);
     mkdirSync(work);
-    initGitWorkdir(work);
     let clientCreated = false;
 
     await assert.rejects(
