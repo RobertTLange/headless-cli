@@ -520,6 +520,40 @@ test("uses a persistent host home for durable Docker sessions", () => {
   }
 });
 
+test("refreshes a Codex profile when resuming a durable Docker session", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const codexHome = join(dir, "codex-home");
+    const persistentHome = join(dir, "sessions", "codex", "work");
+    const workDir = join(dir, "project");
+    mkdirSync(codexHome);
+    mkdirSync(workDir);
+    writeFileSync(join(codexHome, "auth.json"), "{}");
+    writeFileSync(join(codexHome, "fugu.config.toml"), 'model = "fugu"\n');
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: { command: "codex", args: ["--profile", "fugu", "exec", "-"] },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { CODEX_HOME: codexHome },
+      image: DEFAULT_DOCKER_IMAGE,
+      persistentHome,
+      profile: "fugu",
+      workDir,
+    });
+
+    const bootstrap = command.args.find((arg) => arg.includes("cp -R -n")) ?? "";
+    assert.match(
+      bootstrap,
+      /cp -f "\/tmp\/headless-host-home\/\.codex\/fugu\.config\.toml" "\$HOME\/\.codex\/fugu\.config\.toml"/,
+    );
+    assert.doesNotMatch(bootstrap, /cp -f .*auth\.json/);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("requires an absolute configured Docker session root", () => {
   assert.throws(
     () =>

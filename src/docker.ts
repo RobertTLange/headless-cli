@@ -343,7 +343,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     options.image,
     "sh",
     "-lc",
-    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap),
+    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap, options.profile),
     "headless-agent",
     options.command.command,
     ...options.command.args,
@@ -362,7 +362,12 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   return dockerCommand;
 }
 
-function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBootstrap?: DockerSessionBootstrap): string {
+function bootstrapScript(
+  agent: AgentName,
+  persistentHome: boolean,
+  sessionBootstrap?: DockerSessionBootstrap,
+  profile?: string,
+): string {
   const copyFlags = persistentHome ? "-R -n" : "-R";
   const commands = [
     "set -eu",
@@ -370,6 +375,12 @@ function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBoots
     `mkdir -p "${containerHome}"`,
     `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
   ];
+  if (persistentHome && agent === "codex" && profile) {
+    const profileRelPath = `.codex/${profile}.config.toml`;
+    commands.push(
+      `if [ -f "${hostHomeMountRoot}/${profileRelPath}" ]; then mkdir -p "$HOME/.codex"; cp -f "${hostHomeMountRoot}/${profileRelPath}" "$HOME/${profileRelPath}"; fi`,
+    );
+  }
   if (persistentHome) {
     const agentHomeVariables = dockerSessionAgentHomeEnvNames(agent);
     if (agentHomeVariables.length > 0) {
