@@ -4197,7 +4197,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         claimLock?.release();
       }
       const tmuxWaitStrategy = waitSnapshot ? storedTmuxWaitStrategy(waitSnapshot.strategy) : undefined;
-      if (code === 0 && parsed.sessionAlias && sessionStorePath(env)) {
+      if (code === 0 && parsed.sessionAlias && (profile || tmuxWaitStrategy) && sessionStorePath(env)) {
         writeStoredTmuxSession(env, {
           agent: parsed.agent,
           alias: parsed.sessionAlias,

@@ -5581,6 +5581,7 @@ test("CLI --tmux --session starts or sends to a named tmux session", async () =>
       ...process.env,
       HEADLESS_TMUX_ACTIVE: stateFile,
       HEADLESS_TMUX_CAPTURE: captureFile,
+      HOME: join(dir, "home"),
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
     };
     const stdout: string[] = [];
@@ -5609,6 +5610,31 @@ test("CLI --tmux --session starts or sends to a named tmux session", async () =>
     assert.equal(readStoredSession(env, "codex", "work")?.profile, "research");
     assert.deepEqual(calls.at(-3), ["set-buffer", "-b", "headless-codex-work-send", "again"]);
     assert.deepEqual(calls.at(-1), ["send-keys", "-t", "headless-codex-work", "Enter"]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --session does not persist ordinary launches", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(tmux, '#!/bin/sh\n[ "$1" = "has-session" ] && exit 1\nexit 0\n');
+      await chmod(tmux, 0o755);
+    });
+    const env = { HOME: join(dir, "home"), PATH: `${binDir}:${process.env.PATH ?? ""}` };
+
+    assert.equal(
+      await runCli(["codex", "--prompt", "hello", "--work-dir", dir, "--tmux", "--session", "work"], {
+        env,
+        stdout: () => {},
+      }),
+      0,
+    );
+    assert.equal(readStoredSession(env, "codex", "work"), undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
