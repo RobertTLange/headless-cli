@@ -131,8 +131,17 @@ test("CLI rejects profiles for non-Codex agents and management commands", async 
   }
 });
 
-test("CLI rejects empty and oversized Codex profile names", async () => {
-  for (const profile of ["   ", "x".repeat(257)]) {
+test("CLI rejects Codex profile names outside the plain-name grammar", async () => {
+  const invalidProfiles = [
+    "   ",
+    "research profile",
+    "research.profile",
+    "research/profile",
+    "-research",
+    "fugü",
+    "x".repeat(257),
+  ];
+  for (const profile of invalidProfiles) {
     const stderr: string[] = [];
     assert.equal(
       await runCli(["codex", "--profile", profile, "--prompt", "hello", "--print-command"], {

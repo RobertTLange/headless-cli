@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import type { AgentName, Env } from "./types.js";
+import { validateCodexProfileName } from "./codex-profile.js";
 
 export type StoredTmuxWaitStrategy =
   | { kind: "pin"; sessionId: string }
@@ -178,7 +179,7 @@ function normalizeStoredSession(value: unknown, agent: AgentName, alias: string)
     return undefined;
   }
   const nativeId = boundedOptionalString(value.nativeId, 4096);
-  const profile = boundedOptionalString(value.profile, 256);
+  const profile = boundedOptionalProfile(value.profile);
   const workDir = boundedOptionalString(value.workDir, 4096);
   if (nativeId === null || profile === null || workDir === null) return undefined;
   return {
@@ -195,6 +196,16 @@ function normalizeStoredSession(value: unknown, agent: AgentName, alias: string)
 function boundedOptionalString(value: unknown, maxLength: number): string | undefined | null {
   if (value === undefined) return undefined;
   return typeof value === "string" && value.length <= maxLength ? value : null;
+}
+
+function boundedOptionalProfile(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return null;
+  try {
+    return validateCodexProfileName(value);
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

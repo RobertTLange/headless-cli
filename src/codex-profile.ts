@@ -18,6 +18,15 @@ export interface CodexProfileSeedFile {
   relPath: string;
 }
 
+export function validateCodexProfileName(profile: string): string {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_-]{0,255}$/.test(profile)) {
+    throw new Error(
+      "invalid Codex profile; use 1-256 ASCII letters, numbers, dashes, or underscores, without a leading dash",
+    );
+  }
+  return profile;
+}
+
 export interface CodexBaseFile extends CodexProfileSeedFile {
   path: string;
 }
@@ -35,6 +44,7 @@ export function readCodexBaseFiles(env: Env): CodexBaseFile[] {
 }
 
 export function readCodexProfileFiles(env: Env, profile: string): CodexProfileFiles {
+  validateCodexProfileName(profile);
   const codexHome = codexHomePath(env);
   const profilePath = resolve(codexHome, `${profile}.config.toml`);
   const content = readBoundedRegularFile(profilePath, maxProfileBytes, "Codex profile");

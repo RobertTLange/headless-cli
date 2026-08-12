@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { codexProfileSeedFiles, readCodexProfileFiles } from "../src/codex-profile.ts";
+import { codexProfileSeedFiles, readCodexProfileFiles, validateCodexProfileName } from "../src/codex-profile.ts";
+
+test("Codex profile names follow the CLI plain-name grammar", () => {
+  for (const profile of ["fugu", "Research42", "research_name", "research-name"]) {
+    assert.equal(validateCodexProfileName(profile), profile);
+  }
+  for (const profile of ["", "-research", "research profile", "research.profile", "research/profile", "fugü"]) {
+    assert.throws(() => validateCodexProfileName(profile), /invalid Codex profile/);
+  }
+});
 
 test("Codex profile seeds rewrite an absolute catalog into the remote home", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-codex-profile-"));

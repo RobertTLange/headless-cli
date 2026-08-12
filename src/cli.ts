@@ -43,6 +43,7 @@ import {
   type HeadlessConfig,
   type InvocationDefaults,
 } from "./config.js";
+import { validateCodexProfileName } from "./codex-profile.js";
 import {
   buildDockerAgentCommand,
   DEFAULT_DOCKER_IMAGE,
@@ -730,10 +731,11 @@ function parseReasoningEffort(value: string): ReasoningEffort {
 }
 
 function parseProfile(value: string): string {
-  if (value.trim().length === 0 || value.length > 256 || value.includes("\0")) {
-    throw new CliError("invalid Codex profile; use a non-empty name up to 256 characters");
+  try {
+    return validateCodexProfileName(value);
+  } catch (error) {
+    throw new CliError((error as Error).message);
   }
-  return value;
 }
 
 function parseSdkFormat(value: string): SdkFormat {
