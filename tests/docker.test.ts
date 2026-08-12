@@ -529,6 +529,7 @@ test("refreshes a Codex profile when resuming a durable Docker session", () => {
     mkdirSync(codexHome);
     mkdirSync(workDir);
     writeFileSync(join(codexHome, "auth.json"), "{}");
+    writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nbase_url = "https://example.test"\n');
     writeFileSync(join(codexHome, "fugu.config.toml"), 'model = "fugu"\n');
 
     const command = buildDockerAgentCommand({
@@ -547,6 +548,10 @@ test("refreshes a Codex profile when resuming a durable Docker session", () => {
     assert.match(
       bootstrap,
       /cp -f "\/tmp\/headless-host-home\/\.codex\/fugu\.config\.toml" "\$HOME\/\.codex\/fugu\.config\.toml"/,
+    );
+    assert.match(
+      bootstrap,
+      /cp -f "\/tmp\/headless-host-home\/\.codex\/config\.toml" "\$HOME\/\.codex\/config\.toml"/,
     );
     assert.doesNotMatch(bootstrap, /cp -f .*auth\.json/);
   } finally {

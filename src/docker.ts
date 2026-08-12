@@ -376,6 +376,9 @@ function bootstrapScript(
     `if [ -d "${hostHomeMountRoot}" ]; then cp ${copyFlags} "${hostHomeMountRoot}/." "$HOME"/; fi`,
   ];
   if (persistentHome && agent === "codex" && profile) {
+    commands.push(
+      `if [ -f "${hostHomeMountRoot}/.codex/config.toml" ]; then mkdir -p "$HOME/.codex"; cp -f "${hostHomeMountRoot}/.codex/config.toml" "$HOME/.codex/config.toml"; fi`,
+    );
     const profileRelPath = `.codex/${profile}.config.toml`;
     commands.push(
       `if [ -f "${hostHomeMountRoot}/${profileRelPath}" ]; then mkdir -p "$HOME/.codex"; cp -f "${hostHomeMountRoot}/${profileRelPath}" "$HOME/${profileRelPath}"; fi`,
