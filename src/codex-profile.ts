@@ -8,7 +8,7 @@ const maxCatalogBytes = 16 * 1024 * 1024;
 const catalogAssignment = /^(\s*model_catalog_json\s*=\s*)("(?:[^"\\]|\\.)*"|'[^']*')(\s*(?:#.*)?)$/m;
 
 export interface CodexProfileFiles {
-  catalog?: { content: string; path: string };
+  catalog?: { configuredPath: string; content: string; path: string };
   content: string;
   path: string;
 }
@@ -59,6 +59,7 @@ export function readCodexProfileFiles(env: Env, profile: string): CodexProfileFi
     : resolve(codexHome, configuredPath);
   return {
     catalog: {
+      configuredPath,
       content: readBoundedRegularFile(catalogPath, maxCatalogBytes, "Codex model catalog"),
       path: catalogPath,
     },

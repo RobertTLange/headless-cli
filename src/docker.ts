@@ -445,7 +445,10 @@ function agentConfigMountArgs(agent: AgentName, env: Env, profile?: string): str
       `${files.path}:${join(hostHomeMountRoot, ".codex", `${profile}.config.toml`)}:ro`,
     );
     if (files.catalog) {
-      args.push("--volume", `${files.catalog.path}:${files.catalog.path}:ro`);
+      const containerCatalogPath = isAbsolute(files.catalog.configuredPath)
+        ? resolve(files.catalog.configuredPath)
+        : resolve(containerHome, ".codex", files.catalog.configuredPath);
+      args.push("--volume", `${files.catalog.path}:${containerCatalogPath}:ro`);
     }
   }
   return args;

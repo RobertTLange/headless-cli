@@ -321,7 +321,7 @@ test("uses a writable container home while keeping host agent config read-only",
   }
 });
 
-test("mounts a selected Codex profile and its catalog for Docker", () => {
+test("mounts a selected Codex profile and its relative catalog for Docker", () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
   try {
     const home = join(dir, "home");
@@ -333,7 +333,7 @@ test("mounts a selected Codex profile and its catalog for Docker", () => {
     mkdirSync(codexHome);
     mkdirSync(workDir);
     writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nname = "Sakana"\n');
-    writeFileSync(profilePath, `model_catalog_json = ${JSON.stringify(catalogPath)}\n`);
+    writeFileSync(profilePath, 'model_catalog_json = "fugu.json"\n');
     writeFileSync(catalogPath, '{"models":[]}\n');
 
     const command = buildDockerAgentCommand({
@@ -353,7 +353,7 @@ test("mounts a selected Codex profile and its catalog for Docker", () => {
     assert.ok(
       command.args.includes(`${join(codexHome, "config.toml")}:/tmp/headless-host-home/.codex/config.toml:ro`),
     );
-    assert.ok(command.args.includes(`${catalogPath}:${catalogPath}:ro`));
+    assert.ok(command.args.includes(`${catalogPath}:/headless-home/.codex/fugu.json:ro`));
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
