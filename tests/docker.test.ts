@@ -10,6 +10,7 @@ import {
   dockerSessionHomePath,
   dockerSessionNativeId,
   ensureDockerSessionHome,
+  ensureDockerSessionProfileDirectory,
   ensureDockerSessionStoreDirectory,
   DEFAULT_DOCKER_IMAGE,
   readDockerCursorSessionId,
@@ -559,7 +560,10 @@ test("safely refreshes Codex configuration when resuming a durable Docker sessio
     const victimConfig = join(workDir, "victim-config.toml");
     const victimProfile = join(workDir, "victim-profile.toml");
     mkdirSync(join(seedHome, ".codex"), { recursive: true });
-    mkdirSync(join(persistentHome, ".codex"), { recursive: true });
+    ensureDockerSessionHome(persistentHome);
+    const profileDirectory = ensureDockerSessionProfileDirectory(persistentHome);
+    assert.equal(profileDirectory, realpathSync(join(persistentHome, ".codex")));
+    assert.equal(statSync(profileDirectory).mode & 0o777, 0o700);
     writeFileSync(join(seedHome, ".codex", "config.toml"), "fresh config\n");
     writeFileSync(join(seedHome, ".codex", "fugu.config.toml"), "fresh profile\n");
     writeFileSync(victimConfig, "workspace config\n");

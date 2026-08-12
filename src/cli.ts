@@ -53,6 +53,7 @@ import {
   LOCAL_DOCKER_IMAGE,
   detectDockerHostUser,
   ensureDockerSessionHome,
+  ensureDockerSessionProfileDirectory,
   ensureDockerSessionStoreDirectory,
   readDockerCursorSessionId,
   validateDockerSessionRootWorkDir,
@@ -4284,6 +4285,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       dockerSessionHome = ensureDockerSessionHome(dockerSessionHome);
       validateDockerSessionRootWorkDir(dockerSessionHome, cwd ?? process.cwd());
       ensureDockerSessionStoreDirectory(dockerSessionHome);
+      if (parsed.agent === "codex" && profile) {
+        ensureDockerSessionProfileDirectory(dockerSessionHome);
+      }
     }
     const sessionEnv = dockerSessionHome
       ? { ...env, HOME: dockerSessionHome, [SECURE_SESSION_STORE_ENV]: "1" }

@@ -106,6 +106,10 @@ export function ensureDockerSessionStoreDirectory(sessionHome: string): void {
   ensurePrivateOwnedDirectory(join(sessionHome, ".headless"));
 }
 
+export function ensureDockerSessionProfileDirectory(sessionHome: string): string {
+  return ensurePrivateOwnedDirectory(join(sessionHome, ".codex"));
+}
+
 export function validateDockerSessionRootWorkDir(sessionHome: string, workDir: string): void {
   validateDockerWorkDir(workDir);
   const sessionRoot = canonicalProspectivePath(dirname(dirname(resolve(sessionHome))));
