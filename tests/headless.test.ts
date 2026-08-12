@@ -3742,7 +3742,7 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
   }
 });
 
-test("CLI --usage does not attribute a Codex profile to OpenAI", async () => {
+test("CLI --usage does not attribute or price a Codex profile as OpenAI", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const originalFetch = globalThis.fetch;
   try {
@@ -3759,17 +3759,27 @@ test("CLI --usage does not attribute a Codex profile to OpenAI", async () => {
       ].join("\n"),
     );
     chmodSync(binary, 0o755);
-    globalThis.fetch = async () => new Response("{}");
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          openai: { models: { "gpt-5": { cost: { input: 1, output: 1 } } } },
+        }),
+      );
 
     const stdout: string[] = [];
-    const code = await runCli(["codex", "--profile", "fugu", "--prompt", "hello", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
-      stdout: (text) => stdout.push(text),
-    });
+    const code = await runCli(
+      ["codex", "--profile", "fugu", "--model", "gpt-5", "--prompt", "hello", "--usage"],
+      {
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        stdout: (text) => stdout.push(text),
+      },
+    );
 
     assert.equal(code, 0);
     const usage = JSON.parse(stdout.join("").trim().split("\n")[1] as string).usage;
     assert.equal(usage.provider, null);
+    assert.equal(usage.pricingStatus, "missing");
+    assert.equal(usage.cost, null);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });

@@ -15,6 +15,7 @@ interface PricingModel {
 }
 
 interface UsagePart {
+  allowProviderSearch?: boolean;
   provider?: string;
   model?: string;
   inputTokens: number;
@@ -318,15 +319,29 @@ function extractCodexUsage(records: JsonRecord[], context: UsageContext): UsageS
   const usage = asRecord(record.usage);
   const requested = requestedProviderModel(context);
   const cacheReadTokens = asNumber(usage.cached_input_tokens);
+  const inputTokens = nonOverlappingInputTokens(asNumber(usage.input_tokens), cacheReadTokens);
+  const outputTokens = asNumber(usage.output_tokens);
+  const model = extractModel(records, context);
   return summarizeUsage({
     agent: "codex",
     provider: requested.provider,
-    model: extractModel(records, context),
-    inputTokens: nonOverlappingInputTokens(asNumber(usage.input_tokens), cacheReadTokens),
+    model,
+    inputTokens,
     cacheReadTokens,
-    outputTokens: asNumber(usage.output_tokens),
+    outputTokens,
     reasoningOutputTokens: asNumber(usage.reasoning_output_tokens),
     useDefaultProvider: context.useDefaultProvider,
+    modelBreakdowns: [
+      {
+        allowProviderSearch: context.useDefaultProvider !== false,
+        provider: requested.provider,
+        model,
+        inputTokens,
+        cacheReadTokens,
+        cacheWriteTokens: 0,
+        outputTokens,
+      },
+    ],
   });
 }
 
@@ -555,6 +570,7 @@ function addCost(left: UsageCostBreakdown, right: UsageCostBreakdown): UsageCost
 }
 
 function priceUsagePart(part: UsagePart, pricingData: PricingData): UsageCostBreakdown | undefined {
+  if (!part.provider && part.allowProviderSearch === false) return undefined;
   const pricing = findPricingModel(pricingData, part.provider ?? null, part.model ?? null);
   const cost = pricing?.model.cost;
   if (!cost) return undefined;
