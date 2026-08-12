@@ -212,7 +212,7 @@ headless codex --prompt "Fix the failing tests" --docker --docker-image headless
 
 ## Modal
 
-Modal mode runs one-shot headless execution in a CPU Modal Sandbox. It uploads the target workdir, runs the selected agent in `ghcr.io/roberttlange/headless:latest` by default, downloads the remote workspace afterward, and applies changed files back locally when the local copy has not changed since upload.
+Modal mode runs one-shot headless execution in a CPU Modal Sandbox. It uploads the target workdir, runs the selected agent from an immutable verified Headless image digest by default, downloads the remote workspace afterward, and applies changed files back locally when the local copy has not changed since upload. Use `--modal-image` to select a different runtime image.
 
 ```bash
 headless codex --prompt "Fix the failing tests" --modal

@@ -2,6 +2,10 @@
 
 ## TBD
 
+## 0.6.1 - 2026-08-12
+
+- Fixed Modal runs to use the immutable, verified v0.6.0 runtime image digest instead of a stale cached `latest` tag.
+
 ## 0.6.0 - 2026-08-12
 
 - Added Codex profile selection with `--profile`, including local, cron, tmux, named-session, Docker, and Modal execution while preserving explicit Headless model overrides.

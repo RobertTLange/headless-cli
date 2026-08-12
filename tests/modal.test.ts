@@ -27,6 +27,13 @@ import {
 } from "../src/modal.ts";
 import { quoteCommand } from "../src/shell.ts";
 
+test("default Modal image is immutable", () => {
+  assert.equal(
+    DEFAULT_MODAL_IMAGE,
+    "ghcr.io/roberttlange/headless@sha256:d482f2b604f4025a8c2f2ad102bd7b3c65c1f2f84e6348cc1af91c9bf9022965",
+  );
+});
+
 test("bounded Modal capture trims large and highly fragmented streams", () => {
   const large = new BoundedTextCapture(16);
   large.append(`${"x".repeat(1024 * 1024)}tail`);

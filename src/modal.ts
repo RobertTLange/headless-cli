@@ -25,7 +25,8 @@ import { codexProfileSeedFiles, readCodexBaseFiles } from "./codex-profile.js";
 import { collectForwardedEnvEntries } from "./env.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
-export const DEFAULT_MODAL_IMAGE = "ghcr.io/roberttlange/headless:latest";
+export const DEFAULT_MODAL_IMAGE =
+  "ghcr.io/roberttlange/headless@sha256:d482f2b604f4025a8c2f2ad102bd7b3c65c1f2f84e6348cc1af91c9bf9022965";
 export const DEFAULT_MODAL_APP = "headless-cli";
 export const DEFAULT_MODAL_CPU = 2;
 export const DEFAULT_MODAL_MEMORY_MIB = 4096;

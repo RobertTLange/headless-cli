@@ -300,7 +300,7 @@ function usage(): string {
     "  --docker-arg <arg>   Extra docker run argument. Repeat for multiple args.",
     "  --docker-env <env>   Pass env into Docker as NAME or NAME=value. Repeatable.",
     "  --modal              Run the agent in a Modal CPU sandbox.",
-    "  --modal-image <img>  Modal sandbox image. Defaults to ghcr.io/roberttlange/headless:latest.",
+    `  --modal-image <img>  Modal sandbox image. Defaults to ${DEFAULT_MODAL_IMAGE}.`,
     "  --modal-image-secret <nm> Modal Secret for private registry image pulls.",
     "  --modal-app <name>   Modal app name. Defaults to headless-cli.",
     "  --modal-cpu <n>      Modal CPU reservation. Defaults to 2.",
