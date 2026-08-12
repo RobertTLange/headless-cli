@@ -25,7 +25,7 @@ test("Dockerfile exposes Cursor agent from a non-root path", () => {
   assert.match(dockerfile, /@anthropic-ai\/claude-code@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /@google\/gemini-cli@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /@mariozechner\/pi-coding-agent@\d+\.\d+\.\d+/);
-  assert.match(dockerfile, /@openai\/codex@\d+\.\d+\.\d+/);
+  assert.match(dockerfile, /@openai\/codex@0\.147\.0/);
   assert.match(dockerfile, /opencode-ai@\d+\.\d+\.\d+/);
   assert.match(dockerfile, /ARG CURSOR_AGENT_VERSION=\d{4}\.\d{2}\.\d{2}-[a-f0-9]+/);
   assert.match(dockerfile, /ARG CURSOR_AGENT_SHA256_AMD64=[a-f0-9]{64}/);
@@ -290,6 +290,44 @@ test("uses a writable container home while keeping host agent config read-only",
     assert.ok(command.args.includes("/headless-home:rw,mode=1777"));
     assert.ok(command.args.includes("HOME=/headless-home"));
     assert.ok(!command.args.includes(`${join(home, ".codex")}:${join(home, ".codex")}:ro`));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("mounts a selected Codex profile and its catalog for Docker", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-docker-test-"));
+  try {
+    const home = join(dir, "home");
+    const codexHome = join(dir, "codex-home");
+    const workDir = join(dir, "project");
+    const profilePath = join(codexHome, "fugu.config.toml");
+    const catalogPath = join(codexHome, "fugu.json");
+    mkdirSync(home);
+    mkdirSync(codexHome);
+    mkdirSync(workDir);
+    writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nname = "Sakana"\n');
+    writeFileSync(profilePath, `model_catalog_json = ${JSON.stringify(catalogPath)}\n`);
+    writeFileSync(catalogPath, '{"models":[]}\n');
+
+    const command = buildDockerAgentCommand({
+      agent: "codex",
+      command: { command: "codex", args: ["--profile", "fugu", "exec", "-"] },
+      dockerArgs: [],
+      dockerEnv: [],
+      env: { CODEX_HOME: codexHome, HOME: home },
+      image: DEFAULT_DOCKER_IMAGE,
+      profile: "fugu",
+      workDir,
+    });
+
+    assert.ok(
+      command.args.includes(`${profilePath}:/tmp/headless-host-home/.codex/fugu.config.toml:ro`),
+    );
+    assert.ok(
+      command.args.includes(`${join(codexHome, "config.toml")}:/tmp/headless-host-home/.codex/config.toml:ro`),
+    );
+    assert.ok(command.args.includes(`${catalogPath}:${catalogPath}:ro`));
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

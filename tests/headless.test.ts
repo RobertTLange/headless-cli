@@ -2739,6 +2739,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     mkdirSync(join(homeDir, ".codex"), { recursive: true });
     mkdirSync(projectDir);
     writeFileSync(join(homeDir, ".codex", "config.toml"), "model = 'test'\n");
+    writeFileSync(join(homeDir, ".codex", "research.config.toml"), "model = 'profile-model'\n");
 
     const stdout: string[] = [];
     const code = await runCli(
@@ -2749,7 +2750,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
         "--reasoning-effort",
         "high",
         "--profile",
-        "research profile",
+        "research",
         "--work-dir",
         projectDir,
         "--docker",
@@ -2762,7 +2763,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
         "--print-command",
       ],
       {
-        env: { ...process.env, HOME: homeDir },
+        env: { ...process.env, CODEX_HOME: undefined, HOME: homeDir },
         stdout: (text) => stdout.push(text),
       },
     );
@@ -2772,8 +2773,8 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, /^printf %s hello \| docker run --rm --interactive --tmpfs '\/headless-home:rw,mode=1777' --user \d+:\d+ /);
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
-    assert.match(output, /headless-agent codex --dangerously-bypass-approvals-and-sandbox --profile 'research profile'/);
-    assert.match(output, /exec --model gpt-5\.5 -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /headless-agent codex --dangerously-bypass-approvals-and-sandbox --profile research/);
+    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2858,7 +2859,9 @@ test("CLI rejects plain Docker workdirs that overlap the container home", { skip
 test("CLI --modal print-command wraps the selected agent command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
+    const homeDir = join(dir, "home");
     const projectDir = join(dir, "project");
+    mkdirSync(homeDir);
     mkdirSync(projectDir);
 
     const stdout: string[] = [];
@@ -2870,7 +2873,7 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
         "--reasoning-effort",
         "high",
         "--profile",
-        "research profile",
+        "research",
         "--work-dir",
         projectDir,
         "--modal",
@@ -2890,15 +2893,18 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
         "provider-secret",
         "--print-command",
       ],
-      { stdout: (text) => stdout.push(text) },
+      {
+        env: { ...process.env, CODEX_HOME: undefined, HOME: homeDir },
+        stdout: (text) => stdout.push(text),
+      },
     );
 
     const output = stdout.join("");
     assert.equal(code, 0);
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
-    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex --dangerously-bypass-approvals-and-sandbox --profile 'research profile'/);
-    assert.match(output, /exec --model gpt-5\.5 -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /--image-secret ghcr --secret provider-secret -- codex --dangerously-bypass-approvals-and-sandbox --profile research/);
+    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

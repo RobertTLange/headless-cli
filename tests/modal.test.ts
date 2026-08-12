@@ -361,6 +361,64 @@ test("executeModalAgent seeds forwarded file-backed credentials", async () => {
   }
 });
 
+test("executeModalAgent seeds a selected Codex profile and rewrites its catalog path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-profile-"));
+  try {
+    const home = join(dir, "home");
+    const codexHome = join(dir, "codex-home");
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    const profilePath = join(codexHome, "fugu.config.toml");
+    const catalogPath = join(codexHome, "fugu.json");
+    mkdirSync(home);
+    mkdirSync(codexHome);
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    writeFileSync(join(work, "input.txt"), "local");
+    writeFileSync(join(codexHome, "config.toml"), '[model_providers.sakana]\nname = "Sakana"\n');
+    writeFileSync(profilePath, `model_catalog_json = ${JSON.stringify(catalogPath)}\n`);
+    writeFileSync(catalogPath, '{"models":[]}\n');
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+
+    await executeModalAgent({
+      agent: "codex",
+      appName: "headless-test",
+      command: { command: "codex", args: ["--profile", "fugu", "exec", "-"], stdinText: "prompt" },
+      cpu: DEFAULT_MODAL_CPU,
+      env: { CODEX_HOME: codexHome, HOME: home },
+      image: DEFAULT_MODAL_IMAGE,
+      includeGit: false,
+      memoryMiB: DEFAULT_MODAL_MEMORY_MIB,
+      modalEnv: [],
+      modalSecrets: [],
+      profile: "fugu",
+      stderr: () => {},
+      stdout: () => {},
+      stdoutHandling: "capture",
+      timeoutSeconds: DEFAULT_MODAL_TIMEOUT_SECONDS,
+      workDir: work,
+      clientFactory: async () => client,
+    });
+
+    assert.equal(
+      readFileSync(join(remote, "host-home", ".codex", "fugu.config.toml"), "utf8"),
+      'model_catalog_json = "/home/node/.codex/fugu.json"\n',
+    );
+    assert.equal(
+      readFileSync(join(remote, "host-home", ".codex", "fugu.json"), "utf8"),
+      '{"models":[]}\n',
+    );
+    assert.equal(
+      readFileSync(join(remote, "host-home", ".codex", "config.toml"), "utf8"),
+      '[model_providers.sakana]\nname = "Sakana"\n',
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("executeModalAgent seeds only the selected AWS profile", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-modal-aws-profile-"));
   try {

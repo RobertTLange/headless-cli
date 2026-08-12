@@ -4320,6 +4320,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         hostUser: detectDockerHostUser(),
         image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
         persistentHome: dockerSessionHome,
+        profile: effectiveProfile,
         runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
         runId: parsed.runId,
         sessionBootstrap:
@@ -4435,6 +4436,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
             modalEnv: parsed.modalEnv,
             modalSecrets: parsed.modalSecrets,
+            profile: effectiveProfile,
             maxCapturedStdoutBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
             waitForStdoutDrain:
               parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,

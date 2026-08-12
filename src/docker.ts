@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { getAgentConfig } from "./agents.js";
+import { readCodexBaseFiles, readCodexProfileFiles } from "./codex-profile.js";
 import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
@@ -48,6 +49,7 @@ export interface DockerAgentCommandOptions {
   hostUser?: string;
   image: string;
   persistentHome?: string;
+  profile?: string;
   runDirHost?: string;
   runId?: string;
   sessionBootstrap?: DockerSessionBootstrap;
@@ -333,7 +335,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     const containerRunDir = `/headless-runs/${options.runId}`;
     args.push("--volume", `${options.runDirHost}:${containerRunDir}`, "--env", `HEADLESS_RUN_DIR=${containerRunDir}`);
   }
-  args.push(...agentConfigMountArgs(options.agent, options.env));
+  args.push(...agentConfigMountArgs(options.agent, options.env, options.profile));
   args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
   args.push(...dockerEnvArgs(dockerEnvEntries));
   args.push(...options.dockerArgs);
@@ -391,9 +393,9 @@ function bootstrapScript(agent: AgentName, persistentHome: boolean, sessionBoots
   return commands.join("; ");
 }
 
-function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
+function agentConfigMountArgs(agent: AgentName, env: Env, profile?: string): string[] {
   const home = env.HOME;
-  if (!home) {
+  if (!home && !(agent === "codex" && env.CODEX_HOME)) {
     return [];
   }
 
@@ -401,8 +403,9 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
   const dockerSeedFiles = config.dockerSeedFiles ?? {};
   const mounted = new Set<string>();
   const args: string[] = [];
-  for (const relPath of config.seedPaths) {
-    const hostPath = join(home, relPath);
+  const seedPaths = home && !(agent === "codex" && env.CODEX_HOME) ? config.seedPaths : [];
+  for (const relPath of seedPaths) {
+    const hostPath = join(home as string, relPath);
     if (!existsSync(hostPath) || mounted.has(hostPath)) {
       continue;
     }
@@ -428,6 +431,21 @@ function agentConfigMountArgs(agent: AgentName, env: Env): string[] {
     args.push("--volume", `${hostPath}:${join(hostHomeMountRoot, relPath)}:ro`);
     if (statSync(hostPath).isDirectory()) {
       break;
+    }
+  }
+  if (agent === "codex" && env.CODEX_HOME) {
+    for (const file of readCodexBaseFiles(env)) {
+      args.push("--volume", `${file.path}:${join(hostHomeMountRoot, file.relPath)}:ro`);
+    }
+  }
+  if (agent === "codex" && profile) {
+    const files = readCodexProfileFiles(env, profile);
+    args.push(
+      "--volume",
+      `${files.path}:${join(hostHomeMountRoot, ".codex", `${profile}.config.toml`)}:ro`,
+    );
+    if (files.catalog) {
+      args.push("--volume", `${files.catalog.path}:${files.catalog.path}:ro`);
     }
   }
   return args;
