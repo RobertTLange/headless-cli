@@ -29,6 +29,7 @@
     "check": "npm run build && npm test",
     "hooks:install": "git config core.hooksPath .githooks",
     "pack:check": "npm pack --dry-run",
+    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "devDependencies": {

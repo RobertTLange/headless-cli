@@ -83,7 +83,7 @@ async function cronAdd(input: CronCommandInput, handlers: CronCommandHandlers): 
   if (!input.agent) {
     throw new Error("cron add requires an agent");
   }
-  if (input.fast && input.agent !== "claude" && input.agent !== "codex") {
+  if (input.fast !== undefined && input.agent !== "claude" && input.agent !== "codex") {
     throw new Error("--fast is supported only by claude and codex");
   }
   if (input.profile !== undefined && input.agent !== "codex") {
@@ -360,7 +360,7 @@ function buildScheduledArgs(input: CronCommandInput): string[] {
   if (input.promptFile !== undefined) args.push("--prompt-file", input.promptFile);
   if (input.model !== undefined) args.push("--model", input.model);
   if (input.profile !== undefined) args.push("--profile", input.profile);
-  if (input.fast) args.push("--fast");
+  if (input.fast !== undefined) args.push(input.fast ? "--fast" : "--no-fast");
   if (input.reasoningEffort !== undefined) args.push("--reasoning-effort", input.reasoningEffort);
   if (input.allow !== undefined) args.push("--allow", input.allow);
   if (input.workDir !== undefined) args.push("--work-dir", input.workDir);

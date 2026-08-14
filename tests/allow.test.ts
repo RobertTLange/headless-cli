@@ -27,8 +27,6 @@ test("builds read-only commands for supported agents", () => {
       "exec",
       "--model",
       "gpt-5.5",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -41,8 +39,6 @@ test("builds read-only commands for supported agents", () => {
     args: [
       "--model",
       "claude-opus-4-6",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "hello",
       "--output-format",
@@ -110,8 +106,6 @@ test("builds explicit yolo commands for supported agents", () => {
     "exec",
     "--model",
     "gpt-5.5",
-    "-c",
-    'service_tier="default"',
     "--json",
     "--skip-git-repo-check",
     "-",
@@ -119,8 +113,6 @@ test("builds explicit yolo commands for supported agents", () => {
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", allow: "yolo" }, {}).args, [
     "--model",
     "claude-opus-4-6",
-    "--settings",
-    '{"fastMode":false}',
     "-p",
     "hello",
     "--output-format",
@@ -195,15 +187,13 @@ test("defaults to yolo commands for supported agents", () => {
 test("builds read-only interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", allow: "read-only" }, {}), {
     command: "codex",
-    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--search", "--model", "gpt-5.5", "-c", 'service_tier="default"', "hello"],
+    args: ["--sandbox", "read-only", "--ask-for-approval", "never", "--search", "--model", "gpt-5.5", "hello"],
   });
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", allow: "read-only" }, {}), {
     command: "claude",
     args: [
       "--model",
       "claude-opus-4-6",
-      "--settings",
-      '{"fastMode":false}',
       "--allowedTools",
       "Read,Grep,Glob,LS,WebFetch,WebSearch",
       "hello",
@@ -258,19 +248,49 @@ test("CLI rejects invalid reasoning effort", async () => {
   assert.match(stderr.join(""), /unsupported reasoning effort: max/);
 });
 
-test("builds standard-mode commands for Codex and Claude by default", () => {
-  assert.ok(
-    buildAgentCommand("codex", { prompt: "hello" }, {}).args.includes('service_tier="default"'),
+test("preserves ambient fast settings unless a mode is explicit", () => {
+  for (const build of [buildAgentCommand, buildInteractiveAgentCommand]) {
+    const ambientCodex = build("codex", { prompt: "hello" }, {}).args;
+    const ambientClaude = build("claude", { prompt: "hello" }, {}).args;
+    assert.equal(ambientCodex.some((arg) => arg.includes("service_tier")), false);
+    assert.equal(ambientClaude.includes('{"fastMode":false}'), false);
+    assert.ok(build("codex", { prompt: "hello", fast: false }, {}).args.includes('service_tier="default"'));
+    assert.ok(build("claude", { prompt: "hello", fast: false }, {}).args.includes('{"fastMode":false}'));
+  }
+});
+
+test("CLI leaves ambient fast settings untouched when --fast is absent", async () => {
+  for (const agent of ["codex", "claude"] as const) {
+    const stdout: string[] = [];
+    const code = await runCli([agent, "--prompt", "hello", "--print-command"], {
+      stdout: (text) => stdout.push(text),
+    });
+    assert.equal(code, 0);
+    assert.doesNotMatch(stdout.join(""), /service_tier|fastMode/);
+  }
+});
+
+test("CLI can explicitly disable ambient fast settings", async () => {
+  for (const [agent, expected] of [
+    ["codex", /service_tier="default"/],
+    ["claude", /fastMode":false/],
+  ] as const) {
+    const stdout: string[] = [];
+    const code = await runCli([agent, "--no-fast", "--prompt", "hello", "--print-command"], {
+      stdout: (text) => stdout.push(text),
+    });
+    assert.equal(code, 0);
+    assert.match(stdout.join(""), expected);
+  }
+
+  const stderr: string[] = [];
+  assert.equal(
+    await runCli(["codex", "--fast", "--no-fast", "--prompt", "hello"], {
+      stderr: (text) => stderr.push(text),
+    }),
+    2,
   );
-  assert.ok(
-    buildAgentCommand("claude", { prompt: "hello" }, {}).args.includes('{"fastMode":false}'),
-  );
-  assert.ok(
-    buildInteractiveAgentCommand("codex", { prompt: "hello" }, {}).args.includes('service_tier="default"'),
-  );
-  assert.ok(
-    buildInteractiveAgentCommand("claude", { prompt: "hello" }, {}).args.includes('{"fastMode":false}'),
-  );
+  assert.match(stderr.join(""), /--fast and --no-fast are mutually exclusive/);
 });
 
 test("CLI enables fast mode only for Codex and Claude", async () => {
@@ -415,7 +435,7 @@ test("CLI tmux print-command includes allow mode flags", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search --model gpt-5\.5 -c '\\''service_tier="default"'\\'' hello/);
+  assert.match(stdout.join(""), /codex --sandbox read-only --ask-for-approval never --search --model gpt-5\.5 hello/);
 });
 
 test("CLI Antigravity tmux print-command includes allow mode flags", async () => {

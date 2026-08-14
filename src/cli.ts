@@ -280,6 +280,7 @@ function usage(): string {
     "  --model <name>        Agent model override.",
     "  --profile <name>      Codex configuration profile.",
     "  --fast                Enable Fast mode for Codex or Claude.",
+    "  --no-fast             Disable ambient Fast mode for Codex or Claude.",
     "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --acp-agent <id>      With acp, resolve an ACP server from the registry by id or name.",
@@ -451,7 +452,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.profile = parseProfile(takeValue(args, arg));
         break;
       case "--fast":
+        if (parsed.fast === false) throw new CliError("--fast and --no-fast are mutually exclusive");
         parsed.fast = true;
+        break;
+      case "--no-fast":
+        if (parsed.fast === true) throw new CliError("--fast and --no-fast are mutually exclusive");
+        parsed.fast = false;
         break;
       case "--reasoning-effort":
       case "--effort":
@@ -3103,7 +3109,7 @@ function validateCronCliOptions(parsed: ParsedArgs): void {
       parsed.promptFile !== undefined ||
       parsed.model !== undefined ||
       parsed.profile !== undefined ||
-      parsed.fast ||
+      parsed.fast !== undefined ||
       parsed.reasoningEffort !== undefined ||
       parsed.allow !== undefined ||
       parsed.workDir !== undefined ||
@@ -3237,7 +3243,7 @@ async function executeStoredNode(
           model: defaults.model,
           profile: node.profile,
           allow,
-          fast: node.fast ?? false,
+          fast: node.fast,
           reasoningEffort: defaults.reasoningEffort,
           timeoutSeconds: config.general.timeoutSeconds,
         },
@@ -3440,7 +3446,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
     }
     if (
-      parsed.fast &&
+      parsed.fast !== undefined &&
       (parsed.attach || parsed.rename || parsed.send || parsed.check || parsed.list || parsed.showConfig || parsed.dockerCommand || parsed.runCommand)
     ) {
       throw new CliError("--fast can only be used with agent runs or cron add");
@@ -3852,7 +3858,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         ? (config.general.defaultAgent ?? autoAgentPreference[0])
         : selectDefaultAgent(env, config.general.defaultAgent);
     }
-    if (parsed.fast && parsed.agent !== "claude" && parsed.agent !== "codex") {
+    if (parsed.fast !== undefined && parsed.agent !== "claude" && parsed.agent !== "codex") {
       throw new CliError("--fast is supported only by claude and codex");
     }
     if (parsed.profile !== undefined && parsed.agent !== "codex") {
@@ -3978,12 +3984,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.profile !== undefined && existingTmuxSession) {
       throw new CliError("--profile cannot be applied to an existing tmux session");
     }
-    if (parsed.fast && existingTmuxSession) {
+    if (parsed.fast !== undefined && existingTmuxSession) {
       throw new CliError("--fast cannot be applied to an existing tmux session");
     }
     const storedNode = parsed.runId && nodeId ? readRun(env, parsed.runId)?.nodes[nodeId] : undefined;
     const storedFastMode = storedNode?.agent === parsed.agent ? storedNode.fast : undefined;
-    const fast = parsed.fast ?? storedFastMode ?? false;
+    const fast = parsed.fast ?? storedFastMode;
     const storedProfile = storedNode?.agent === parsed.agent ? storedNode.profile : undefined;
     const profile = parsed.profile ?? storedProfile ?? (
       parsed.agent === "codex" && parsed.sessionAlias
@@ -4010,7 +4016,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
           allow: teamDefaults.allow ?? roleDefaultAllow(teamNode.role),
           model: teamDefaults.model,
           profile: teamNode.agent === "codex" ? profile : undefined,
-          fast: fast && (teamNode.agent === "claude" || teamNode.agent === "codex"),
+          fast: teamNode.agent === "claude" || teamNode.agent === "codex" ? fast : undefined,
           reasoningEffort: teamDefaults.reasoningEffort,
           workDir: cwd ?? process.cwd(),
           sessionAlias: teamNode.nodeId,

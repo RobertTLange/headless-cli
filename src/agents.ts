@@ -61,11 +61,13 @@ function withClaudeEffort(args: string[], effort: ReasoningEffort | undefined): 
   return effort ? [...args, "--effort", effort] : args;
 }
 
-function withClaudeFastMode(args: string[], fast = false): string[] {
+function withClaudeFastMode(args: string[], fast: boolean | undefined): string[] {
+  if (fast === undefined) return args;
   return [...args, "--settings", JSON.stringify({ fastMode: fast })];
 }
 
-function withCodexServiceTier(args: string[], fast = false): string[] {
+function withCodexServiceTier(args: string[], fast: boolean | undefined): string[] {
+  if (fast === undefined) return args;
   return [...args, "-c", `service_tier="${fast ? "fast" : "default"}"`];
 }
 

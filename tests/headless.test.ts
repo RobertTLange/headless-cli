@@ -74,8 +74,6 @@ test("builds codex command with the headless default model", () => {
       "exec",
       "--model",
       "gpt-5.5",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -98,14 +96,14 @@ test("builds Codex profile commands without overriding the profile model", () =>
   );
   assert.deepEqual(
     buildInteractiveAgentCommand("codex", { prompt: "hello", profile: "research" }, {}).args.slice(0, 4),
-    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "-c"],
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "hello"],
   );
 });
 
 test("builds Codex profile commands with explicit model overrides", () => {
   const command = buildAgentCommand("codex", { prompt: "hello", profile: "research", model: "custom" }, {});
 
-  assert.deepEqual(command.args.slice(1, 7), ["--profile", "research", "exec", "--model", "custom", "-c"]);
+  assert.deepEqual(command.args.slice(1, 7), ["--profile", "research", "exec", "--model", "custom", "--json"]);
 });
 
 test("rejects Codex profiles for other agent harnesses", () => {
@@ -288,8 +286,6 @@ test("builds reasoning effort flags for supported agents", () => {
     "--model",
     "gpt-5.5",
     "-c",
-    'service_tier="default"',
-    "-c",
     'model_reasoning_effort="high"',
     "--json",
     "--skip-git-repo-check",
@@ -299,8 +295,6 @@ test("builds reasoning effort flags for supported agents", () => {
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}).args, [
     "--model",
     "claude-opus-4-6",
-    "--settings",
-    '{"fastMode":false}',
     "-p",
     "hello",
     "--output-format",
@@ -422,8 +416,6 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
       "exec",
       "--model",
       "m",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -436,8 +428,6 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
     args: [
       "--model",
       "sonnet",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "--output-format",
       "stream-json",
@@ -470,8 +460,6 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
     args: [
       "--model",
       "sonnet",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "hello",
       "--output-format",
@@ -624,7 +612,7 @@ test("CLI print-command normalizes Claude model shorthand", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /^claude --model claude-sonnet-4-5 --settings '\{"fastMode":false\}' -p hello/);
+  assert.match(stdout.join(""), /^claude --model claude-sonnet-4-5 -p hello/);
 });
 
 test("prefers an executable user-local Claude binary", () => {
@@ -728,8 +716,6 @@ test("builds native session commands for supported agents", () => {
     [
       "--model",
       "claude-opus-4-6",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "--session-id",
       "11111111-1111-4111-8111-111111111111",
@@ -747,8 +733,6 @@ test("builds native session commands for supported agents", () => {
     "resume",
     "--model",
     "gpt-5.5",
-    "-c",
-    'service_tier="default"',
     "--json",
     "--skip-git-repo-check",
     "thread-1",
@@ -828,12 +812,12 @@ test("CLI passes Antigravity model selection through to agy", async () => {
 test("builds interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", model: "gpt-next" }, {}), {
     command: "codex",
-    args: ["--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-next", "-c", 'service_tier="default"', "hello"],
+    args: ["--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-next", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "sonnet" }, {}), {
     command: "claude",
-    args: ["--model", "sonnet", "--settings", '{"fastMode":false}', "--dangerously-skip-permissions", "hello"],
+    args: ["--model", "sonnet", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
@@ -899,8 +883,6 @@ test("builds reasoning effort flags for supported interactive commands", () => {
       "--model",
       "gpt-5.5",
       "-c",
-      'service_tier="default"',
-      "-c",
       'model_reasoning_effort="high"',
       "hello",
     ],
@@ -908,7 +890,7 @@ test("builds reasoning effort flags for supported interactive commands", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
     command: "claude",
-    args: ["--model", "claude-opus-4-6", "--settings", '{"fastMode":false}', "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
+    args: ["--model", "claude-opus-4-6", "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("pi", { prompt: "hello", reasoningEffort: "low" }, {}), {
@@ -1143,7 +1125,7 @@ test("CLI applies model and reasoning defaults from ~/.headless/config.toml", as
     assert.equal(claudeCode, 0);
     assert.equal(
       stdout.join(""),
-      "claude --model claude-opus-4-8 --settings '{\"fastMode\":false}' -p hello --output-format stream-json --verbose --dangerously-skip-permissions\n",
+      "claude --model claude-opus-4-8 -p hello --output-format stream-json --verbose --dangerously-skip-permissions\n",
     );
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -2783,7 +2765,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
     assert.match(output, /headless-agent codex --dangerously-bypass-approvals-and-sandbox --profile research/);
-    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2913,7 +2895,7 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
     assert.match(output, /--image-secret ghcr --secret provider-secret -- codex --dangerously-bypass-approvals-and-sandbox --profile research/);
-    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -3067,11 +3049,11 @@ test("CLI --docker executes through docker and preserves stdin prompt", async ()
     assert.equal(capture.args[0], "run");
     assert.ok(capture.args.includes("ghcr.io/roberttlange/headless:latest"));
     assert.deepEqual(capture.args.slice(-8), [
+      "codex",
+      "--dangerously-bypass-approvals-and-sandbox",
       "exec",
       "--model",
       "gpt-5.5",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -4572,7 +4554,7 @@ test("CLI --tmux launches an interactive tmux session and sends the prompt", asy
         sessionName,
         "-c",
         dir,
-        "codex --dangerously-bypass-approvals-and-sandbox --model gpt-next -c 'service_tier=\"default\"' 'hello world'",
+        "codex --dangerously-bypass-approvals-and-sandbox --model gpt-next 'hello world'",
       ],
     ]);
     assert.match(sessionName, /^headless-codex-\d+$/);
@@ -5738,8 +5720,6 @@ test("CLI --tmux preserves multiline prompt-file text through the tmux shell com
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-next",
-      "-c",
-      'service_tier="default"',
       "line one\nline two",
     ]);
   } finally {
