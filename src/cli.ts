@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { runAcpClient, runAcpStdioAgent } from "./acp.js";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -867,11 +867,12 @@ function unsupportedReasoningEffortWarning(
   agent: AgentName,
   effort: ReasoningEffort | undefined,
   mode: "headless" | "tmux",
+  opencodeTmuxEffortSupported = false,
 ): string | undefined {
   if (!effort) {
     return undefined;
   }
-  if (mode === "tmux" && agent === "opencode") {
+  if (mode === "tmux" && agent === "opencode" && !opencodeTmuxEffortSupported) {
     return "headless: reasoning effort is not supported by opencode in tmux mode and was ignored\n";
   }
   if (agent === "gemini" || agent === "antigravity") {
@@ -2997,18 +2998,72 @@ async function claimNewTranscriptPath(
   }
 }
 
+function deleteTmuxSessionSync(sessionName: string, env: Env, stderr: (text: string) => void): number {
+  const result = spawnSync("tmux", ["kill-session", "-t", sessionName], {
+    env: env as NodeJS.ProcessEnv,
+    encoding: "utf8",
+    stdio: ["ignore", "ignore", "pipe"],
+    timeout: 2000,
+    killSignal: "SIGKILL",
+  });
+  if (result.status === 0) {
+    return 0;
+  }
+  const errorText = `${result.stderr ?? ""}`;
+  if (errorText.includes("no server running") || errorText.includes("can't find session")) {
+    return 0;
+  }
+  if (errorText) {
+    stderr(errorText);
+  }
+  return result.status ?? 1;
+}
+
 async function deleteTmuxSession(sessionName: string, env: Env, stderr: (text: string) => void): Promise<number> {
-  const result = await captureSimpleCommand({ command: "tmux", args: ["kill-session", "-t", sessionName] }, undefined, env);
-  if (result.code === 0) {
-    return 0;
+  return deleteTmuxSessionSync(sessionName, env, stderr);
+}
+
+function installTmuxExitCleanup(
+  sessionName: string,
+  env: Env,
+  stderr: (text: string) => void,
+  enabled: boolean,
+): () => void {
+  if (!enabled) return () => undefined;
+  const handlers = new Map<NodeJS.Signals, () => void>();
+  const remove = () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  };
+  for (const signal of parentExitSignals()) {
+    const handler = () => {
+      const hasExternalListener = process.listeners(signal).some((listener) => listener !== handler);
+      deleteTmuxSessionSync(sessionName, env, stderr);
+      remove();
+      if (!hasExternalListener) process.kill(process.pid, signal);
+    };
+    handlers.set(signal, handler);
+    process.once(signal, handler);
   }
-  if (result.stderr.includes("no server running") || result.stderr.includes("can't find session")) {
-    return 0;
+  return remove;
+}
+
+async function withTmuxDeletion<T>(
+  sessionName: string,
+  env: Env,
+  stderr: (text: string) => void,
+  enabled: boolean,
+  action: () => Promise<T>,
+): Promise<{ value: T; deleteCode: number }> {
+  const removeExitCleanup = installTmuxExitCleanup(sessionName, env, stderr, enabled);
+  let deleteCode = 0;
+  let value!: T;
+  try {
+    value = await action();
+  } finally {
+    removeExitCleanup();
+    if (enabled) deleteCode = await deleteTmuxSession(sessionName, env, stderr);
   }
-  if (result.stderr) {
-    stderr(result.stderr);
-  }
-  return result.code;
+  return { value, deleteCode };
 }
 
 async function executeTmuxSendCommands(
@@ -4061,6 +4116,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       { baseInstructionPrompt: configuredDefaults.baseInstructionPrompt },
     );
 
+    const selectedAgent = parsed.agent;
     if (parsed.tmux) {
       const tmuxWaitWorkDir = cwd ?? process.cwd();
       const sessionName = parsed.sessionAlias
@@ -4082,52 +4138,61 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         const waitSnapshot = existingStrategy
           ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env, existingStrategy)
           : undefined;
-        const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
-        if (parsed.runId && parsed.role && nodeId) {
-          if (code === 0) {
-            registerNode(env, {
-              runId: parsed.runId,
-              nodeId,
-              role: parsed.role,
-              agent: parsed.agent,
-              coordination,
-              status: "busy",
-              dependsOn: parsed.dependsOn,
-              planned: true,
-              allow,
-              model: configuredDefaults.model,
-              profile,
-              fast,
-              reasoningEffort: configuredDefaults.reasoningEffort,
-              workDir: cwd ?? process.cwd(),
-              sessionAlias: parsed.sessionAlias ?? nodeId,
-              tmuxSessionName: sessionName,
-            });
-          } else {
-            updateNodeStatus(env, parsed.runId, nodeId, "failed", `tmux command exited with code ${code}`);
-          }
-        }
-        if (code === 0) {
-          if (waitSnapshot) {
-            stderr(`sent: ${tmuxCommands.sessionName}\n`);
-            const finalMessage = await waitForTmuxFinalMessage(
-              parsed.agent,
-              tmuxCommands.sessionName,
-              tmuxWaitWorkDir,
-              env,
-              waitSnapshot,
-              commandTimeoutSeconds,
-            );
+        const { value, deleteCode } = await withTmuxDeletion(
+          tmuxCommands.sessionName,
+          env,
+          stderr,
+          parsed.delete,
+          async () => {
+            const code = await executeTmuxSendCommands(tmuxCommands, env, stderr);
             if (parsed.runId && parsed.role && nodeId) {
-              updateNodeStatus(env, parsed.runId, nodeId, "idle", finalMessage);
+              if (code === 0) {
+                registerNode(env, {
+                  runId: parsed.runId,
+                  nodeId,
+                  role: parsed.role,
+                  agent: selectedAgent,
+                  coordination,
+                  status: "busy",
+                  dependsOn: parsed.dependsOn,
+                  planned: true,
+                  allow,
+                  model: configuredDefaults.model,
+                  profile,
+                  fast,
+                  reasoningEffort: configuredDefaults.reasoningEffort,
+                  workDir: cwd ?? process.cwd(),
+                  sessionAlias: parsed.sessionAlias ?? nodeId,
+                  tmuxSessionName: sessionName,
+                });
+              } else {
+                updateNodeStatus(env, parsed.runId, nodeId, "failed", `tmux command exited with code ${code}`);
+              }
             }
-            const deleteCode = parsed.delete ? await deleteTmuxSession(tmuxCommands.sessionName, env, stderr) : 0;
-            stdout(`${finalMessage}\n`);
-            return deleteCode;
-          }
-          stdout(`sent: ${tmuxCommands.sessionName}\n`);
+            let finalMessage: string | undefined;
+            if (code === 0 && waitSnapshot) {
+              stderr(`sent: ${tmuxCommands.sessionName}\n`);
+              finalMessage = await waitForTmuxFinalMessage(
+                selectedAgent,
+                tmuxCommands.sessionName,
+                tmuxWaitWorkDir,
+                env,
+                waitSnapshot,
+                commandTimeoutSeconds,
+              );
+              if (parsed.runId && parsed.role && nodeId) {
+                updateNodeStatus(env, parsed.runId, nodeId, "idle", finalMessage);
+              }
+            }
+            return { code, finalMessage };
+          },
+        );
+        if (value.finalMessage !== undefined) {
+          stdout(`${value.finalMessage}\n`);
+          return deleteCode;
         }
-        return code;
+        if (value.code === 0) stdout(`sent: ${tmuxCommands.sessionName}\n`);
+        return value.code;
       }
       const tmuxNamePart = parsed.sessionAlias ?? parsed.tmuxName ?? String(process.pid);
       const tmuxSessionName = buildHeadlessTmuxSessionName(parsed.agent, tmuxNamePart);
@@ -4150,7 +4215,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         parsed.agent === "opencode" && parsed.wait
           ? buildInteractiveOpencodeRun(tmuxCommandOptions)
           : buildInteractiveAgentCommand(parsed.agent, tmuxCommandOptions, env);
-      const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "tmux");
+      const reasoningWarning = unsupportedReasoningEffortWarning(
+        parsed.agent,
+        configuredDefaults.reasoningEffort,
+        "tmux",
+        parsed.wait,
+      );
       if (reasoningWarning) {
         stderr(reasoningWarning);
       }
@@ -4187,84 +4257,91 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const waitSnapshot = waitPlan
         ? createTmuxWaitSnapshot(parsed.agent, tmuxWaitWorkDir, env, waitPlan.strategy)
         : undefined;
-      let code: number;
-      try {
-        code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
-        if (code === 0 && waitSnapshot?.strategy.kind === "claim") {
-          const claimed = await claimNewTranscriptPath(
-            parsed.agent,
-            tmuxCommands.sessionName,
-            tmuxWaitWorkDir,
-            env,
-            waitSnapshot,
-            commandTimeoutSeconds,
-          );
-          if (claimed) {
-            waitSnapshot.strategy = { kind: "claim", claimed };
+      const { value, deleteCode } = await withTmuxDeletion(
+        tmuxCommands.sessionName,
+        env,
+        stderr,
+        parsed.delete,
+        async () => {
+          let code: number;
+          try {
+            code = await executeTmuxCommands(tmuxCommands, cwd, env, stderr);
+            if (code === 0 && waitSnapshot?.strategy.kind === "claim") {
+              const claimed = await claimNewTranscriptPath(
+                selectedAgent,
+                tmuxCommands.sessionName,
+                tmuxWaitWorkDir,
+                env,
+                waitSnapshot,
+                commandTimeoutSeconds,
+              );
+              if (claimed) waitSnapshot.strategy = { kind: "claim", claimed };
+            }
+          } finally {
+            claimLock?.release();
           }
-        }
-      } finally {
-        claimLock?.release();
-      }
-      const tmuxWaitStrategy = waitSnapshot ? storedTmuxWaitStrategy(waitSnapshot.strategy) : undefined;
-      if (code === 0 && parsed.sessionAlias && (profile || tmuxWaitStrategy) && sessionStorePath(env)) {
-        writeStoredTmuxSession(env, {
-          agent: parsed.agent,
-          alias: parsed.sessionAlias,
-          profile,
-          tmuxWaitStrategy,
-          workDir: cwd,
-        });
-      }
-      if (parsed.runId && parsed.role && nodeId) {
-        if (code === 0) {
-          registerNode(env, {
-            runId: parsed.runId,
-            nodeId,
-            role: parsed.role,
-            agent: parsed.agent,
-            coordination,
-            status: "busy",
-            dependsOn: parsed.dependsOn,
-            planned: true,
-            allow,
-            model: configuredDefaults.model,
-            profile,
-            fast,
-            reasoningEffort: configuredDefaults.reasoningEffort,
-            workDir: cwd ?? process.cwd(),
-            sessionAlias: parsed.sessionAlias ?? parsed.tmuxName ?? nodeId,
-            tmuxSessionName: tmuxCommands.sessionName,
-          });
-        } else {
-          updateNodeStatus(env, parsed.runId, nodeId, "failed", `tmux command exited with code ${code}`);
-        }
-      }
-      if (code === 0) {
-        const sessionLine = `tmux session: ${tmuxCommands.sessionName}\n`;
-        const attachLine = `attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`;
-        if (waitSnapshot) {
-          stderr(sessionLine);
-          stderr(attachLine);
-          const finalMessage = await waitForTmuxFinalMessage(
-            parsed.agent,
-            tmuxCommands.sessionName,
-            tmuxWaitWorkDir,
-            env,
-            waitSnapshot,
-            commandTimeoutSeconds,
-          );
+          const tmuxWaitStrategy = waitSnapshot ? storedTmuxWaitStrategy(waitSnapshot.strategy) : undefined;
+          if (code === 0 && parsed.sessionAlias && (profile || tmuxWaitStrategy) && sessionStorePath(env)) {
+            writeStoredTmuxSession(env, {
+              agent: selectedAgent,
+              alias: parsed.sessionAlias,
+              profile,
+              tmuxWaitStrategy,
+              workDir: cwd,
+            });
+          }
           if (parsed.runId && parsed.role && nodeId) {
-            updateNodeStatus(env, parsed.runId, nodeId, "idle", finalMessage);
+            if (code === 0) {
+              registerNode(env, {
+                runId: parsed.runId,
+                nodeId,
+                role: parsed.role,
+                agent: selectedAgent,
+                coordination,
+                status: "busy",
+                dependsOn: parsed.dependsOn,
+                planned: true,
+                allow,
+                model: configuredDefaults.model,
+                profile,
+                fast,
+                reasoningEffort: configuredDefaults.reasoningEffort,
+                workDir: cwd ?? process.cwd(),
+                sessionAlias: parsed.sessionAlias ?? parsed.tmuxName ?? nodeId,
+                tmuxSessionName: tmuxCommands.sessionName,
+              });
+            } else {
+              updateNodeStatus(env, parsed.runId, nodeId, "failed", `tmux command exited with code ${code}`);
+            }
           }
-          const deleteCode = parsed.delete ? await deleteTmuxSession(tmuxCommands.sessionName, env, stderr) : 0;
-          stdout(`${finalMessage}\n`);
-          return deleteCode;
-        }
-        stdout(sessionLine);
-        stdout(attachLine);
+          let finalMessage: string | undefined;
+          if (code === 0 && waitSnapshot) {
+            stderr(`tmux session: ${tmuxCommands.sessionName}\n`);
+            stderr(`attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`);
+            finalMessage = await waitForTmuxFinalMessage(
+              selectedAgent,
+              tmuxCommands.sessionName,
+              tmuxWaitWorkDir,
+              env,
+              waitSnapshot,
+              commandTimeoutSeconds,
+            );
+            if (parsed.runId && parsed.role && nodeId) {
+              updateNodeStatus(env, parsed.runId, nodeId, "idle", finalMessage);
+            }
+          }
+          return { code, finalMessage };
+        },
+      );
+      if (value.finalMessage !== undefined) {
+        stdout(`${value.finalMessage}\n`);
+        return deleteCode;
       }
-      return code;
+      if (value.code === 0) {
+        stdout(`tmux session: ${tmuxCommands.sessionName}\n`);
+        stdout(`attach: ${quoteCommand(buildTmuxAttachCommand(tmuxCommands.sessionName).command)}\n`);
+      }
+      return value.code;
     }
 
     let sessionAlias = parsed.sessionAlias;

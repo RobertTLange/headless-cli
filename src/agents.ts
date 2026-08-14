@@ -360,9 +360,6 @@ function buildCursor(options: BuildOptions, env: Env): BuiltCommand {
   const args = ["-p", "--trust", ...withCursorAllow([], options.allow), "--output-format", "stream-json"];
   const model = cursorModel(options);
 
-  if (env.CURSOR_API_KEY) {
-    args.unshift("--api-key", env.CURSOR_API_KEY);
-  }
   if (options.sessionId && (options.sessionMode === "resume" || options.sessionMode === "new")) {
     args.push("--resume", options.sessionId);
   }
@@ -380,9 +377,6 @@ function buildInteractiveCursor(options: BuildOptions, env: Env): BuiltCommand {
   const args: string[] = [];
   const model = cursorModel(options);
 
-  if (env.CURSOR_API_KEY) {
-    args.push("--api-key", env.CURSOR_API_KEY);
-  }
   if (options.sessionId && (options.sessionMode === "resume" || options.sessionMode === "new")) {
     args.push("--resume", options.sessionId);
   }

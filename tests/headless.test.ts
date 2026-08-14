@@ -909,30 +909,37 @@ test("builds reasoning effort flags for supported interactive commands", () => {
   });
 });
 
-test("forwards cursor and pi environment-backed options", () => {
-  assert.deepEqual(
-    buildAgentCommand(
-      "cursor",
-      { prompt: "hello" },
-      { CURSOR_CLI_BIN: "cursor-agent", CURSOR_API_KEY: "key-123" },
-    ),
-    {
-      command: "cursor-agent",
-      args: [
-        "--api-key",
-        "key-123",
-        "-p",
-        "--trust",
-        "--force",
-        "--output-format",
-        "stream-json",
-        "--model",
-        "gpt-5.5-medium",
-        "hello",
-      ],
-    },
+test("keeps Cursor API keys out of child process arguments", () => {
+  const cursorEnv = { CURSOR_CLI_BIN: "cursor-agent", CURSOR_API_KEY: "key-123" };
+  const command = buildAgentCommand(
+    "cursor",
+    { prompt: "hello" },
+    cursorEnv,
   );
+  assert.deepEqual(command, {
+    command: "cursor-agent",
+    args: [
+      "-p",
+      "--trust",
+      "--force",
+      "--output-format",
+      "stream-json",
+      "--model",
+      "gpt-5.5-medium",
+      "hello",
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(command), /key-123/);
 
+  const interactive = buildInteractiveAgentCommand(
+    "cursor",
+    { prompt: "hello" },
+    cursorEnv,
+  );
+  assert.doesNotMatch(JSON.stringify(interactive), /key-123/);
+});
+
+test("forwards Pi environment-backed options", () => {
   assert.deepEqual(
     buildAgentCommand(
       "pi",
@@ -4871,6 +4878,207 @@ test("CLI --tmux --wait --delete kills the tmux session after final output", asy
   }
 });
 
+test("CLI --tmux --wait --delete kills the tmux session after claim timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args[0] === 'has-session') process.exit(0);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const code = await runCli(
+      ["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--delete", "--timeout", "1"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TMUX_CAPTURE: captureFile,
+          HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+    assert.equal(code, 2);
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const sessionName = calls[0][3];
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", sessionName]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --delete kills a partially launched session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(binDir);
+    mkdirSync(workDir);
+    const tmux = join(binDir, "tmux");
+    writeFileSync(
+      tmux,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'set-buffer') process.exit(7);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(tmux, 0o755);
+
+    const code = await runCli(["antigravity", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--delete"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HEADLESS_TMUX_ANTIGRAVITY_PASTE_DELAY_MS: "0",
+        HEADLESS_TMUX_ANTIGRAVITY_SUBMIT_DELAY_MS: "0",
+        HEADLESS_TMUX_ANTIGRAVITY_WAKE_DELAY_MS: "0",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+    });
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(code, 7);
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --delete bounds cleanup of a stuck tmux server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(binDir);
+    mkdirSync(workDir);
+    const tmux = join(binDir, "tmux");
+    writeFileSync(
+      tmux,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'kill-session') setTimeout(() => {}, 600_000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(tmux, 0o755);
+
+    const started = Date.now();
+    const code = await runCli(
+      ["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--delete", "--timeout", "1"],
+      {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HEADLESS_TMUX_WAIT_FORCE_MARKER: "1",
+        HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      },
+    );
+
+    assert.equal(code, 2);
+    assert.ok(Date.now() - started < 10_000);
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(home);
+    mkdirSync(binDir);
+    mkdirSync(workDir);
+    const tmux = join(binDir, "tmux");
+    writeFileSync(
+      tmux,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'has-session') process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(tmux, 0o755);
+
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(repoRoot, "src", "cli.ts"),
+        "codex",
+        "--prompt",
+        "hello",
+        "--work-dir",
+        workDir,
+        "--tmux",
+        "--wait",
+        "--delete",
+        "--timeout",
+        "30",
+      ],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TMUX_CAPTURE: captureFile,
+          HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(captureFile) && readFileSync(captureFile, "utf8").includes("new-session"));
+    const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.on("close", (code, signal) => resolve({ code, signal }));
+    });
+    child.kill("SIGTERM");
+    const result = await completion;
+
+    assert.equal(result.signal, "SIGTERM");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI --tmux --wait pins the Claude session id instead of injecting a marker", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
@@ -5557,7 +5765,6 @@ test(
             ...process.env,
             HEADLESS_OPENCODE_DB: dbPath,
             HEADLESS_TMUX_CAPTURE: captureFile,
-            HEADLESS_TMUX_WAIT_FORCE_MARKER: "1",
             HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
             OPENCODE_DATA_HOME: dataHome,
             PATH: `${binDir}:${process.env.PATH ?? ""}`,
