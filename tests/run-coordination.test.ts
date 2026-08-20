@@ -88,7 +88,7 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     });
     const run = readRun(env, "auth");
     assert.equal(run?.nodes["worker-1"].dependsOn[0], "explorer");
-    assert.equal(run?.nodes["worker-1"].fast, false);
+    assert.equal(run?.nodes["worker-1"].fast, undefined);
     assert.equal(run?.nodes["worker-1"].logs?.stdout.endsWith("latest.stdout.log"), true);
     assert.equal(existsSync(join(env.HOME, ".headless", "runs", "auth", "run.json")), true);
     registerNode(env, {
@@ -115,6 +115,45 @@ test("run store registers nodes, records dependencies, and rejects concurrent lo
     assert.throws(() => acquireNodeLock(env, "auth", "worker-1"), /node is locked/);
     release();
     acquireNodeLock(env, "auth", "worker-1")();
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run store migrates legacy implicit standard mode to ambient", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { HOME: join(dir, "home") };
+    const runDir = join(env.HOME, ".headless", "runs", "legacy");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "run.json"), JSON.stringify({
+      version: 1,
+      runId: "legacy",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      nodes: {
+        worker: {
+          runId: "legacy",
+          nodeId: "worker",
+          role: "worker",
+          agent: "codex",
+          coordination: "session",
+          status: "idle",
+          dependsOn: [],
+          planned: true,
+          unplanned: false,
+          fast: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      events: [],
+    }));
+
+    const migrated = readRun(env, "legacy");
+
+    assert.equal(migrated?.version, 2);
+    assert.equal(migrated?.nodes.worker.fast, undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -298,7 +337,7 @@ test("orchestrator run registers declared team and injects run context", async (
         "--team",
         "worker=2",
         "--team",
-        "claude/reviewer",
+        "gemini/reviewer",
         "--fast",
         "--prompt",
         "Build auth",
@@ -306,7 +345,7 @@ test("orchestrator run registers declared team and injects run context", async (
       { env, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
     );
 
-    assert.equal(code, 0);
+    assert.equal(code, 0, stderr.join(""));
     assert.equal(stdout.join(""), "orchestrator final\n");
     assert.match(stderr.join(""), /^\d{2}:\d{2}:\d{2} INFO  auth started orchestrator \(4 nodes,/m);
     assert.match(stderr.join(""), /^\d{2}:\d{2}:\d{2} INFO  auth orchestrator starting -> busy/m);
@@ -325,7 +364,7 @@ test("orchestrator run registers declared team and injects run context", async (
     assert.equal(run?.nodes.orchestrator.fast, true);
     assert.equal(run?.nodes["worker-1"].fast, true);
     assert.equal(run?.nodes["worker-2"].fast, true);
-    assert.equal(run?.nodes.reviewer.fast, true);
+    assert.equal(run?.nodes.reviewer.fast, undefined);
     assert.equal(run?.nodes.reviewer.role, "reviewer");
     const orchestratorLog = readFileSync(run?.nodes.orchestrator.logs?.stdout ?? "", "utf8");
     assert.match(orchestratorLog, /node invocation/);
@@ -475,7 +514,7 @@ test("direct run-node launches do not inherit fast mode across agents", async ()
 
     const node = readRun(env, "auth")?.nodes["worker-1"];
     assert.equal(node?.agent, "gemini");
-    assert.equal(node?.fast, false);
+    assert.equal(node?.fast, undefined);
     assert.equal(node?.profile, undefined);
   } finally {
     rmSync(dir, { force: true, recursive: true });

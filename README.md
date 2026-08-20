@@ -74,9 +74,11 @@ headless codex --prompt "Run the tests and fix failures" --model gpt-5 --reasoni
 # Select a Codex configuration profile for this invocation.
 headless codex --prompt "Review the architecture" --profile research
 
-# Opt into provider Fast mode for a Codex or Claude run. It is off by default.
+# Opt into provider Fast mode for a Codex or Claude run. Without --fast,
+# Headless preserves the backend's ambient/profile setting.
 headless codex --fast --prompt "Run the focused test suite"
 headless claude --fast --prompt "Review this pull request"
+headless codex --no-fast --prompt "Run at the standard service tier"
 
 # Read a prompt from a file and run from another repository.
 headless claude --prompt-file prompt.md --work-dir /path/to/project

@@ -74,8 +74,6 @@ test("builds codex command with the headless default model", () => {
       "exec",
       "--model",
       "gpt-5.5",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -98,14 +96,14 @@ test("builds Codex profile commands without overriding the profile model", () =>
   );
   assert.deepEqual(
     buildInteractiveAgentCommand("codex", { prompt: "hello", profile: "research" }, {}).args.slice(0, 4),
-    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "-c"],
+    ["--dangerously-bypass-approvals-and-sandbox", "--profile", "research", "hello"],
   );
 });
 
 test("builds Codex profile commands with explicit model overrides", () => {
   const command = buildAgentCommand("codex", { prompt: "hello", profile: "research", model: "custom" }, {});
 
-  assert.deepEqual(command.args.slice(1, 7), ["--profile", "research", "exec", "--model", "custom", "-c"]);
+  assert.deepEqual(command.args.slice(1, 7), ["--profile", "research", "exec", "--model", "custom", "--json"]);
 });
 
 test("rejects Codex profiles for other agent harnesses", () => {
@@ -288,8 +286,6 @@ test("builds reasoning effort flags for supported agents", () => {
     "--model",
     "gpt-5.5",
     "-c",
-    'service_tier="default"',
-    "-c",
     'model_reasoning_effort="high"',
     "--json",
     "--skip-git-repo-check",
@@ -299,8 +295,6 @@ test("builds reasoning effort flags for supported agents", () => {
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}).args, [
     "--model",
     "claude-opus-4-6",
-    "--settings",
-    '{"fastMode":false}',
     "-p",
     "hello",
     "--output-format",
@@ -422,8 +416,6 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
       "exec",
       "--model",
       "m",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -436,8 +428,6 @@ test("builds prompt-file stdin commands for codex, claude, and gemini", () => {
     args: [
       "--model",
       "sonnet",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "--output-format",
       "stream-json",
@@ -470,8 +460,6 @@ test("builds claude, cursor, gemini, opencode, and pi prompt commands", () => {
     args: [
       "--model",
       "sonnet",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "hello",
       "--output-format",
@@ -624,7 +612,7 @@ test("CLI print-command normalizes Claude model shorthand", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout.join(""), /^claude --model claude-sonnet-4-5 --settings '\{"fastMode":false\}' -p hello/);
+  assert.match(stdout.join(""), /^claude --model claude-sonnet-4-5 -p hello/);
 });
 
 test("prefers an executable user-local Claude binary", () => {
@@ -728,8 +716,6 @@ test("builds native session commands for supported agents", () => {
     [
       "--model",
       "claude-opus-4-6",
-      "--settings",
-      '{"fastMode":false}',
       "-p",
       "--session-id",
       "11111111-1111-4111-8111-111111111111",
@@ -747,8 +733,6 @@ test("builds native session commands for supported agents", () => {
     "resume",
     "--model",
     "gpt-5.5",
-    "-c",
-    'service_tier="default"',
     "--json",
     "--skip-git-repo-check",
     "thread-1",
@@ -828,12 +812,12 @@ test("CLI passes Antigravity model selection through to agy", async () => {
 test("builds interactive commands for tmux mode", () => {
   assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", model: "gpt-next" }, {}), {
     command: "codex",
-    args: ["--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-next", "-c", 'service_tier="default"', "hello"],
+    args: ["--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-next", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", model: "sonnet" }, {}), {
     command: "claude",
-    args: ["--model", "sonnet", "--settings", '{"fastMode":false}', "--dangerously-skip-permissions", "hello"],
+    args: ["--model", "sonnet", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("gemini", { prompt: "hello", model: "gemini-model" }, {}), {
@@ -899,8 +883,6 @@ test("builds reasoning effort flags for supported interactive commands", () => {
       "--model",
       "gpt-5.5",
       "-c",
-      'service_tier="default"',
-      "-c",
       'model_reasoning_effort="high"',
       "hello",
     ],
@@ -908,7 +890,7 @@ test("builds reasoning effort flags for supported interactive commands", () => {
 
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
     command: "claude",
-    args: ["--model", "claude-opus-4-6", "--settings", '{"fastMode":false}', "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
+    args: ["--model", "claude-opus-4-6", "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
   });
 
   assert.deepEqual(buildInteractiveAgentCommand("pi", { prompt: "hello", reasoningEffort: "low" }, {}), {
@@ -927,30 +909,37 @@ test("builds reasoning effort flags for supported interactive commands", () => {
   });
 });
 
-test("forwards cursor and pi environment-backed options", () => {
-  assert.deepEqual(
-    buildAgentCommand(
-      "cursor",
-      { prompt: "hello" },
-      { CURSOR_CLI_BIN: "cursor-agent", CURSOR_API_KEY: "key-123" },
-    ),
-    {
-      command: "cursor-agent",
-      args: [
-        "--api-key",
-        "key-123",
-        "-p",
-        "--trust",
-        "--force",
-        "--output-format",
-        "stream-json",
-        "--model",
-        "gpt-5.5-medium",
-        "hello",
-      ],
-    },
+test("keeps Cursor API keys out of child process arguments", () => {
+  const cursorEnv = { CURSOR_CLI_BIN: "cursor-agent", CURSOR_API_KEY: "key-123" };
+  const command = buildAgentCommand(
+    "cursor",
+    { prompt: "hello" },
+    cursorEnv,
   );
+  assert.deepEqual(command, {
+    command: "cursor-agent",
+    args: [
+      "-p",
+      "--trust",
+      "--force",
+      "--output-format",
+      "stream-json",
+      "--model",
+      "gpt-5.5-medium",
+      "hello",
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(command), /key-123/);
 
+  const interactive = buildInteractiveAgentCommand(
+    "cursor",
+    { prompt: "hello" },
+    cursorEnv,
+  );
+  assert.doesNotMatch(JSON.stringify(interactive), /key-123/);
+});
+
+test("forwards Pi environment-backed options", () => {
   assert.deepEqual(
     buildAgentCommand(
       "pi",
@@ -1143,7 +1132,7 @@ test("CLI applies model and reasoning defaults from ~/.headless/config.toml", as
     assert.equal(claudeCode, 0);
     assert.equal(
       stdout.join(""),
-      "claude --model claude-opus-4-8 --settings '{\"fastMode\":false}' -p hello --output-format stream-json --verbose --dangerously-skip-permissions\n",
+      "claude --model claude-opus-4-8 -p hello --output-format stream-json --verbose --dangerously-skip-permissions\n",
     );
   } finally {
     rmSync(dir, { force: true, recursive: true });
@@ -2783,7 +2772,7 @@ test("CLI --docker print-command wraps the selected agent command", async () => 
     assert.match(output, new RegExp(`--workdir ${quoteCommand({ command: realpathSync(projectDir), args: [] })}`));
     assert.match(output, /--env EXTRA_TOKEN=value --env HOME=\/headless-home --network=host custom\/headless:dev sh -lc/);
     assert.match(output, /headless-agent codex --dangerously-bypass-approvals-and-sandbox --profile research/);
-    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -2913,7 +2902,7 @@ test("CLI --modal print-command wraps the selected agent command", async () => {
     assert.match(output, /^printf %s hello \| modal-sandbox run --app headless-dev --image custom\/headless:modal /);
     assert.match(output, /--cpu 4 --memory 8192 --timeout 900 /);
     assert.match(output, /--image-secret ghcr --secret provider-secret -- codex --dangerously-bypass-approvals-and-sandbox --profile research/);
-    assert.match(output, /exec -c 'service_tier="default"' -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
+    assert.match(output, /exec -c 'model_reasoning_effort="high"' --json --skip-git-repo-check -/);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -3067,11 +3056,11 @@ test("CLI --docker executes through docker and preserves stdin prompt", async ()
     assert.equal(capture.args[0], "run");
     assert.ok(capture.args.includes("ghcr.io/roberttlange/headless:latest"));
     assert.deepEqual(capture.args.slice(-8), [
+      "codex",
+      "--dangerously-bypass-approvals-and-sandbox",
       "exec",
       "--model",
       "gpt-5.5",
-      "-c",
-      'service_tier="default"',
       "--json",
       "--skip-git-repo-check",
       "-",
@@ -4589,7 +4578,7 @@ test("CLI --tmux launches an interactive tmux session and sends the prompt", asy
         sessionName,
         "-c",
         dir,
-        "codex --dangerously-bypass-approvals-and-sandbox --model gpt-next -c 'service_tier=\"default\"' 'hello world'",
+        "codex --dangerously-bypass-approvals-and-sandbox --model gpt-next 'hello world'",
       ],
     ]);
     assert.match(sessionName, /^headless-codex-\d+$/);
@@ -4901,6 +4890,207 @@ test("CLI --tmux --wait --delete kills the tmux session after final output", asy
     assert.equal(code, 0);
     assert.equal(stdout.join(""), "delete final\n");
     assert.deepEqual(calls.at(-1), ["kill-session", "-t", sessionName]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --wait --delete kills the tmux session after claim timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workDir, { recursive: true });
+    await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
+      await mkdir(binDir);
+      const tmux = join(binDir, "tmux");
+      await writeFile(
+        tmux,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const args = process.argv.slice(2);",
+          "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+          "if (args[0] === 'has-session') process.exit(0);",
+          "",
+        ].join("\n"),
+      );
+      await chmod(tmux, 0o755);
+    });
+
+    const code = await runCli(
+      ["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--delete", "--timeout", "1"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TMUX_CAPTURE: captureFile,
+          HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+    assert.equal(code, 2);
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const sessionName = calls[0][3];
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", sessionName]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --delete kills a partially launched session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(binDir);
+    mkdirSync(workDir);
+    const tmux = join(binDir, "tmux");
+    writeFileSync(
+      tmux,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'set-buffer') process.exit(7);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(tmux, 0o755);
+
+    const code = await runCli(["antigravity", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--delete"], {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HEADLESS_TMUX_ANTIGRAVITY_PASTE_DELAY_MS: "0",
+        HEADLESS_TMUX_ANTIGRAVITY_SUBMIT_DELAY_MS: "0",
+        HEADLESS_TMUX_ANTIGRAVITY_WAKE_DELAY_MS: "0",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+    });
+
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(code, 7);
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --delete bounds cleanup of a stuck tmux server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(binDir);
+    mkdirSync(workDir);
+    const tmux = join(binDir, "tmux");
+    writeFileSync(
+      tmux,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'kill-session') setTimeout(() => {}, 600_000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(tmux, 0o755);
+
+    const started = Date.now();
+    const code = await runCli(
+      ["codex", "--prompt", "hello", "--work-dir", workDir, "--tmux", "--wait", "--delete", "--timeout", "1"],
+      {
+      env: {
+        ...process.env,
+        HEADLESS_TMUX_CAPTURE: captureFile,
+        HEADLESS_TMUX_WAIT_FORCE_MARKER: "1",
+        HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      },
+    );
+
+    assert.equal(code, 2);
+    assert.ok(Date.now() - started < 10_000);
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  try {
+    const home = join(dir, "home");
+    const binDir = join(dir, "bin");
+    const workDir = join(dir, "work");
+    const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(home);
+    mkdirSync(binDir);
+    mkdirSync(workDir);
+    const tmux = join(binDir, "tmux");
+    writeFileSync(
+      tmux,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
+        "if (args[0] === 'has-session') process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(tmux, 0o755);
+
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(repoRoot, "src", "cli.ts"),
+        "codex",
+        "--prompt",
+        "hello",
+        "--work-dir",
+        workDir,
+        "--tmux",
+        "--wait",
+        "--delete",
+        "--timeout",
+        "30",
+      ],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_TMUX_CAPTURE: captureFile,
+          HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(captureFile) && readFileSync(captureFile, "utf8").includes("new-session"));
+    const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.on("close", (code, signal) => resolve({ code, signal }));
+    });
+    child.kill("SIGTERM");
+    const result = await completion;
+
+    assert.equal(result.signal, "SIGTERM");
+    const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -5592,7 +5782,6 @@ test(
             ...process.env,
             HEADLESS_OPENCODE_DB: dbPath,
             HEADLESS_TMUX_CAPTURE: captureFile,
-            HEADLESS_TMUX_WAIT_FORCE_MARKER: "1",
             HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
             OPENCODE_DATA_HOME: dataHome,
             PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -5755,8 +5944,6 @@ test("CLI --tmux preserves multiline prompt-file text through the tmux shell com
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-next",
-      "-c",
-      'service_tier="default"',
       "line one\nline two",
     ]);
   } finally {

@@ -163,6 +163,23 @@ test("cron add persists safe detached command options and rejects unsafe tmux/se
       "--usage",
     ]);
 
+    assert.equal(
+      await runCli(
+        [
+          "cron", "add", "codex", "--name", "standard", "--every", "30m",
+          "--prompt", "x", "--no-fast",
+        ],
+        { env, stdout: () => undefined, stderr: (text) => { stderr += text; } },
+      ),
+      0,
+    );
+    assert.deepEqual(readCronJob(env, "standard")?.command.args, [
+      "codex",
+      "--prompt",
+      "x",
+      "--no-fast",
+    ]);
+
     stderr = "";
     const badCode = await runCli(
       ["cron", "add", "codex", "--every", "1h", "--prompt", "x", "--tmux"],

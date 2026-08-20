@@ -94,7 +94,7 @@ export interface RunEvent {
 }
 
 export interface RunRecord {
-  version: 1;
+  version: 2;
   runId: string;
   createdAt: string;
   updatedAt: string;
@@ -182,16 +182,23 @@ export function readRun(env: Env, runId: string): RunRecord | undefined {
     return undefined;
   }
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<RunRecord>;
-    if (parsed.version !== 1 || parsed.runId !== runId || !parsed.nodes || !parsed.events) {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Omit<RunRecord, "version">> & { version?: number };
+    if ((parsed.version !== 1 && parsed.version !== 2) || parsed.runId !== runId || !parsed.nodes || !parsed.events) {
       return undefined;
     }
+    const nodes = parsed.version === 1
+      ? Object.fromEntries(Object.entries(parsed.nodes).map(([nodeId, node]) => {
+          const migrated = { ...node };
+          if (migrated.fast === false) delete migrated.fast;
+          return [nodeId, migrated];
+        }))
+      : parsed.nodes;
     return {
-      version: 1,
+      version: 2,
       runId,
       createdAt: parsed.createdAt ?? new Date().toISOString(),
       updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-      nodes: parsed.nodes,
+      nodes,
       events: parsed.events,
     };
   } catch {
@@ -235,7 +242,7 @@ export function registerNode(env: Env, input: RegisterNodeInput): RunNode {
       allow: input.allow ?? existing?.allow,
       model: input.model ?? existing?.model,
       profile: input.agent === existing?.agent ? (input.profile ?? existing.profile) : input.profile,
-      fast: input.fast ?? existing?.fast ?? false,
+      fast: input.agent === existing?.agent ? (input.fast ?? existing.fast) : input.fast,
       reasoningEffort: input.reasoningEffort ?? existing?.reasoningEffort,
       workDir: input.workDir ?? existing?.workDir,
       sessionAlias: input.sessionAlias ?? existing?.sessionAlias,
@@ -448,7 +455,7 @@ function requireNode(run: RunRecord, nodeId: string): RunNode {
 function emptyRun(runId: string): RunRecord {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     runId,
     createdAt: now,
     updatedAt: now,
