@@ -78,6 +78,7 @@ import {
   priceUsageSummary,
   type UsageContext,
 } from "./output.js";
+import { modelsDevCachePath } from "./models-dev.js";
 import {
   deriveNativeTranscriptActivity,
   indexNativeAssistantCompletion,
@@ -1144,21 +1145,22 @@ function usageContext(
   return { model: defaults.model };
 }
 
-async function buildUsageOutput(agent: AgentName, stdout: string, context: UsageContext): Promise<string> {
-  return `${JSON.stringify({ usage: await buildUsageReport(agent, stdout, context) })}\n`;
+async function buildUsageOutput(agent: AgentName, stdout: string, context: UsageContext, env: Env): Promise<string> {
+  return `${JSON.stringify({ usage: await buildUsageReport(agent, stdout, context, env) })}\n`;
 }
 
 async function buildUsageReport(
   agent: AgentName,
   stdout: string,
   context: UsageContext,
+  env: Env,
 ): Promise<ReturnType<typeof priceUsageSummary>> {
   const summary = extractUsageSummary(agent, stdout, context);
   if (summary.usageStatus === "missing" || summary.pricingStatus === "native") {
     return priceUsageSummary(summary, {});
   }
   try {
-    const pricing = await fetchModelsDevPricing();
+    const pricing = await fetchModelsDevPricing({ cachePath: modelsDevCachePath(env) });
     return priceUsageSummary(summary, pricing);
   } catch {
     return priceUsageSummary(summary, {});
@@ -4566,7 +4568,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             finalMessage,
             nativeSessionId: capturedNativeSessionId,
             ...(parsed.usage
-              ? { usage: await buildUsageReport(parsed.agent, usageTrace, context) }
+              ? { usage: await buildUsageReport(parsed.agent, usageTrace, context, env) }
               : {}),
           }, result.code),
         );
@@ -4584,6 +4586,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               parsed.agent,
               usageTrace,
               usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+              env,
             ),
           );
         }
@@ -4606,6 +4609,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               parsed.agent,
               usageTrace,
               usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
+              env,
             ),
           );
         }

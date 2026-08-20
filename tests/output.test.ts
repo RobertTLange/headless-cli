@@ -305,6 +305,26 @@ test("extracts Codex usage from turn completed trace and prices with models.dev 
   });
 });
 
+test("does not report non-finite list-price estimates", () => {
+  const trace = JSON.stringify({
+    type: "turn.completed",
+    usage: { input_tokens: Number.MAX_VALUE, output_tokens: 1 },
+  });
+  const summary = priceUsageSummary(
+    extractUsageSummary("codex", trace, { provider: "openai", model: "gpt-test" }),
+    {
+      openai: {
+        models: {
+          "gpt-test": { cost: { input: Number.MAX_VALUE, output: 1 } },
+        },
+      },
+    },
+  );
+
+  assert.equal(summary.cost, null);
+  assert.equal(summary.pricingStatus, "missing");
+});
+
 test("extracts Antigravity turn usage from the latest status payload and prices its API equivalent", () => {
   const trace = [
     JSON.stringify({

@@ -3669,7 +3669,9 @@ test("CLI Claude execution prefers OAuth over inherited Anthropic API key", asyn
 
 test("CLI --usage prints final message and normalized usage JSON", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const pricingCache = join(dir, ".headless", "cache", "models-dev-pricing.json");
   const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
   try {
     const binDir = join(dir, "bin");
     await import("node:fs/promises").then(async ({ chmod, mkdir, writeFile }) => {
@@ -3686,8 +3688,9 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
       );
       await chmod(binary, 0o755);
     });
-    globalThis.fetch = async () =>
-      new Response(
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return new Response(
         JSON.stringify({
           openai: {
             models: {
@@ -3702,14 +3705,27 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
           },
         }),
       );
+    };
 
     const stdout: string[] = [];
+    const env = {
+      ...process.env,
+      HEADLESS_MODELS_DEV_CACHE: undefined,
+      HOME: dir,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    };
     const code = await runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env,
       stdout: (text) => stdout.push(text),
+    });
+    const secondCode = await runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--usage"], {
+      env,
+      stdout: () => undefined,
     });
 
     assert.equal(code, 0);
+    assert.equal(secondCode, 0);
+    assert.equal(fetchCount, 1);
     const lines = stdout.join("").trim().split("\n");
     assert.equal(lines[0], "final answer");
     assert.deepEqual(JSON.parse(lines[1]), {
@@ -3736,6 +3752,7 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
         pricingStatus: "priced",
       },
     });
+    assert.equal(JSON.parse(readFileSync(pricingCache, "utf8")).version, 1);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { force: true, recursive: true });

@@ -1,7 +1,10 @@
 import type { AgentName } from "./types.js";
+import type { ModelsDevPricingData } from "./models-dev.js";
+
+export { fetchModelsDevPricing } from "./models-dev.js";
 
 type JsonRecord = Record<string, unknown>;
-type PricingData = Record<string, { models?: Record<string, PricingModel> }>;
+type PricingData = ModelsDevPricingData;
 
 interface PricingModel {
   id?: string;
@@ -576,7 +579,8 @@ function pricingModelCandidates(model: string): string[] {
 function priceTokens(tokens: number, rate: number | undefined): number | undefined {
   if (tokens === 0) return 0;
   if (rate === undefined) return undefined;
-  return (tokens * rate) / 1_000_000;
+  const price = (tokens * rate) / 1_000_000;
+  return Number.isFinite(price) ? price : undefined;
 }
 
 function roundCost(value: number): number {
@@ -650,12 +654,4 @@ export function priceUsageSummary(summary: UsageSummary, pricingData: PricingDat
     pricingSource: "models.dev",
     pricingStatus: "priced",
   };
-}
-
-export async function fetchModelsDevPricing(): Promise<PricingData> {
-  const response = await fetch("https://models.dev/api.json");
-  if (!response.ok) {
-    throw new Error(`models.dev pricing request failed: ${response.status}`);
-  }
-  return (await response.json()) as PricingData;
 }

@@ -96,6 +96,8 @@ headless codex --prompt "Fix the failing tests" --debug
 
 Usage reports input, cache read, cache write, output, reasoning output, total tokens, provider/model metadata, pricing status, and cost when available. `usageStatus` is `reported` only when Headless recognizes a native usage record; otherwise it is `missing`, with cost left null. `costBasis` distinguishes `native-reported` values from `api-list-price-estimate` values calculated from token counts and `https://models.dev/api.json`. The latter is an API-equivalent list-price estimate, not actual subscription spend. If usage or model pricing is unavailable, available token counts are still returned with `cost: null` and `costBasis: null`.
 
+Headless limits the models.dev lookup to five seconds and an 8 MiB response. It caches pricing for 24 hours under `$XDG_CACHE_HOME/headless` or `~/.headless/cache`, then falls back to stale pricing during a temporary outage. Set `HEADLESS_MODELS_DEV_CACHE` to override the cache file, or to an empty value to disable caching.
+
 ```bash
 headless codex --prompt "Summarize this repo" --model gpt-5 --usage
 headless codex --prompt "Summarize this repo" --model gpt-5 --json --usage
