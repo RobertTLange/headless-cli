@@ -542,7 +542,7 @@ test("classifies malformed usage-shaped records as missing", () => {
     ["cursor", { type: "result", usage: { unexpected: true } }],
     ["gemini", { type: "result", stats: { unexpected: true } }],
     ["opencode", { type: "step_finish", part: { tokens: { unexpected: true } } }],
-    ["pi", { type: "message_end", message: { usage: { unexpected: true } } }],
+    ["pi", { type: "message_end", message: { role: "assistant", usage: { unexpected: true } } }],
   ];
 
   for (const [agent, record] of cases) {
@@ -556,7 +556,16 @@ test("preserves valid native zero-cost reports", () => {
   const cases: Array<[AgentName, unknown]> = [
     ["claude", { type: "result", total_cost_usd: 0, usage: { input_tokens: 0 } }],
     ["opencode", { type: "step_finish", part: { cost: 0, tokens: { input: 0 } } }],
-    ["pi", { type: "message_end", message: { usage: { input: 0, cost: { total: 0 } } } }],
+    [
+      "pi",
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+        },
+      },
+    ],
   ];
 
   for (const [agent, record] of cases) {
@@ -722,6 +731,142 @@ test("extracts Pi usage and native cost", () => {
     pricingSource: "native",
     pricingStatus: "native",
   });
+});
+
+test("aggregates Pi usage and native cost across assistant turns", () => {
+  const trace = [
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.5",
+        usage: {
+          input: 100,
+          output: 10,
+          cacheRead: 20,
+          cacheWrite: 5,
+          cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
+        },
+      },
+    },
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.5",
+        usage: {
+          input: 200,
+          output: 20,
+          cacheRead: 40,
+          cacheWrite: 10,
+          cost: { input: 0.2, output: 0.4, cacheRead: 0.02, cacheWrite: 0.04, total: 0.66 },
+        },
+      },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+
+  const summary = extractUsageSummary("pi", trace);
+
+  assert.equal(summary.inputTokens, 300);
+  assert.equal(summary.cacheReadTokens, 60);
+  assert.equal(summary.cacheWriteTokens, 15);
+  assert.equal(summary.outputTokens, 30);
+  assert.equal(summary.totalTokens, 405);
+  assert.deepEqual(summary.cost, {
+    input: 0.3,
+    output: 0.6,
+    cacheRead: 0.03,
+    cacheWrite: 0.06,
+    total: 0.99,
+  });
+  assert.equal(summary.costBasis, "native-reported");
+  assert.equal(summary.pricingStatus, "native");
+});
+
+test("does not report partial Pi cost when one assistant turn lacks cost", () => {
+  const trace = [
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.3 } },
+      },
+    },
+    {
+      type: "message_end",
+      message: { role: "assistant", usage: { input: 200, output: 20, cacheRead: 0, cacheWrite: 0 } },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+
+  const summary = extractUsageSummary("pi", trace, { provider: "openai", model: "gpt-5.5" });
+
+  assert.equal(summary.inputTokens, 300);
+  assert.equal(summary.outputTokens, 30);
+  assert.equal(summary.cost, null);
+  assert.equal(summary.costBasis, null);
+  assert.equal(summary.pricingStatus, "missing");
+});
+
+test("counts only canonical Pi assistant message-end usage", () => {
+  const assistant = {
+    role: "assistant",
+    provider: "openai",
+    model: "gpt-5.5",
+    usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.3 } },
+  };
+  const trace = [
+    { type: "message_start", message: assistant },
+    { type: "message_end", message: assistant },
+    { type: "turn_end", message: assistant },
+    {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        usage: { input: 900, output: 90, cacheRead: 0, cacheWrite: 0, cost: { total: 9 } },
+      },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+
+  const summary = extractUsageSummary("pi", trace);
+
+  assert.equal(summary.inputTokens, 100);
+  assert.equal(summary.outputTokens, 10);
+  assert.equal(summary.cost?.total, 0.3);
+});
+
+test("marks Pi usage missing when any assistant turn is malformed", () => {
+  const trace = [
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.3 } },
+      },
+    },
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: { input: 200, output: "invalid", cacheRead: 0, cacheWrite: 0, cost: { total: 0.6 } },
+      },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+
+  const summary = extractUsageSummary("pi", trace);
+
+  assert.equal(summary.usageStatus, "missing");
+  assert.equal(summary.cost, null);
+  assert.equal(summary.costBasis, null);
 });
 
 function pricingFixture() {

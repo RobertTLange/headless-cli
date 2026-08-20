@@ -1842,7 +1842,7 @@ test("CLI --json --usage preserves terminal usage from oversized JSON rows", asy
           message: {
             model: "gpt-test",
             provider: "openai",
-            usage: { input: 10, cacheRead: 3, output: 2, cost: { total: 0.15 } },
+            usage: { input: 10, cacheRead: 3, cacheWrite: 0, output: 2, cost: { total: 0.15 } },
           },
         },
         expectedTotalTokens: 15,

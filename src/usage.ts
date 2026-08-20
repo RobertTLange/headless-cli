@@ -442,35 +442,59 @@ function extractOpencodeUsage(records: JsonRecord[], context: UsageContext): Usa
   });
 }
 
-function extractPiUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
-  const record = latestRecordWith(records, (item) =>
-    hasNumericField(asRecord(asRecord(item.message).usage), ["input", "cacheRead", "cacheWrite", "output"]),
+function aggregatePiCost(usages: JsonRecord[]): UsageCostBreakdown | null {
+  const costs = usages.map((usage) => {
+    const rawCost = asRecord(usage.cost);
+    const total = asOptionalNumber(rawCost.total);
+    return total === undefined
+      ? null
+      : nativeCost(total, {
+          input: asOptionalNumber(rawCost.input),
+          cacheRead: asOptionalNumber(rawCost.cacheRead),
+          cacheWrite: asOptionalNumber(rawCost.cacheWrite),
+          output: asOptionalNumber(rawCost.output),
+        });
+  });
+  if (costs.some((cost) => cost === null)) return null;
+  return (costs as UsageCostBreakdown[]).reduce(
+    (sum, cost) => addCost(sum, cost),
+    { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 },
   );
-  if (!record) return undefined;
-  const message = asRecord(record.message);
-  const usage = asRecord(message.usage);
-  const cost = asRecord(usage.cost);
-  const totalCost = asOptionalNumber(cost.total);
+}
+
+function sumPiUsage(usages: JsonRecord[], field: string): number {
+  return usages.reduce((sum, usage) => sum + asNumber(usage[field]), 0);
+}
+
+const piUsageFields = ["input", "cacheRead", "cacheWrite", "output"] as const;
+
+function hasCompletePiUsage(usage: JsonRecord): boolean {
+  return piUsageFields.every((field) => isNonNegativeFiniteNumber(usage[field]));
+}
+
+function extractPiUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
+  const messages = records
+    .filter((record) => asString(record.type) === "message_end")
+    .map((record) => asRecord(record.message))
+    .filter((message) => asString(message.role) === "assistant");
+  const message = messages.at(-1);
+  if (!message) return undefined;
+  const usages = messages.map((item) => asRecord(item.usage));
+  const usageComplete = usages.every(hasCompletePiUsage);
+  const cost = usageComplete ? aggregatePiCost(usages) : null;
   return summarizeUsage({
     agent: "pi",
     provider: asString(message.provider).trim() || extractProvider(records, context, "pi"),
     model: asString(message.model).trim() || extractModel(records, context),
-    inputTokens: asNumber(usage.input),
-    cacheReadTokens: asNumber(usage.cacheRead),
-    cacheWriteTokens: asNumber(usage.cacheWrite),
-    outputTokens: asNumber(usage.output),
-    cost:
-      totalCost === undefined
-        ? null
-        : nativeCost(totalCost, {
-            input: asOptionalNumber(cost.input),
-            cacheRead: asOptionalNumber(cost.cacheRead),
-            cacheWrite: asOptionalNumber(cost.cacheWrite),
-            output: asOptionalNumber(cost.output),
-          }),
-    costBasis: totalCost === undefined ? null : "native-reported",
-    pricingSource: totalCost === undefined ? null : "native",
-    pricingStatus: totalCost === undefined ? "missing" : "native",
+    inputTokens: sumPiUsage(usages, "input"),
+    cacheReadTokens: sumPiUsage(usages, "cacheRead"),
+    cacheWriteTokens: sumPiUsage(usages, "cacheWrite"),
+    outputTokens: sumPiUsage(usages, "output"),
+    usageStatus: usageComplete ? "reported" : "missing",
+    cost,
+    costBasis: cost ? "native-reported" : null,
+    pricingSource: cost ? "native" : null,
+    pricingStatus: cost ? "native" : "missing",
   });
 }
 
