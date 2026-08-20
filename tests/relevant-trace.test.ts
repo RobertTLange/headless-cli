@@ -17,3 +17,21 @@ test("oversized trace compaction preserves only valid top-level usage", () => {
 
   assert.deepEqual(JSON.parse(compacted), { type: "tool" });
 });
+
+test("oversized Pi trace compaction preserves assistant usage identity", () => {
+  const compacted = compactOversizedTraceLine(
+    "pi",
+    JSON.stringify({
+      type: "message_end",
+      result: "x".repeat(300_000),
+      message: {
+        role: "assistant",
+        model: "gpt-test",
+        provider: "openai",
+        usage: { input: 10, cacheRead: 3, cacheWrite: 0, output: 2 },
+      },
+    }),
+  );
+
+  assert.equal(JSON.parse(compacted).message.role, "assistant");
+});

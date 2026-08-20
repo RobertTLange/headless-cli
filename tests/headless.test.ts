@@ -1372,7 +1372,11 @@ test("CLI waits for timed-out child stdout to drain before appending usage", asy
 
     const stdout: string[] = [];
     const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage", "--timeout", "3"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        HEADLESS_MODELS_DEV_CACHE: "",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
       stdout: (text) => stdout.push(text),
     });
 
@@ -1767,7 +1771,11 @@ test("CLI --json --usage keeps usage accounting bounded around a large native tr
 
     const stdout: string[] = [];
     const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        HEADLESS_MODELS_DEV_CACHE: "",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
       stdout: (text) => stdout.push(text),
     });
 
@@ -1829,6 +1837,7 @@ test("CLI --json --usage preserves terminal usage from oversized JSON rows", asy
         row: {
           type: "message_end",
           message: {
+            role: "assistant",
             model: "gpt-test",
             provider: "openai",
             usage: { input: 10, cacheRead: 3, cacheWrite: 0, output: 2, cost: { total: 0.15 } },
@@ -1861,7 +1870,11 @@ test("CLI --json --usage preserves terminal usage from oversized JSON rows", asy
 
         const stdout: string[] = [];
         const code = await runCli([testCase.agent, "--prompt", "hello", "--json", "--usage"], {
-          env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+          env: {
+            ...process.env,
+            HEADLESS_MODELS_DEV_CACHE: "",
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          },
           stdout: (text) => stdout.push(text),
         });
 
@@ -3776,7 +3789,11 @@ test("CLI --usage does not attribute or price a Codex profile as OpenAI", async 
     const code = await runCli(
       ["codex", "--profile", "fugu", "--model", "gpt-5", "--prompt", "hello", "--usage"],
       {
-        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        env: {
+          ...process.env,
+          HEADLESS_MODELS_DEV_CACHE: "",
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
         stdout: (text) => stdout.push(text),
       },
     );
@@ -3830,7 +3847,11 @@ test("CLI --json --usage streams raw trace and appends usage without requiring a
     const stdout: string[] = [];
     let completed = false;
     const result = runCli(["codex", "--model", "gpt-5", "--prompt", "hello", "--json", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        HEADLESS_MODELS_DEV_CACHE: "",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
       stdout: (text) => stdout.push(text),
     }).finally(() => {
       completed = true;
@@ -3879,7 +3900,11 @@ test("CLI --json --usage appends partial usage and preserves a nonzero agent sta
 
     const stdout: string[] = [];
     const code = await runCli(["codex", "--prompt", "hello", "--json", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        HEADLESS_MODELS_DEV_CACHE: "",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
       stdout: (text) => stdout.push(text),
     });
 
@@ -4324,7 +4349,12 @@ test("CLI --usage prices Codex hard default model", async () => {
 
     const stdout: string[] = [];
     const code = await runCli(["codex", "--prompt", "hello", "--usage"], {
-      env: { ...process.env, CODEX_HOME: codexHome, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        HEADLESS_MODELS_DEV_CACHE: "",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
       stdout: (text) => stdout.push(text),
     });
 
@@ -4385,7 +4415,11 @@ test("CLI --usage reports Cursor reasoning model variant", async () => {
     const code = await runCli(
       ["cursor", "--prompt", "hello", "--model", "gpt-5.5", "--reasoning-effort", "xhigh", "--usage"],
       {
-        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+        env: {
+          ...process.env,
+          HEADLESS_MODELS_DEV_CACHE: "",
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
         stdout: (text) => stdout.push(text),
       },
     );
@@ -4431,7 +4465,11 @@ test("CLI --usage splits Pi provider/model specs", async () => {
 
     const stdout: string[] = [];
     const code = await runCli(["pi", "--model", "openai-codex/gpt-5.4", "--prompt", "hello", "--usage"], {
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        HEADLESS_MODELS_DEV_CACHE: "",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
       stdout: (text) => stdout.push(text),
     });
 
@@ -5782,6 +5820,7 @@ test(
             ...process.env,
             HEADLESS_OPENCODE_DB: dbPath,
             HEADLESS_TMUX_CAPTURE: captureFile,
+            HEADLESS_TMUX_WAIT_FORCE_MARKER: "1",
             HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
             OPENCODE_DATA_HOME: dataHome,
             PATH: `${binDir}:${process.env.PATH ?? ""}`,

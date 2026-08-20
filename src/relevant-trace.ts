@@ -76,7 +76,7 @@ function opencodePartProjection(record: JsonRecord): JsonRecord {
 
 function piMessageProjection(record: JsonRecord): JsonRecord {
   const projection: JsonRecord = {};
-  for (const field of ["model", "provider"]) {
+  for (const field of ["role", "model", "provider"]) {
     const value = copyString(record, field);
     if (value !== undefined) projection[field] = value;
   }

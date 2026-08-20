@@ -189,7 +189,6 @@ async function requestModelsDevPricing(
     () => controller.abort(new Error("models.dev pricing request timed out")),
     timeoutMs,
   );
-  timeout.unref();
   try {
     const response = await fetchImpl(modelsDevPricingUrl, { signal: controller.signal });
     if (!response.ok) {
