@@ -292,6 +292,30 @@ test("builds reasoning effort flags for supported agents", () => {
     "-",
   ]);
 
+  assert.deepEqual(buildAgentCommand("codex", { prompt: "hello", reasoningEffort: "max" }, {}).args, [
+    "--dangerously-bypass-approvals-and-sandbox",
+    "exec",
+    "--model",
+    "gpt-5.5",
+    "-c",
+    'model_reasoning_effort="max"',
+    "--json",
+    "--skip-git-repo-check",
+    "-",
+  ]);
+
+  const nativeMaxEffortFlags: Array<[AgentName, string]> = [
+    ["claude", "--effort"],
+    ["opencode", "--variant"],
+    ["pi", "--thinking"],
+  ];
+  for (const [agent, flag] of nativeMaxEffortFlags) {
+    const args = buildAgentCommand(agent, { prompt: "hello", reasoningEffort: "max" }, {}).args;
+    const flagIndex = args.indexOf(flag);
+    assert.notEqual(flagIndex, -1, `${agent} should receive ${flag}`);
+    assert.equal(args[flagIndex + 1], "max", `${agent} should receive max effort`);
+  }
+
   assert.deepEqual(buildAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}).args, [
     "--model",
     "claude-opus-4-6",
@@ -348,6 +372,49 @@ test("maps Cursor reasoning effort to model variants and leaves Gemini unchanged
     command: "agent",
     args: ["-p", "--trust", "--force", "--output-format", "stream-json", "--model", "gpt-5.5-extra-high", "hello"],
   });
+
+  assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.6", reasoningEffort: "max" }, {}), {
+    command: "agent",
+    args: ["-p", "--trust", "--force", "--output-format", "stream-json", "--model", "gpt-5.6[effort=max]", "hello"],
+  });
+
+  assert.deepEqual(
+    buildAgentCommand("cursor", { prompt: "hello", model: "claude-opus-4-6", reasoningEffort: "max" }, {}),
+    {
+      command: "agent",
+      args: [
+        "-p",
+        "--trust",
+        "--force",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "claude-opus-4-6[effort=max]",
+        "hello",
+      ],
+    },
+  );
+
+  assert.deepEqual(
+    buildAgentCommand(
+      "cursor",
+      { prompt: "hello", model: "gpt-5.6[context=1m,effort=high]", reasoningEffort: "max" },
+      {},
+    ),
+    {
+      command: "agent",
+      args: [
+        "-p",
+        "--trust",
+        "--force",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "gpt-5.6[context=1m,effort=max]",
+        "hello",
+      ],
+    },
+  );
 
   assert.deepEqual(buildAgentCommand("cursor", { prompt: "hello", model: "gpt-5.5", reasoningEffort: "xhigh" }, {}), {
     command: "agent",
@@ -888,6 +955,15 @@ test("builds reasoning effort flags for supported interactive commands", () => {
     ],
   });
 
+  assert.deepEqual(buildInteractiveAgentCommand("codex", { prompt: "hello", reasoningEffort: "max" }, {}).args, [
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--model",
+    "gpt-5.5",
+    "-c",
+    'model_reasoning_effort="max"',
+    "hello",
+  ]);
+
   assert.deepEqual(buildInteractiveAgentCommand("claude", { prompt: "hello", reasoningEffort: "xhigh" }, {}), {
     command: "claude",
     args: ["--model", "claude-opus-4-6", "--effort", "xhigh", "--dangerously-skip-permissions", "hello"],
@@ -1219,8 +1295,12 @@ test("config parser accepts role sections and validates role fields", () => {
   assert.throws(() => parseHeadlessConfig("[roles.scout]\nallow = \"read-only\"\n"), /unsupported headless config role/);
   assert.throws(() => parseHeadlessConfig("[roles.explorer]\nunknown = \"value\"\n"), /unsupported headless role config key/);
   assert.throws(() => parseHeadlessConfig("[roles.explorer]\nallow = \"maybe\"\n"), /unsupported headless config allow/);
+  assert.equal(
+    parseHeadlessConfig("[roles.explorer]\nreasoning_effort = \"max\"\n").roles.explorer?.reasoningEffort,
+    "max",
+  );
   assert.throws(
-    () => parseHeadlessConfig("[roles.explorer]\nreasoning_effort = \"max\"\n"),
+    () => parseHeadlessConfig("[roles.explorer]\nreasoning_effort = \"unsupported\"\n"),
     /unsupported headless config reasoning_effort/,
   );
 });

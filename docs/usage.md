@@ -59,7 +59,9 @@ Environment equivalents are also supported: `HEADLESS_ACP_AGENT`, `HEADLESS_ACP_
 
 By default, Headless uses each agent's native auto-approve/bypass mode. Pass `--allow read-only` to use each agent's read-only or planning mode where available. Pass `--allow yolo` to request full tool access explicitly.
 
-Pass `--reasoning-effort low|medium|high|xhigh` or `--effort low|medium|high|xhigh` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines the model family and effort into Cursor's model variant string, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Antigravity, Gemini, and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
+Pass `--reasoning-effort low|medium|high|xhigh|max` or `--effort low|medium|high|xhigh|max` to request a normalized reasoning effort for agents with native support. Claude receives `--effort`, Codex receives `model_reasoning_effort`, Cursor combines legacy model families and effort into Cursor model variants and uses its parameterized `[effort=max]` override for `max`, OpenCode receives `--variant` in one-shot mode, and Pi receives `--thinking`. Docker and Modal inherit the same one-shot command. In tmux mode, Claude, Codex, Cursor, and Pi receive their interactive effort flags. Antigravity, Gemini, and OpenCode tmux currently accept the option, leave the command unchanged, and print a warning.
+
+Effort availability remains model- and backend-specific. Headless forwards the selected value and does not silently downgrade it when the native backend rejects an unsupported effort.
 
 Fast mode is off by default and is controlled per invocation, not through `~/.headless/config.toml`. Pass `--fast` to opt into the provider's native Fast mode for Codex or Claude; other agents reject the flag. Headless explicitly sends Codex `service_tier="default"` or `service_tier="fast"`, and Claude `fastMode: false` or `true`, so an inherited provider config cannot silently enable Fast mode. The same option works for Docker, Modal, tmux, and `cron add` runs.
 
@@ -291,7 +293,7 @@ Options:
 - `--model`, `--agent-model`: model override passed to the agent CLI.
 - `--profile`: Codex configuration profile for this invocation; persisted by named sessions and coordinated run nodes.
 - `--fast`: opt into Fast mode for Codex or Claude; off by default and not config-driven.
-- `--reasoning-effort`, `--effort`: normalized reasoning effort, one of `low`, `medium`, `high`, or `xhigh`.
+- `--reasoning-effort`, `--effort`: normalized reasoning effort, one of `low`, `medium`, `high`, `xhigh`, or `max`.
 - `--allow`: permission mode, either `read-only` or `yolo`.
 - `--acp-agent`: with `acp`, resolve an ACP server from the registry by id or name.
 - `--acp-command`: with `acp`, run a custom ACP server command such as `atlas alta agent run`.

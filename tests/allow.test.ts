@@ -240,12 +240,12 @@ test("CLI rejects invalid allow mode", async () => {
 
 test("CLI rejects invalid reasoning effort", async () => {
   const stderr: string[] = [];
-  const code = await runCli(["codex", "--reasoning-effort", "max", "--prompt", "hello"], {
+  const code = await runCli(["codex", "--reasoning-effort", "unsupported", "--prompt", "hello"], {
     stderr: (text) => stderr.push(text),
   });
 
   assert.equal(code, 2);
-  assert.match(stderr.join(""), /unsupported reasoning effort: max/);
+  assert.match(stderr.join(""), /unsupported reasoning effort: unsupported/);
 });
 
 test("preserves ambient fast settings unless a mode is explicit", () => {
@@ -366,6 +366,17 @@ test("CLI print-command includes reasoning effort flags", async () => {
   assert.match(stdout.join(""), /-c 'model_reasoning_effort="high"'/);
 });
 
+test("CLI accepts max reasoning effort", async () => {
+  const stdout: string[] = [];
+  const code = await runCli(
+    ["codex", "--model", "gpt-5.6", "--reasoning-effort", "max", "--prompt", "hello", "--print-command"],
+    { stdout: (text) => stdout.push(text) },
+  );
+
+  assert.equal(code, 0);
+  assert.match(stdout.join(""), /--model gpt-5\.6 .*model_reasoning_effort="max"/);
+});
+
 test("CLI accepts --effort as an alias for --reasoning-effort", async () => {
   const stdout: string[] = [];
   const code = await runCli(["codex", "--effort", "high", "--prompt", "hello", "--print-command"], {
@@ -386,6 +397,25 @@ test("CLI maps Cursor reasoning effort to model variants", async () => {
 
   assert.equal(code, 0);
   assert.equal(stdout.join(""), "agent -p --trust --force --output-format stream-json --model gpt-5.5-high hello\n");
+  assert.equal(stderr.join(""), "");
+});
+
+test("CLI maps Cursor max reasoning effort to a parameterized model", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runCli(
+    ["cursor", "--model", "gpt-5.6", "--reasoning-effort", "max", "--prompt", "hello", "--print-command"],
+    {
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    },
+  );
+
+  assert.equal(code, 0);
+  assert.equal(
+    stdout.join(""),
+    "agent -p --trust --force --output-format stream-json --model 'gpt-5.6[effort=max]' hello\n",
+  );
   assert.equal(stderr.join(""), "");
 });
 
