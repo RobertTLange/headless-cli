@@ -338,6 +338,17 @@ async function startAsyncRunMessage(
     await sendWorkerRequest(worker, { type: "start" });
   } catch (error) {
     cancelAsyncWorker(worker);
+    try {
+      updateNodeStatus(
+        handlers.env,
+        runId,
+        nodeId,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    } catch {
+      // Preserve the startup error when rollback storage also fails.
+    }
     throw error;
   }
   if (worker.connected) worker.disconnect();

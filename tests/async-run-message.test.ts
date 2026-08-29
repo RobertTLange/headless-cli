@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
-import { acquireNodeLock, nodeLockPath, readRun, registerNode } from "../src/runs.ts";
+import { acquireNodeLock, nodeLockPath, readRun, registerNode, runDirectory } from "../src/runs.ts";
 import type { Env } from "../src/types.ts";
 
 interface AsyncMessageFixture {
@@ -164,6 +164,62 @@ test("async run message handles a missing agent without leaking its lock", async
     const stderr = readFileSync(node?.logs?.stderr ?? "", "utf8");
     assert.match(stderr, /spawn codex ENOENT/);
     assert.doesNotMatch(stderr, /Unhandled 'error' event|Emitted 'error' event/);
+    const lockPath = nodeLockPath(env, "auth", "worker-1");
+    await waitFor(() => !existsSync(lockPath) && !existsSync(`${lockPath}.owner`));
+    acquireNodeLock(env, "auth", "worker-1")();
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("async run message rolls back busy status when startup logging fails", async () => {
+  const { directory, env } = await createFixture();
+  try {
+    const stdoutLog = readRun(env, "auth")?.nodes["worker-1"].logs?.stdout;
+    assert.ok(stdoutLog);
+    await mkdir(stdoutLog, { recursive: true });
+    const stderr: string[] = [];
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--async"], {
+        env,
+        stderr: (text) => stderr.push(text),
+        stdout: () => undefined,
+      }),
+      2,
+    );
+    const node = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(node?.status, "failed");
+    assert.match(node?.lastMessage ?? "", /EISDIR/);
+    assert.match(stderr.join(""), /EISDIR/);
+    const lockPath = nodeLockPath(env, "auth", "worker-1");
+    await waitFor(() => !existsSync(lockPath) && !existsSync(`${lockPath}.owner`));
+    acquireNodeLock(env, "auth", "worker-1")();
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("async run message preserves failed status after a partial state write", async () => {
+  const { directory, env } = await createFixture();
+  try {
+    const eventsPath = join(runDirectory(env, "auth"), "events.jsonl");
+    rmSync(eventsPath, { force: true });
+    await mkdir(eventsPath);
+    const stderr: string[] = [];
+
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--async"], {
+        env,
+        stderr: (text) => stderr.push(text),
+        stdout: () => undefined,
+      }),
+      2,
+    );
+    const node = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(node?.status, "failed");
+    assert.match(node?.lastMessage ?? "", /EISDIR/);
+    assert.match(stderr.join(""), /EISDIR/);
     const lockPath = nodeLockPath(env, "auth", "worker-1");
     await waitFor(() => !existsSync(lockPath) && !existsSync(`${lockPath}.owner`));
     acquireNodeLock(env, "auth", "worker-1")();
