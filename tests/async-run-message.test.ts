@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { fork } from "node:child_process";
+import { once } from "node:events";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +8,15 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
-import { acquireNodeLock, nodeLockPath, readRun, registerNode, runDirectory } from "../src/runs.ts";
+import {
+  acquireNodeLock,
+  nodeLockPath,
+  readRun,
+  registerNode,
+  runDirectory,
+  updateNodeStatus,
+} from "../src/runs.ts";
+import type { AsyncRunMessageResponse, AsyncRunMessageTask } from "../src/async-run-message.ts";
 import type { Env } from "../src/types.ts";
 
 interface AsyncMessageFixture {
@@ -172,6 +182,29 @@ test("async run message handles a missing agent without leaking its lock", async
   }
 });
 
+test("async run message rolls back when its worker cannot spawn the CLI", async () => {
+  const { directory, env } = await createFixture();
+  env.HEADLESS_CLI_BIN = join(directory, "missing-headless");
+  try {
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "continue", "--async"], {
+        env,
+        stderr: () => undefined,
+        stdout: () => undefined,
+      }),
+      2,
+    );
+    const node = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(node?.status, "failed");
+    assert.match(node?.lastMessage ?? "", /exited before agent startup/);
+    const lockPath = nodeLockPath(env, "auth", "worker-1");
+    await waitFor(() => !existsSync(lockPath) && !existsSync(`${lockPath}.owner`));
+    acquireNodeLock(env, "auth", "worker-1")();
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
 test("async run message rolls back busy status when startup logging fails", async () => {
   const { directory, env } = await createFixture();
   try {
@@ -224,6 +257,86 @@ test("async run message preserves failed status after a partial state write", as
     await waitFor(() => !existsSync(lockPath) && !existsSync(`${lockPath}.owner`));
     acquireNodeLock(env, "auth", "worker-1")();
   } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("prepared async worker repairs busy status when its parent disconnects", async () => {
+  const { directory, env } = await createFixture();
+  const worker = fork(join(process.cwd(), "src", "async-run-message.ts"), [], {
+    env: env as NodeJS.ProcessEnv,
+    execArgv: ["--import", "tsx"],
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  try {
+    const task: AsyncRunMessageTask = {
+      command: { command: process.execPath, args: ["--eval", "process.exit(0)"] },
+      runId: "auth",
+      nodeId: "worker-1",
+    };
+    const ready = new Promise<void>((resolve, reject) => {
+      worker.once("error", reject);
+      worker.on("message", (message: AsyncRunMessageResponse) => {
+        if (message.type === "error") reject(new Error(message.message));
+        else if (message.type === "ready") resolve();
+      });
+    });
+    worker.send({ type: "task", task });
+    await ready;
+    updateNodeStatus(env, "auth", "worker-1", "busy");
+
+    worker.disconnect();
+    await once(worker, "exit");
+
+    const node = readRun(env, "auth")?.nodes["worker-1"];
+    assert.equal(node?.status, "failed");
+    assert.match(node?.lastMessage ?? "", /disconnected before agent startup/);
+    const lockPath = nodeLockPath(env, "auth", "worker-1");
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(existsSync(`${lockPath}.owner`), false);
+  } finally {
+    if (worker.connected) worker.disconnect();
+    if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("prepared async worker leaves cancellation status repair to its parent", async () => {
+  const { directory, env } = await createFixture();
+  const worker = fork(join(process.cwd(), "src", "async-run-message.ts"), [], {
+    env: env as NodeJS.ProcessEnv,
+    execArgv: ["--import", "tsx"],
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  try {
+    const task: AsyncRunMessageTask = {
+      command: { command: process.execPath, args: ["--eval", "process.exit(0)"] },
+      runId: "auth",
+      nodeId: "worker-1",
+    };
+    const ready = new Promise<void>((resolve, reject) => {
+      worker.once("error", reject);
+      worker.on("message", (message: AsyncRunMessageResponse) => {
+        if (message.type === "error") reject(new Error(message.message));
+        else if (message.type === "ready") resolve();
+      });
+    });
+    worker.send({ type: "task", task });
+    await ready;
+    updateNodeStatus(env, "auth", "worker-1", "busy");
+
+    worker.send({ type: "cancel" });
+    await once(worker, "exit");
+
+    const run = readRun(env, "auth");
+    assert.equal(run?.nodes["worker-1"].status, "busy");
+    assert.equal(run?.events.filter((event) => event.type === "node_failed").length, 0);
+    const lockPath = nodeLockPath(env, "auth", "worker-1");
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(existsSync(`${lockPath}.owner`), false);
+  } finally {
+    if (worker.connected) worker.disconnect();
+    if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
     rmSync(directory, { force: true, recursive: true });
   }
 });

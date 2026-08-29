@@ -28,6 +28,7 @@ export type AsyncRunMessageRequest =
 
 export type AsyncRunMessageResponse =
   | { type: "ready" }
+  | { type: "started" }
   | { type: "error"; message: string };
 
 let task: AsyncRunMessageTask | undefined;
@@ -41,7 +42,7 @@ if (process.send) {
     void handleRequest(message);
   });
   process.once("disconnect", () => {
-    if (!started) finish();
+    if (!started && !finished) failBeforeStart("async message parent disconnected before agent startup");
   });
   for (const signal of forwardedSignals()) {
     process.on(signal, () => terminateActiveChild(signal));
@@ -57,7 +58,7 @@ async function handleRequest(request: AsyncRunMessageRequest): Promise<void> {
     if (started) {
       terminateActiveChild("SIGTERM");
     } else {
-      finish();
+      finish(1);
     }
     return;
   }
@@ -82,6 +83,18 @@ function terminateActiveChild(signal: NodeJS.Signals): void {
     }
   }
   activeChild.kill(signal);
+}
+
+function failBeforeStart(message: string): void {
+  if (finished) return;
+  if (task) {
+    try {
+      updateNodeStatus(process.env as Env, task.runId, task.nodeId, "failed", message);
+    } catch {
+      // Lock cleanup must still run when status persistence fails.
+    }
+  }
+  finish(1);
 }
 
 async function prepare(nextTask: AsyncRunMessageTask): Promise<void> {
@@ -149,6 +162,7 @@ function runChild(currentTask: AsyncRunMessageTask): Promise<number> {
           process.pid,
           { processTreeRootPid: child.pid },
         );
+        send({ type: "started" });
       } catch (error) {
         terminateActiveChild("SIGKILL");
         reject(error);

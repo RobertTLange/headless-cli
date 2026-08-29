@@ -335,9 +335,8 @@ async function startAsyncRunMessage(
     const timestamp = new Date().toISOString();
     appendNodeLog(handlers.env, runId, nodeId, "stdout", `\n===== async message ${timestamp} =====\n`);
     appendNodeLog(handlers.env, runId, nodeId, "stderr", `\n===== async message ${timestamp} =====\n`);
-    await sendWorkerRequest(worker, { type: "start" });
+    await startPreparedAsyncWorker(worker);
   } catch (error) {
-    cancelAsyncWorker(worker);
     try {
       updateNodeStatus(
         handlers.env,
@@ -349,6 +348,7 @@ async function startAsyncRunMessage(
     } catch {
       // Preserve the startup error when rollback storage also fails.
     }
+    cancelAsyncWorker(worker);
     throw error;
   }
   if (worker.connected) worker.disconnect();
@@ -393,6 +393,38 @@ function prepareAsyncWorker(worker: ChildProcess, task: AsyncRunMessageTask): Pr
 function sendWorkerRequest(worker: ChildProcess, request: AsyncRunMessageRequest): Promise<void> {
   return new Promise((resolve, reject) => {
     worker.send(request, (error) => error ? reject(error) : resolve());
+  });
+}
+
+function startPreparedAsyncWorker(worker: ChildProcess): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => fail(new Error("async message worker did not start its agent")), 5_000);
+    timeout.unref();
+    const cleanup = () => {
+      clearTimeout(timeout);
+      worker.off("message", onMessage);
+      worker.off("error", fail);
+      worker.off("exit", onExit);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      fail(new Error(`async message worker exited before agent startup (${signal ?? code ?? "unknown"})`));
+    };
+    const onMessage = (message: AsyncRunMessageResponse) => {
+      if (message.type === "error") {
+        fail(new Error(message.message));
+      } else if (message.type === "started") {
+        cleanup();
+        resolve();
+      }
+    };
+    worker.once("error", fail);
+    worker.once("exit", onExit);
+    worker.on("message", onMessage);
+    void sendWorkerRequest(worker, { type: "start" }).catch(fail);
   });
 }
 
