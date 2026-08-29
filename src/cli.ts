@@ -102,10 +102,11 @@ import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./
 import { runCronDaemon } from "./cron.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { createRunStatusReporter, parseRunStatusIntervalMs } from "./run-status.js";
-import { isRunStoreLockSignalListener } from "./run-storage.js";
+import { isRunStoreLockSignalListener, waitForNodeStoreLockOwner } from "./run-storage.js";
 import {
   appendNodeLog,
   completeIdleRunNodes,
+  nodeLockPath,
   readRun,
   registerNode,
   runDirectory,
@@ -1889,18 +1890,24 @@ async function executeCommand(
         resolve(result);
       };
       const asyncMessageWorker = env.HEADLESS_ASYNC_MESSAGE_WORKER === "1";
-      const ownsChildProcessGroup = process.platform !== "win32" && (
-        asyncMessageWorker
-        || options.timeoutSeconds !== undefined
+      const ownsChildProcessGroup = !asyncMessageWorker && process.platform !== "win32" && (
+        options.timeoutSeconds !== undefined
         || options.cleanupBeforeParentSignalExit !== undefined
       );
       const handlesParentSignals = asyncMessageWorker
         || ownsChildProcessGroup
         || options.cleanupBeforeParentSignalExit !== undefined;
+      waitForAsyncMessageOwnership(env, command);
+      let childEnv = commandEnv(env, command);
+      if (asyncMessageWorker) {
+        childEnv = { ...childEnv };
+        delete childEnv.HEADLESS_ASYNC_MESSAGE_OWNER_PID;
+        delete childEnv.HEADLESS_ASYNC_MESSAGE_WORKER;
+      }
       const child = spawn(command.command, command.args, {
         cwd,
         detached: ownsChildProcessGroup,
-        env: commandEnv(env, command) as NodeJS.ProcessEnv,
+        env: childEnv as NodeJS.ProcessEnv,
         stdio,
       });
 
@@ -3229,6 +3236,23 @@ function withRunEnvironment(command: BuiltCommand, runId: string | undefined, no
       ...(nodeId ? { HEADLESS_RUN_NODE: nodeId } : {}),
     },
   };
+}
+
+function waitForAsyncMessageOwnership(env: Env, command: BuiltCommand): void {
+  const ownerValue = env.HEADLESS_ASYNC_MESSAGE_OWNER_PID;
+  if (ownerValue === undefined) return;
+  const expectedProcessTreeRootPid = Number(ownerValue);
+  const runId = command.env?.HEADLESS_RUN_ID;
+  const nodeId = command.env?.HEADLESS_RUN_NODE;
+  if (
+    !Number.isSafeInteger(expectedProcessTreeRootPid)
+    || expectedProcessTreeRootPid <= 0
+    || !runId
+    || !nodeId
+  ) {
+    throw new Error("invalid async message ownership context");
+  }
+  waitForNodeStoreLockOwner(nodeLockPath(env, runId, nodeId), process.pid);
 }
 
 async function executeStoredNode(

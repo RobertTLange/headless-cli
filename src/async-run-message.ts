@@ -1,8 +1,17 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 
 import { windowsTaskkillPath } from "./process-tree.js";
-import { removeRunStoreLockSignalListeners } from "./run-storage.js";
-import { acquireNodeLock, appendNodeLog, updateNodeStatus } from "./runs.js";
+import {
+  handoffNodeStoreLockOwner,
+  nodeStoreLockHasLiveSuccessor,
+  removeRunStoreLockSignalListeners,
+} from "./run-storage.js";
+import {
+  acquireNodeLock,
+  appendNodeLog,
+  nodeLockPath,
+  updateNodeStatus,
+} from "./runs.js";
 import type { Env } from "./types.js";
 
 export interface AsyncRunMessageTask {
@@ -122,11 +131,29 @@ function runChild(currentTask: AsyncRunMessageTask): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(currentTask.command.command, currentTask.command.args, {
       cwd: currentTask.cwd,
-      env: { ...process.env, HEADLESS_ASYNC_MESSAGE_WORKER: "1" },
+      detached: process.platform !== "win32",
+      env: {
+        ...process.env,
+        HEADLESS_ASYNC_MESSAGE_OWNER_PID: String(process.pid),
+        HEADLESS_ASYNC_MESSAGE_WORKER: "1",
+      },
       stdio: ["ignore", "ignore", "inherit"],
     });
     activeChild = child;
     child.once("error", reject);
+    child.once("spawn", () => {
+      try {
+        if (!child.pid) throw new Error("async message CLI started without a process ID");
+        handoffNodeStoreLockOwner(
+          nodeLockPath(process.env as Env, currentTask.runId, currentTask.nodeId),
+          process.pid,
+          { processTreeRootPid: child.pid },
+        );
+      } catch (error) {
+        terminateActiveChild("SIGKILL");
+        reject(error);
+      }
+    });
     child.once("close", (code, signal) => {
       activeChild = undefined;
       resolve(signal ? 1 : (code ?? 1));
@@ -138,7 +165,12 @@ function finish(code = 0): void {
   if (finished) return;
   finished = true;
   try {
-    releaseLock?.();
+    if (!task || !nodeStoreLockHasLiveSuccessor(
+      nodeLockPath(process.env as Env, task.runId, task.nodeId),
+      process.pid,
+    )) {
+      releaseLock?.();
+    }
   } finally {
     releaseLock = undefined;
     if (process.connected) process.disconnect();

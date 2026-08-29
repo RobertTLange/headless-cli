@@ -44,6 +44,11 @@ interface StoredNodeStoreLockOwner extends NodeStoreLockOwner {
   processStartIdentity?: string;
 }
 
+interface StoredNodeStoreLockOwnerSnapshot {
+  owner: StoredNodeStoreLockOwner;
+  heartbeatAtMs: number;
+}
+
 export interface RunStateReplacementOptions {
   platform?: NodeJS.Platform;
   rename?: (source: string, destination: string) => void;
@@ -69,6 +74,43 @@ export function acquireNodeStoreLock(lockPath: string, nodeId: string, owner?: N
   } catch (error) {
     if (!isLockContention(error)) throw error;
     throw new Error(`node is locked: ${nodeId}`);
+  }
+}
+
+export function handoffNodeStoreLockOwner(
+  lockPath: string,
+  expectedProcessTreeRootPid: number,
+  owner: NodeStoreLockOwner,
+): void {
+  if (!lstatSync(lockPath).isDirectory()) throw new Error("node lock lease is missing");
+  const storedOwner = readStoredLockOwner(lockPath)?.owner;
+  if (storedOwner?.processTreeRootPid !== expectedProcessTreeRootPid) {
+    throw new Error("node lock owner changed before handoff");
+  }
+  writeLockOwner(lockPath, owner);
+}
+
+export function waitForNodeStoreLockOwner(
+  lockPath: string,
+  processTreeRootPid: number,
+  timeoutMs = 5_000,
+): void {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (readStoredLockOwner(lockPath)?.owner.processTreeRootPid === processTreeRootPid) return;
+    sleepSync(runLockRetryMs);
+  } while (Date.now() < deadline);
+  throw new Error("async message lock ownership handoff timed out");
+}
+
+export function nodeStoreLockHasLiveSuccessor(lockPath: string, currentProcessTreeRootPid: number): boolean {
+  try {
+    const snapshot = readStoredLockOwner(lockPath);
+    if (!snapshot || snapshot.owner.processTreeRootPid === currentProcessTreeRootPid) return false;
+    if (!storedOwnerIsTrusted(snapshot.owner)) return true;
+    return processTreeAlive(snapshot.owner, leaseHeartbeatAt(lockPath) ?? snapshot.heartbeatAtMs);
+  } catch {
+    return true;
   }
 }
 
@@ -158,25 +200,34 @@ function ownerSidecarBlocksAcquisition(lockPath: string): boolean {
 }
 
 function storedOwnerBlocksAcquisition(lockPath: string, leaseHeartbeatAtMs?: number): boolean {
-  const ownerPath = lockOwnerPath(lockPath);
-  let owner: StoredNodeStoreLockOwner;
-  let ownerHeartbeatAtMs: number;
+  let snapshot: StoredNodeStoreLockOwnerSnapshot | undefined;
   try {
-    ownerHeartbeatAtMs = lstatSync(ownerPath).mtimeMs;
-    owner = JSON.parse(readFileSync(ownerPath, "utf8")) as StoredNodeStoreLockOwner;
+    snapshot = readStoredLockOwner(lockPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return false;
+    if (error instanceof SyntaxError) return false;
     return true;
   }
-  if (
-    !Number.isSafeInteger(owner.processTreeRootPid)
-    || owner.processTreeRootPid <= 0
-    || !Number.isFinite(owner.createdAtMs)
-    || Date.now() - owner.createdAtMs > ownerIdentityLifetimeMs
-  ) {
-    return false;
+  if (!snapshot || !storedOwnerIsTrusted(snapshot.owner)) return false;
+  return processTreeAlive(snapshot.owner, leaseHeartbeatAtMs ?? snapshot.heartbeatAtMs);
+}
+
+function readStoredLockOwner(lockPath: string): StoredNodeStoreLockOwnerSnapshot | undefined {
+  const ownerPath = lockOwnerPath(lockPath);
+  try {
+    const heartbeatAtMs = lstatSync(ownerPath).mtimeMs;
+    const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as StoredNodeStoreLockOwner;
+    return { owner, heartbeatAtMs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
-  return processTreeAlive(owner, leaseHeartbeatAtMs ?? ownerHeartbeatAtMs);
+}
+
+function storedOwnerIsTrusted(owner: StoredNodeStoreLockOwner): boolean {
+  return Number.isSafeInteger(owner.processTreeRootPid)
+    && owner.processTreeRootPid > 0
+    && Number.isFinite(owner.createdAtMs)
+    && Date.now() - owner.createdAtMs <= ownerIdentityLifetimeMs;
 }
 
 function leaseHeartbeatAt(lockPath: string): number | undefined {
@@ -204,7 +255,7 @@ function writeLockOwner(lockPath: string, owner: NodeStoreLockOwner): void {
     fchmodSync(descriptor, 0o600);
     closeSync(descriptor);
     descriptor = undefined;
-    renameSync(temporaryPath, path);
+    replaceRunStateFile(temporaryPath, path);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
     rmSync(temporaryPath, { force: true });
