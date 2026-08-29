@@ -235,10 +235,11 @@ function readStoredLockOwner(lockPath: string): StoredNodeStoreLockOwnerSnapshot
 }
 
 function storedOwnerIsTrusted(owner: StoredNodeStoreLockOwner): boolean {
-  return Number.isSafeInteger(owner.processTreeRootPid)
-    && owner.processTreeRootPid > 0
-    && owner.processTreeRootPid <= maximumProcessId
-    && Number.isFinite(owner.createdAtMs);
+  return validProcessId(owner.processTreeRootPid) && Number.isFinite(owner.createdAtMs);
+}
+
+function validProcessId(pid: number): boolean {
+  return Number.isSafeInteger(pid) && pid > 0 && pid <= maximumProcessId;
 }
 
 function writeLockOwner(lockPath: string, owner: NodeStoreLockOwner): void {
@@ -369,14 +370,14 @@ export function windowsProcessTreeAlive(
   rootPid: number,
   options: WindowsProcessTreeProbeOptions = {},
 ): boolean {
+  if (!validProcessId(rootPid)) return true;
   const execute = options.execute ?? executeWindowsPowerShell;
   try {
     const output = execute(windowsPowerShellPath(options.systemRoot), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      windowsDescendantProbe,
-      String(rootPid),
+      windowsDescendantProbe(rootPid),
     ]);
     return output.trim() !== "HEADLESS_PROCESS_TREE_DEAD";
   } catch {
@@ -388,14 +389,14 @@ export function windowsProcessStartIdentity(
   pid: number,
   options: WindowsProcessTreeProbeOptions = {},
 ): string | undefined {
+  if (!validProcessId(pid)) return undefined;
   const execute = options.execute ?? executeWindowsPowerShell;
   try {
     const output = execute(windowsPowerShellPath(options.systemRoot), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      windowsProcessStartIdentityProbe,
-      String(pid),
+      windowsProcessStartIdentityProbe(pid),
     ]).trim();
     const match = /^HEADLESS_PROCESS_START:(\d+)$/.exec(output);
     return match ? `win32:${match[1]}` : undefined;
@@ -466,26 +467,30 @@ function windowsPowerShellPath(systemRoot = process.env.SystemRoot): string {
   return win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
-const windowsDescendantProbe = [
-  "$ErrorActionPreference = 'Stop'",
-  "$rootPid = [uint32]$args[0]",
-  "$processes = @(Get-CimInstance Win32_Process)",
-  "$parents = @($rootPid)",
-  "$found = $false",
-  "do {",
-  "  $children = @($processes | Where-Object { $parents -contains $_.ParentProcessId })",
-  "  if ($children.Count -gt 0) { $found = $true }",
-  "  $parents = @($children | ForEach-Object { $_.ProcessId })",
-  "} while ($parents.Count -gt 0)",
-  "if ($found) { 'HEADLESS_PROCESS_TREE_ALIVE' } else { 'HEADLESS_PROCESS_TREE_DEAD' }",
-].join("; ");
+function windowsDescendantProbe(rootPid: number): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$rootPid = [uint32]${rootPid}`,
+    "$processes = @(Get-CimInstance Win32_Process)",
+    "$parents = @($rootPid)",
+    "$found = $false",
+    "do {",
+    "  $children = @($processes | Where-Object { $parents -contains $_.ParentProcessId })",
+    "  if ($children.Count -gt 0) { $found = $true }",
+    "  $parents = @($children | ForEach-Object { $_.ProcessId })",
+    "} while ($parents.Count -gt 0)",
+    "if ($found) { 'HEADLESS_PROCESS_TREE_ALIVE' } else { 'HEADLESS_PROCESS_TREE_DEAD' }",
+  ].join("; ");
+}
 
-const windowsProcessStartIdentityProbe = [
-  "$ErrorActionPreference = 'Stop'",
-  "$rootPid = [uint32]$args[0]",
-  "$process = Get-CimInstance Win32_Process -Filter \"ProcessId = $rootPid\"",
-  "if ($null -ne $process) { 'HEADLESS_PROCESS_START:' + $process.CreationDate.ToUniversalTime().Ticks }",
-].join("; ");
+function windowsProcessStartIdentityProbe(rootPid: number): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$rootPid = [uint32]${rootPid}`,
+    "$process = Get-CimInstance Win32_Process -Filter \"ProcessId = $rootPid\"",
+    "if ($null -ne $process) { 'HEADLESS_PROCESS_START:' + $process.CreationDate.ToUniversalTime().Ticks }",
+  ].join("; ");
+}
 
 function lockContentionError(lockPath: string): Error {
   return Object.assign(new Error(`lock is already held: ${lockPath}`), { code: "ELOCKED" });

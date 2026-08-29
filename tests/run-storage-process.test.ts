@@ -147,12 +147,22 @@ test("Windows process-tree probe makes CIM failures terminating", () => {
   });
 
   assert.match(command, /ErrorActionPreference.*Stop/);
+  assert.match(command, /rootPid = \[uint32\]123/);
+  assert.doesNotMatch(command, /\$args/);
 });
 
 test("Windows process-start probe accepts only an explicit identity", () => {
-  const probe = (output: string) => windowsProcessStartIdentity(123, { execute: () => output });
+  let command = "";
+  const probe = (output: string) => windowsProcessStartIdentity(123, {
+    execute: (_path, args) => {
+      command = args.join(" ");
+      return output;
+    },
+  });
 
   assert.equal(probe("HEADLESS_PROCESS_START:638920627920000000\r\n"), "win32:638920627920000000");
+  assert.match(command, /rootPid = \[uint32\]123/);
+  assert.doesNotMatch(command, /\$args/);
   assert.equal(probe(""), undefined);
   assert.equal(probe("638920627920000000\r\n"), undefined);
   assert.equal(probe("warning\r\nHEADLESS_PROCESS_START:638920627920000000\r\n"), undefined);
