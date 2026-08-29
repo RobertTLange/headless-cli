@@ -471,7 +471,7 @@ function windowsDescendantProbe(rootPid: number): string {
   return [
     "$ErrorActionPreference = 'Stop'",
     `$rootPid = [uint32]${rootPid}`,
-    "$processes = @(Get-CimInstance Win32_Process)",
+    "$processes = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID })",
     "$parents = @($rootPid)",
     "$found = $false",
     "do {",

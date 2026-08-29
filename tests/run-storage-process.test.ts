@@ -148,6 +148,7 @@ test("Windows process-tree probe makes CIM failures terminating", () => {
 
   assert.match(command, /ErrorActionPreference.*Stop/);
   assert.match(command, /rootPid = \[uint32\]123/);
+  assert.match(command, /ProcessId -ne \$PID/);
   assert.doesNotMatch(command, /\$args/);
 });
 
