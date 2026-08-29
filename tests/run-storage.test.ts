@@ -462,8 +462,14 @@ test("run state replacement waits for a native Windows sharing lock", { skip: pr
       locker.once("exit", onEarlyExit);
     });
 
-    replaceRunStateFile(source, destination);
+    let replacementError: unknown;
+    try {
+      replaceRunStateFile(source, destination);
+    } catch (error) {
+      replacementError = error;
+    }
     await lockerExit;
+    if (replacementError) throw replacementError;
 
     assert.equal(readFileSync(destination, "utf8"), "new\n");
     assert.equal(existsSync(source), false);
