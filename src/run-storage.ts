@@ -333,20 +333,36 @@ function processAlive(pid: number): boolean {
 
 function processTreeAlive(owner: StoredNodeStoreLockOwner): boolean {
   const rootPid = owner.processTreeRootPid;
-  if (processAlive(rootPid)) {
+  const rootAlive = processAlive(rootPid);
+  let identityMismatch = false;
+  if (rootAlive) {
     const currentIdentity = processStartIdentity(rootPid);
-    if (owner.processStartIdentity && currentIdentity && owner.processStartIdentity !== currentIdentity) return false;
-    return true;
+    identityMismatch = Boolean(
+      owner.processStartIdentity
+      && currentIdentity
+      && owner.processStartIdentity !== currentIdentity,
+    );
   }
-  if (process.platform !== "win32") {
+  return processTreeAliveFromProbes(process.platform, rootAlive, identityMismatch, () => {
+    if (process.platform === "win32") return windowsProcessTreeAlive(rootPid);
     try {
       process.kill(-rootPid, 0);
       return true;
     } catch (error) {
       return (error as NodeJS.ErrnoException).code === "EPERM";
     }
-  }
-  return windowsProcessTreeAlive(rootPid);
+  });
+}
+
+export function processTreeAliveFromProbes(
+  platform: NodeJS.Platform,
+  rootAlive: boolean,
+  identityMismatch: boolean,
+  descendantsAlive: () => boolean,
+): boolean {
+  if (rootAlive && !identityMismatch) return true;
+  if (rootAlive && platform !== "win32") return false;
+  return descendantsAlive();
 }
 
 export function windowsProcessTreeAlive(

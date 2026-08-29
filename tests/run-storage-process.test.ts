@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   acquireNodeStoreLock,
   macosProcessStartIdentity,
+  processTreeAliveFromProbes,
   windowsProcessStartIdentity,
   windowsProcessTreeAlive,
 } from "../src/run-storage.ts";
@@ -178,4 +179,18 @@ test("macOS process-start probe canonicalizes timezone and locale", () => {
   assert.equal(identity, "darwin:Sat Aug 29 17:00:00 2026");
   assert.equal(probeEnv?.LC_ALL, "C");
   assert.equal(probeEnv?.TZ, "UTC");
+});
+
+test("Windows probes descendants when a live root PID has been reused", () => {
+  let probes = 0;
+  const descendantsAlive = () => {
+    probes += 1;
+    return true;
+  };
+
+  assert.equal(processTreeAliveFromProbes("win32", true, true, descendantsAlive), true);
+  assert.equal(probes, 1);
+  assert.equal(processTreeAliveFromProbes("win32", true, true, () => false), false);
+  assert.equal(processTreeAliveFromProbes("linux", true, true, descendantsAlive), false);
+  assert.equal(probes, 1);
 });
