@@ -102,6 +102,7 @@ import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./
 import { runCronDaemon } from "./cron.js";
 import { extractRunNodeMetrics } from "./run-metrics.js";
 import { createRunStatusReporter, parseRunStatusIntervalMs } from "./run-status.js";
+import { isRunStoreLockSignalListener } from "./run-storage.js";
 import {
   appendNodeLog,
   completeIdleRunNodes,
@@ -1887,10 +1888,15 @@ async function executeCommand(
         result.stdoutEndsWithNewline = stdoutEndsWithNewline;
         resolve(result);
       };
-      const ownsChildProcessGroup =
-        process.platform !== "win32" &&
-        (options.timeoutSeconds !== undefined || options.cleanupBeforeParentSignalExit !== undefined);
-      const handlesParentSignals = ownsChildProcessGroup || options.cleanupBeforeParentSignalExit !== undefined;
+      const asyncMessageWorker = env.HEADLESS_ASYNC_MESSAGE_WORKER === "1";
+      const ownsChildProcessGroup = process.platform !== "win32" && (
+        asyncMessageWorker
+        || options.timeoutSeconds !== undefined
+        || options.cleanupBeforeParentSignalExit !== undefined
+      );
+      const handlesParentSignals = asyncMessageWorker
+        || ownsChildProcessGroup
+        || options.cleanupBeforeParentSignalExit !== undefined;
       const child = spawn(command.command, command.args, {
         cwd,
         detached: ownsChildProcessGroup,
@@ -3370,7 +3376,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const inheritedSignalListeners = new Map(
     parentExitSignals().map((signal) => [
       signal,
-      new Set(process.listeners(signal).filter((listener) => !isDockerSessionLockSignalListener(listener))),
+      new Set(
+        process.listeners(signal).filter(
+          (listener) => !isDockerSessionLockSignalListener(listener) && !isRunStoreLockSignalListener(listener),
+        ),
+      ),
     ] as const),
   );
   let registeredRunNode: { runId: string; nodeId: string } | undefined;

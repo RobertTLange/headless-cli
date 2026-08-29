@@ -1,10 +1,8 @@
 import {
   appendFileSync,
   chmodSync,
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -14,6 +12,7 @@ import {
 import { basename, dirname, join } from "node:path";
 
 import type { CoordinationMode, Role, RunStatus } from "./roles.js";
+import { acquireNodeStoreLock, acquireRunStoreLock, type NodeStoreLockOwner } from "./run-storage.js";
 import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
 
 const privateDirMode = 0o700;
@@ -361,21 +360,10 @@ export function recordMessage(
   });
 }
 
-export function acquireNodeLock(env: Env, runId: string, nodeId: string): () => void {
+export function acquireNodeLock(env: Env, runId: string, nodeId: string, owner?: NodeStoreLockOwner): () => void {
   const lockPath = nodeLockPath(env, runId, nodeId);
   ensurePrivateDir(dirname(lockPath));
-  let fd: number;
-  try {
-    fd = openSync(lockPath, "wx", privateFileMode);
-    chmodSync(lockPath, privateFileMode);
-  } catch {
-    throw new Error(`node is locked: ${nodeId}`);
-  }
-  writeFileSync(fd, `${process.pid}\n`);
-  return () => {
-    closeSync(fd);
-    rmSync(lockPath, { force: true });
-  };
+  return acquireNodeStoreLock(lockPath, nodeId, owner);
 }
 
 export function writeRun(env: Env, run: RunRecord): void {
@@ -411,29 +399,7 @@ function acquireRunLock(env: Env, runId: string): () => void {
   const dir = runDirectory(env, runId);
   ensurePrivateDir(dir);
   const lockPath = join(dir, "run.lock");
-  const deadline = Date.now() + 30000;
-  let fd: number;
-  while (true) {
-    try {
-      fd = openSync(lockPath, "wx", privateFileMode);
-      chmodSync(lockPath, privateFileMode);
-      break;
-    } catch {
-      if (Date.now() >= deadline) {
-        throw new Error(`run is locked: ${runId}`);
-      }
-      sleepSync(10);
-    }
-  }
-  writeFileSync(fd, `${process.pid}\n`);
-  return () => {
-    closeSync(fd);
-    rmSync(lockPath, { force: true });
-  };
-}
-
-function sleepSync(milliseconds: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+  return acquireRunStoreLock(lockPath, runId);
 }
 
 function requireRun(env: Env, runId: string): RunRecord {
