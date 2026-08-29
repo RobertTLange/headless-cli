@@ -427,13 +427,14 @@ test("run state replacement waits for a native Windows sharing lock", { skip: pr
     const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
     const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const script = [
-      "$path = $args[0]",
+      "$path = $env:HEADLESS_TEST_LOCK_PATH",
       "$stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)",
       "[Console]::Out.WriteLine('ready')",
       "Start-Sleep -Milliseconds 200",
       "$stream.Dispose()",
     ].join("; ");
-    const locker = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", script, destination], {
+    const locker = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+      env: { ...process.env, HEADLESS_TEST_LOCK_PATH: destination },
       stdio: ["ignore", "pipe", "inherit"],
       windowsHide: true,
     });
