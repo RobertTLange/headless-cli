@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
@@ -108,7 +108,7 @@ test("node store lock persists private owner identity while its process is alive
     const ownerPath = `${lockPath}.owner`;
     const release = acquireNodeStoreLock(lockPath, "worker-1", { processTreeRootPid: process.pid });
 
-    assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
     assert.throws(() => acquireNodeStoreLock(lockPath, "worker-1"), /node is locked: worker-1/);
     release();
     assert.equal(existsSync(ownerPath), false);
@@ -388,6 +388,60 @@ test("run state replacement bounds Windows retries", () => {
     failure,
   );
   assert.equal(attempts, 20);
+});
+
+test("run state replacement waits for a native Windows sharing lock", { skip: process.platform !== "win32" }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), "headless-run-storage-"));
+  try {
+    const source = join(directory, "run.tmp");
+    const destination = join(directory, "run.json");
+    writeFileSync(source, "new\n");
+    writeFileSync(destination, "old\n");
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const script = [
+      "$path = $args[0]",
+      "$stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)",
+      "[Console]::Out.WriteLine('ready')",
+      "Start-Sleep -Milliseconds 200",
+      "$stream.Dispose()",
+    ].join("; ");
+    const locker = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", script, destination], {
+      stdio: ["ignore", "pipe", "inherit"],
+      windowsHide: true,
+    });
+    const lockerExit = once(locker, "exit");
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        locker.stdout.off("data", onReady);
+        locker.off("error", onError);
+        locker.off("exit", onEarlyExit);
+      };
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onEarlyExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`PowerShell lock holder exited before ready: ${code ?? "unknown"}`));
+      };
+      locker.stdout.once("data", onReady);
+      locker.once("error", onError);
+      locker.once("exit", onEarlyExit);
+    });
+
+    replaceRunStateFile(source, destination);
+    await lockerExit;
+
+    assert.equal(readFileSync(destination, "utf8"), "new\n");
+    assert.equal(existsSync(source), false);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 async function waitForProcessGroupExit(processGroupId: number): Promise<void> {
