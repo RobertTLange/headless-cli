@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,6 +115,66 @@ test("node store lock persists private owner identity while its process is alive
   });
 });
 
+test("node store lock preserves a live owner after lease cleanup", () => {
+  withTemporaryDirectory((directory) => {
+    const lockPath = join(directory, "session.lock");
+    const releaseOwner = acquireNodeStoreLock(lockPath, "worker-1", {
+      processTreeRootPid: process.pid,
+    });
+    let releaseReplacement: (() => void) | undefined;
+    rmSync(lockPath, { recursive: true });
+
+    try {
+      assert.throws(() => {
+        releaseReplacement = acquireNodeStoreLock(lockPath, "worker-1");
+      }, /node is locked: worker-1/);
+    } finally {
+      if (releaseReplacement) releaseReplacement();
+      else releaseOwner();
+    }
+  });
+});
+
+test("node store lock rechecks a live owner after lease acquisition", () => {
+  withTemporaryDirectory((directory) => {
+    const lockPath = join(directory, "session.lock");
+    const ownerPath = `${lockPath}.owner`;
+    const moduleUrl = pathToFileURL(join(process.cwd(), "src", "run-storage.ts")).href;
+    const requirePath = join(process.cwd(), "package.json");
+    const script = [
+      `import { writeFileSync } from "node:fs";`,
+      `import { createRequire } from "node:module";`,
+      `const require = createRequire(${JSON.stringify(requirePath)});`,
+      `const properLockfile = require("proper-lockfile");`,
+      `const nativeLockSync = properLockfile.lockSync;`,
+      `properLockfile.lockSync = (...args) => {`,
+      `  const release = nativeLockSync(...args);`,
+      `  writeFileSync(${JSON.stringify(ownerPath)}, JSON.stringify({`,
+      `    createdAtMs: Date.now(),`,
+      `    processTreeRootPid: process.pid,`,
+      `  }) + "\\n");`,
+      `  return release;`,
+      `};`,
+      `const { acquireNodeStoreLock } = await import(${JSON.stringify(moduleUrl)});`,
+      `try {`,
+      `  acquireNodeStoreLock(${JSON.stringify(lockPath)}, "worker-1")();`,
+      `  process.stdout.write("acquired\\n");`,
+      `} catch (error) {`,
+      `  process.stdout.write(String(error.message) + "\\n");`,
+      `}`,
+    ].join("\n");
+
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "node is locked: worker-1");
+  });
+});
+
 test("node store lock does not remove an unexpected lock directory", () => {
   withTemporaryDirectory((directory) => {
     const lockPath = join(directory, "session.lock");
@@ -220,7 +280,7 @@ test("node store lock blocks stale takeover while the owner's process group is a
     await once(owner.stdout, "data");
     owner.kill("SIGKILL");
     await once(owner, "exit");
-    agePath(lockPath);
+    rmSync(lockPath, { recursive: true });
 
     assert.throws(() => acquireNodeStoreLock(lockPath, "worker-1"), /node is locked: worker-1/);
 

@@ -123,36 +123,47 @@ function acquireStoreLock(
     stale,
     update,
   });
+  let released = false;
+  const releaseLease = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
   try {
     chmodSync(lockPath, privateDirMode);
+    if (ownerSidecarBlocksAcquisition(lockPath)) {
+      releaseLease();
+      throw lockContentionError(lockPath);
+    }
     rmSync(lockOwnerPath(lockPath), { force: true });
     if (owner) writeLockOwner(lockPath, owner);
   } catch (error) {
-    release();
+    releaseLease();
     throw error;
   }
 
   return () => {
     if (owner) rmSync(lockOwnerPath(lockPath), { force: true });
     if (compromisedError) throw compromisedError;
-    release();
+    releaseLease();
   };
 }
 
 function leaseOwnerBlocksAcquisition(lockPath: string): boolean {
-  let lockMtimeMs: number;
-  try {
-    const status = lstatSync(lockPath);
-    if (!status.isDirectory()) return false;
-    lockMtimeMs = status.mtimeMs;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
+  return storedOwnerBlocksAcquisition(lockPath, leaseHeartbeatAt(lockPath));
+}
 
+function ownerSidecarBlocksAcquisition(lockPath: string): boolean {
+  return storedOwnerBlocksAcquisition(lockPath);
+}
+
+function storedOwnerBlocksAcquisition(lockPath: string, leaseHeartbeatAtMs?: number): boolean {
+  const ownerPath = lockOwnerPath(lockPath);
   let owner: StoredNodeStoreLockOwner;
+  let ownerHeartbeatAtMs: number;
   try {
-    owner = JSON.parse(readFileSync(lockOwnerPath(lockPath), "utf8")) as StoredNodeStoreLockOwner;
+    ownerHeartbeatAtMs = lstatSync(ownerPath).mtimeMs;
+    owner = JSON.parse(readFileSync(ownerPath, "utf8")) as StoredNodeStoreLockOwner;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return false;
     return true;
@@ -165,7 +176,17 @@ function leaseOwnerBlocksAcquisition(lockPath: string): boolean {
   ) {
     return false;
   }
-  return processTreeAlive(owner, lockMtimeMs);
+  return processTreeAlive(owner, leaseHeartbeatAtMs ?? ownerHeartbeatAtMs);
+}
+
+function leaseHeartbeatAt(lockPath: string): number | undefined {
+  try {
+    const status = lstatSync(lockPath);
+    return status.isDirectory() ? status.mtimeMs : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
 }
 
 function writeLockOwner(lockPath: string, owner: NodeStoreLockOwner): void {
