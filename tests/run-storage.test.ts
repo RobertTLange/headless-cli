@@ -414,7 +414,7 @@ test("run state replacement bounds Windows retries", () => {
     }),
     failure,
   );
-  assert.equal(attempts, 20);
+  assert.equal(attempts, 40);
 });
 
 test("run state replacement waits for a native Windows sharing lock", { skip: process.platform !== "win32" }, async () => {

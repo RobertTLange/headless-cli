@@ -26,7 +26,7 @@ const runLockTimeoutMs = 30_000;
 const runLockRetryMs = 10;
 const ownerIdentityLifetimeMs = 24 * 60 * 60 * 1_000;
 const windowsProbeFailureGraceMs = 30_000;
-const windowsRenameAttempts = 20;
+const windowsRenameAttempts = 40;
 const windowsRenameRetryMs = 25;
 const windowsRenameRetryCodes = new Set(["EACCES", "EBUSY", "EPERM"]);
 const managedSignals: NodeJS.Signals[] = process.platform === "win32"
