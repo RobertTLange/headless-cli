@@ -12,6 +12,7 @@ import {
   acquireRunStoreLock,
   isRunStoreLockSignalListener,
   removeRunStoreLockSignalListeners,
+  replaceRunStateFile,
 } from "../src/run-storage.ts";
 
 function withTemporaryDirectory(callback: (directory: string) => void): void {
@@ -317,6 +318,77 @@ function managedTestSignals(): NodeJS.Signals[] {
     ? ["SIGINT", "SIGTERM", "SIGBREAK"]
     : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
 }
+
+test("run state replacement retries transient Windows rename failures", () => {
+  const attempts: number[] = [];
+  const delays: number[] = [];
+
+  replaceRunStateFile("run.tmp", "run.json", {
+    platform: "win32",
+    rename: () => {
+      attempts.push(attempts.length + 1);
+      if (attempts.length < 3) throw Object.assign(new Error("busy"), { code: "EPERM" });
+    },
+    sleep: (milliseconds) => delays.push(milliseconds),
+  });
+
+  assert.equal(attempts.length, 3);
+  assert.deepEqual(delays, [25, 25]);
+});
+
+test("run state replacement does not retry non-Windows rename failures", () => {
+  let attempts = 0;
+  const failure = Object.assign(new Error("busy"), { code: "EPERM" });
+
+  assert.throws(
+    () => replaceRunStateFile("run.tmp", "run.json", {
+      platform: "linux",
+      rename: () => {
+        attempts += 1;
+        throw failure;
+      },
+      sleep: () => assert.fail("unexpected retry"),
+    }),
+    failure,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("run state replacement does not retry permanent Windows rename failures", () => {
+  let attempts = 0;
+  const failure = Object.assign(new Error("missing"), { code: "ENOENT" });
+
+  assert.throws(
+    () => replaceRunStateFile("run.tmp", "run.json", {
+      platform: "win32",
+      rename: () => {
+        attempts += 1;
+        throw failure;
+      },
+      sleep: () => assert.fail("unexpected retry"),
+    }),
+    failure,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("run state replacement bounds Windows retries", () => {
+  let attempts = 0;
+  const failure = Object.assign(new Error("busy"), { code: "EBUSY" });
+
+  assert.throws(
+    () => replaceRunStateFile("run.tmp", "run.json", {
+      platform: "win32",
+      rename: () => {
+        attempts += 1;
+        throw failure;
+      },
+      sleep: () => undefined,
+    }),
+    failure,
+  );
+  assert.equal(attempts, 20);
+});
 
 async function waitForProcessGroupExit(processGroupId: number): Promise<void> {
   const deadline = Date.now() + 5_000;

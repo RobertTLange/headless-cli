@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
-import { acquireNodeLock, appendNodeLog, nodeLockPath, readRun, registerNode, updateNodeStatus } from "../src/runs.ts";
+import {
+  acquireNodeLock,
+  appendNodeLog,
+  nodeLockPath,
+  readRun,
+  registerNode,
+  runDirectory,
+  updateNodeStatus,
+  writeRun,
+} from "../src/runs.ts";
 import { expandTeamSpecs, parseTeamSpec } from "../src/teams.ts";
 
 async function writeExecutable(path: string, source: string): Promise<void> {
@@ -191,6 +200,32 @@ test("run store writes private run files, logs, and locks", () => {
     }
   } finally {
     process.umask(previousUmask);
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run store removes its temporary state file after replacement fails", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home") };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "oneshot",
+      status: "idle",
+      planned: true,
+    });
+    const run = readRun(env, "auth");
+    assert.ok(run);
+    const statePath = join(runDirectory(env, "auth"), "run.json");
+    rmSync(statePath);
+    mkdirSync(statePath);
+
+    assert.throws(() => writeRun(env, run));
+    assert.equal(readdirSync(runDirectory(env, "auth")).some((name) => name.startsWith("run.json.tmp-")), false);
+  } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });

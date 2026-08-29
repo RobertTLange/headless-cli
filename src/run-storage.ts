@@ -26,6 +26,9 @@ const runLockTimeoutMs = 30_000;
 const runLockRetryMs = 10;
 const ownerIdentityLifetimeMs = 24 * 60 * 60 * 1_000;
 const windowsProbeFailureGraceMs = 30_000;
+const windowsRenameAttempts = 20;
+const windowsRenameRetryMs = 25;
+const windowsRenameRetryCodes = new Set(["EACCES", "EBUSY", "EPERM"]);
 const managedSignals: NodeJS.Signals[] = process.platform === "win32"
   ? ["SIGINT", "SIGTERM", "SIGBREAK"]
   : ["SIGHUP", "SIGINT", "SIGTERM", "SIGQUIT"];
@@ -39,6 +42,12 @@ export interface NodeStoreLockOwner {
 interface StoredNodeStoreLockOwner extends NodeStoreLockOwner {
   createdAtMs: number;
   processStartIdentity?: string;
+}
+
+export interface RunStateReplacementOptions {
+  platform?: NodeJS.Platform;
+  rename?: (source: string, destination: string) => void;
+  sleep?: (milliseconds: number) => void;
 }
 
 export function acquireRunStoreLock(lockPath: string, runId: string): () => void {
@@ -70,6 +79,27 @@ export function isRunStoreLockSignalListener(listener: NodeJS.SignalsListener): 
 export function removeRunStoreLockSignalListeners(): void {
   for (const signal of managedSignals) {
     for (const listener of runStoreLockSignalListeners) process.off(signal, listener);
+  }
+}
+
+export function replaceRunStateFile(
+  source: string,
+  destination: string,
+  options: RunStateReplacementOptions = {},
+): void {
+  const platform = options.platform ?? process.platform;
+  const rename = options.rename ?? renameSync;
+  const sleep = options.sleep ?? sleepSync;
+  for (let attempt = 1; attempt <= windowsRenameAttempts; attempt += 1) {
+    try {
+      rename(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = platform === "win32" && code !== undefined && windowsRenameRetryCodes.has(code);
+      if (!retryable || attempt === windowsRenameAttempts) throw error;
+      sleep(windowsRenameRetryMs);
+    }
   }
 }
 

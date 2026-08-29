@@ -1,18 +1,26 @@
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
   existsSync,
+  fchmodSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 
 import type { CoordinationMode, Role, RunStatus } from "./roles.js";
-import { acquireNodeStoreLock, acquireRunStoreLock, type NodeStoreLockOwner } from "./run-storage.js";
+import {
+  acquireNodeStoreLock,
+  acquireRunStoreLock,
+  replaceRunStateFile,
+  type NodeStoreLockOwner,
+} from "./run-storage.js";
 import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
 
 const privateDirMode = 0o700;
@@ -374,10 +382,19 @@ export function writeRun(env: Env, run: RunRecord): void {
   }
   run.updatedAt = new Date().toISOString();
   const path = join(dir, "run.json");
-  const tmpPath = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmpPath, `${JSON.stringify(run, null, 2)}\n`, { mode: privateFileMode });
-  chmodSync(tmpPath, privateFileMode);
-  renameSync(tmpPath, path);
+  const tmpPath = `${path}.tmp-${randomUUID()}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(tmpPath, "wx", privateFileMode);
+    writeFileSync(descriptor, `${JSON.stringify(run, null, 2)}\n`);
+    fchmodSync(descriptor, privateFileMode);
+    closeSync(descriptor);
+    descriptor = undefined;
+    replaceRunStateFile(tmpPath, path);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    rmSync(tmpPath, { force: true });
+  }
   chmodSync(path, privateFileMode);
   const eventsPath = join(dir, "events.jsonl");
   const event = run.events.at(-1);
