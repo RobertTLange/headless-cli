@@ -24,8 +24,7 @@ const nodeLockStaleMs = 10_000;
 const nodeLockUpdateMs = 5_000;
 const runLockTimeoutMs = 30_000;
 const runLockRetryMs = 10;
-const ownerIdentityLifetimeMs = 24 * 60 * 60 * 1_000;
-const windowsProbeFailureGraceMs = 30_000;
+const maximumProcessId = 0xffff_ffff;
 const windowsRenameAttempts = 40;
 const windowsRenameRetryMs = 25;
 const windowsRenameRetryCodes = new Set(["EACCES", "EBUSY", "EPERM"]);
@@ -46,13 +45,26 @@ interface StoredNodeStoreLockOwner extends NodeStoreLockOwner {
 
 interface StoredNodeStoreLockOwnerSnapshot {
   owner: StoredNodeStoreLockOwner;
-  heartbeatAtMs: number;
 }
 
 export interface RunStateReplacementOptions {
   platform?: NodeJS.Platform;
   rename?: (source: string, destination: string) => void;
   sleep?: (milliseconds: number) => void;
+}
+
+export interface WindowsProcessTreeProbeOptions {
+  execute?: (command: string, args: string[]) => string;
+  systemRoot?: string;
+}
+
+export interface MacosProcessStartIdentityOptions {
+  env?: NodeJS.ProcessEnv;
+  execute?: (
+    command: string,
+    args: string[],
+    options: { env: NodeJS.ProcessEnv },
+  ) => string;
 }
 
 export function acquireRunStoreLock(lockPath: string, runId: string): () => void {
@@ -108,7 +120,7 @@ export function nodeStoreLockHasLiveSuccessor(lockPath: string, currentProcessTr
     const snapshot = readStoredLockOwner(lockPath);
     if (!snapshot || snapshot.owner.processTreeRootPid === currentProcessTreeRootPid) return false;
     if (!storedOwnerIsTrusted(snapshot.owner)) return true;
-    return processTreeAlive(snapshot.owner, leaseHeartbeatAt(lockPath) ?? snapshot.heartbeatAtMs);
+    return processTreeAlive(snapshot.owner);
   } catch {
     return true;
   }
@@ -192,14 +204,14 @@ function acquireStoreLock(
 }
 
 function leaseOwnerBlocksAcquisition(lockPath: string): boolean {
-  return storedOwnerBlocksAcquisition(lockPath, leaseHeartbeatAt(lockPath));
+  return storedOwnerBlocksAcquisition(lockPath);
 }
 
 function ownerSidecarBlocksAcquisition(lockPath: string): boolean {
   return storedOwnerBlocksAcquisition(lockPath);
 }
 
-function storedOwnerBlocksAcquisition(lockPath: string, leaseHeartbeatAtMs?: number): boolean {
+function storedOwnerBlocksAcquisition(lockPath: string): boolean {
   let snapshot: StoredNodeStoreLockOwnerSnapshot | undefined;
   try {
     snapshot = readStoredLockOwner(lockPath);
@@ -208,15 +220,14 @@ function storedOwnerBlocksAcquisition(lockPath: string, leaseHeartbeatAtMs?: num
     return true;
   }
   if (!snapshot || !storedOwnerIsTrusted(snapshot.owner)) return false;
-  return processTreeAlive(snapshot.owner, leaseHeartbeatAtMs ?? snapshot.heartbeatAtMs);
+  return processTreeAlive(snapshot.owner);
 }
 
 function readStoredLockOwner(lockPath: string): StoredNodeStoreLockOwnerSnapshot | undefined {
   const ownerPath = lockOwnerPath(lockPath);
   try {
-    const heartbeatAtMs = lstatSync(ownerPath).mtimeMs;
     const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as StoredNodeStoreLockOwner;
-    return { owner, heartbeatAtMs };
+    return { owner };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -226,18 +237,8 @@ function readStoredLockOwner(lockPath: string): StoredNodeStoreLockOwnerSnapshot
 function storedOwnerIsTrusted(owner: StoredNodeStoreLockOwner): boolean {
   return Number.isSafeInteger(owner.processTreeRootPid)
     && owner.processTreeRootPid > 0
-    && Number.isFinite(owner.createdAtMs)
-    && Date.now() - owner.createdAtMs <= ownerIdentityLifetimeMs;
-}
-
-function leaseHeartbeatAt(lockPath: string): number | undefined {
-  try {
-    const status = lstatSync(lockPath);
-    return status.isDirectory() ? status.mtimeMs : undefined;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return undefined;
-  }
+    && owner.processTreeRootPid <= maximumProcessId
+    && Number.isFinite(owner.createdAtMs);
 }
 
 function writeLockOwner(lockPath: string, owner: NodeStoreLockOwner): void {
@@ -330,7 +331,7 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function processTreeAlive(owner: StoredNodeStoreLockOwner, lastHeartbeatAtMs: number): boolean {
+function processTreeAlive(owner: StoredNodeStoreLockOwner): boolean {
   const rootPid = owner.processTreeRootPid;
   if (processAlive(rootPid)) {
     const currentIdentity = processStartIdentity(rootPid);
@@ -345,21 +346,54 @@ function processTreeAlive(owner: StoredNodeStoreLockOwner, lastHeartbeatAtMs: nu
       return (error as NodeJS.ErrnoException).code === "EPERM";
     }
   }
+  return windowsProcessTreeAlive(rootPid);
+}
+
+export function windowsProcessTreeAlive(
+  rootPid: number,
+  options: WindowsProcessTreeProbeOptions = {},
+): boolean {
+  const execute = options.execute ?? executeWindowsPowerShell;
   try {
-    return execFileSync(windowsPowerShellPath(), [
+    const output = execute(windowsPowerShellPath(options.systemRoot), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
       windowsDescendantProbe,
       String(rootPid),
-    ], {
-      encoding: "utf8",
-      timeout: 3_000,
-      windowsHide: true,
-    }).trim() === "1";
+    ]);
+    return output.trim() !== "HEADLESS_PROCESS_TREE_DEAD";
   } catch {
-    return Date.now() - lastHeartbeatAtMs < windowsProbeFailureGraceMs;
+    return true;
   }
+}
+
+export function windowsProcessStartIdentity(
+  pid: number,
+  options: WindowsProcessTreeProbeOptions = {},
+): string | undefined {
+  const execute = options.execute ?? executeWindowsPowerShell;
+  try {
+    const output = execute(windowsPowerShellPath(options.systemRoot), [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      windowsProcessStartIdentityProbe,
+      String(pid),
+    ]).trim();
+    const match = /^HEADLESS_PROCESS_START:(\d+)$/.exec(output);
+    return match ? `win32:${match[1]}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function executeWindowsPowerShell(command: string, args: string[]): string {
+  return execFileSync(command, args, {
+    encoding: "utf8",
+    timeout: 3_000,
+    windowsHide: true,
+  });
 }
 
 function processStartIdentity(pid: number): string | undefined {
@@ -372,16 +406,52 @@ function processStartIdentity(pid: number): string | undefined {
       return undefined;
     }
   }
+  if (process.platform === "darwin") {
+    return macosProcessStartIdentity(pid);
+  }
+  if (process.platform === "win32") {
+    return windowsProcessStartIdentity(pid);
+  }
   return undefined;
 }
 
-function windowsPowerShellPath(): string {
-  const systemRoot = process.env.SystemRoot;
+export function macosProcessStartIdentity(
+  pid: number,
+  options: MacosProcessStartIdentityOptions = {},
+): string | undefined {
+  const execute = options.execute ?? executeMacosProcessStartIdentityProbe;
+  const env = { ...(options.env ?? process.env), LC_ALL: "C", TZ: "UTC" };
+  try {
+    const startedAt = execute(
+      "/bin/ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      { env },
+    ).trim();
+    return startedAt ? `darwin:${startedAt}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function executeMacosProcessStartIdentityProbe(
+  command: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv },
+): string {
+  return execFileSync(command, args, {
+    ...options,
+    encoding: "utf8",
+    timeout: 3_000,
+  });
+}
+
+function windowsPowerShellPath(systemRoot = process.env.SystemRoot): string {
   const root = systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows";
   return win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
 const windowsDescendantProbe = [
+  "$ErrorActionPreference = 'Stop'",
   "$rootPid = [uint32]$args[0]",
   "$processes = @(Get-CimInstance Win32_Process)",
   "$parents = @($rootPid)",
@@ -391,7 +461,14 @@ const windowsDescendantProbe = [
   "  if ($children.Count -gt 0) { $found = $true }",
   "  $parents = @($children | ForEach-Object { $_.ProcessId })",
   "} while ($parents.Count -gt 0)",
-  "if ($found) { '1' } else { '0' }",
+  "if ($found) { 'HEADLESS_PROCESS_TREE_ALIVE' } else { 'HEADLESS_PROCESS_TREE_DEAD' }",
+].join("; ");
+
+const windowsProcessStartIdentityProbe = [
+  "$ErrorActionPreference = 'Stop'",
+  "$rootPid = [uint32]$args[0]",
+  "$process = Get-CimInstance Win32_Process -Filter \"ProcessId = $rootPid\"",
+  "if ($null -ne $process) { 'HEADLESS_PROCESS_START:' + $process.CreationDate.ToUniversalTime().Ticks }",
 ].join("; ");
 
 function lockContentionError(lockPath: string): Error {

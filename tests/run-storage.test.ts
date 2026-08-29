@@ -107,8 +107,11 @@ test("node store lock persists private owner identity while its process is alive
     const lockPath = join(directory, "session.lock");
     const ownerPath = `${lockPath}.owner`;
     const release = acquireNodeStoreLock(lockPath, "worker-1", { processTreeRootPid: process.pid });
+    const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
 
     if (process.platform !== "win32") assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
+    assert.equal(typeof owner.processStartIdentity, "string");
+    assert.ok(owner.processStartIdentity.length > 0);
     assert.throws(() => acquireNodeStoreLock(lockPath, "worker-1"), /node is locked: worker-1/);
     release();
     assert.equal(existsSync(ownerPath), false);
@@ -196,23 +199,6 @@ test("node store lock recovers a stale lease directory", () => {
     assert.equal(statSync(lockPath).isDirectory(), true);
     release();
     assert.equal(existsSync(lockPath), false);
-  });
-});
-
-test("node store lock does not trust an expired owner identity", () => {
-  withTemporaryDirectory((directory) => {
-    const lockPath = join(directory, "session.lock");
-    mkdirSync(lockPath);
-    writeFileSync(`${lockPath}.owner`, `${JSON.stringify({
-      createdAtMs: 0,
-      processTreeRootPid: process.pid,
-    })}\n`);
-    agePath(lockPath);
-
-    const release = acquireNodeStoreLock(lockPath, "worker-1");
-
-    release();
-    assert.equal(existsSync(`${lockPath}.owner`), false);
   });
 });
 
