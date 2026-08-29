@@ -336,6 +336,19 @@ test("run state replacement retries transient Windows rename failures", () => {
   assert.deepEqual(delays, [25, 25]);
 });
 
+test("run state replacement uses the native rename defaults", () => {
+  withTemporaryDirectory((directory) => {
+    const source = join(directory, "run.tmp");
+    const destination = join(directory, "run.json");
+    writeFileSync(source, "state\n");
+
+    replaceRunStateFile(source, destination);
+
+    assert.equal(readFileSync(destination, "utf8"), "state\n");
+    assert.equal(existsSync(source), false);
+  });
+});
+
 test("run state replacement does not retry non-Windows rename failures", () => {
   let attempts = 0;
   const failure = Object.assign(new Error("busy"), { code: "EPERM" });
@@ -369,6 +382,20 @@ test("run state replacement does not retry permanent Windows rename failures", (
     }),
     failure,
   );
+  assert.equal(attempts, 1);
+});
+
+test("run state replacement does not retry Windows errors without a code", () => {
+  let attempts = 0;
+
+  assert.throws(() => replaceRunStateFile("run.tmp", "run.json", {
+    platform: "win32",
+    rename: () => {
+      attempts += 1;
+      throw new Error("unknown");
+    },
+    sleep: () => assert.fail("unexpected retry"),
+  }), /unknown/);
   assert.equal(attempts, 1);
 });
 
