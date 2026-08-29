@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +28,51 @@ function agePath(path: string): void {
   utimesSync(path, stale, stale);
 }
 
+async function captureLockOwnerWithIdentity(
+  lockPath: string,
+  processTreeRootPid: number,
+): Promise<Record<string, unknown> & { processStartIdentity: string }> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const release = acquireNodeStoreLock(lockPath, "worker-1", { processTreeRootPid });
+    let owner: Record<string, unknown>;
+    try {
+      owner = JSON.parse(readFileSync(`${lockPath}.owner`, "utf8")) as Record<string, unknown>;
+    } finally {
+      release();
+    }
+    if (typeof owner.processStartIdentity === "string") {
+      return { ...owner, processStartIdentity: owner.processStartIdentity };
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("process start identity was not observable");
+}
+
+async function stopChildProcess(child: ReturnType<typeof spawn>): Promise<void> {
+  const exited = once(child, "exit");
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill();
+  await exited;
+}
+
+async function waitForChildReady(child: ReturnType<typeof spawn>): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      once(child, "message").then(([message]) => assert.equal(message, "ready")),
+      once(child, "exit").then(([code, signal]) => {
+        throw new Error(`child exited before ready: code=${code}, signal=${signal}`);
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("child readiness timed out")), 5_000);
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 test("node store lock preserves a live owner beyond the identity lifetime", () => {
   withTemporaryDirectory((directory) => {
     const lockPath = join(directory, "session.lock");
@@ -45,27 +92,39 @@ test("node store lock preserves a live owner beyond the identity lifetime", () =
   });
 });
 
-test("node store lock recovers when a live PID has a different start identity", () => {
-  withTemporaryDirectory((directory) => {
-    const lockPath = join(directory, "session.lock");
-    const ownerPath = `${lockPath}.owner`;
-    const releaseOwner = acquireNodeStoreLock(lockPath, "worker-1", { processTreeRootPid: process.pid });
-    const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
-    owner.processStartIdentity = `${owner.processStartIdentity}-reused`;
-    writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`);
-    rmSync(lockPath, { recursive: true });
-    let releaseReplacement: (() => void) | undefined;
-
+test("node store lock recovers when a live PID has a different start identity", async () => {
+  const reusedProcess = spawn(
+    process.execPath,
+    ["-e", "process.send?.('ready'); setInterval(() => {}, 60_000)"],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  const reusedPid = reusedProcess.pid;
+  assert.ok(reusedPid);
+  try {
+    await waitForChildReady(reusedProcess);
+    const directory = mkdtempSync(join(tmpdir(), "headless-run-storage-process-"));
     try {
-      releaseReplacement = acquireNodeStoreLock(lockPath, "worker-1");
-      releaseReplacement();
-      releaseReplacement = undefined;
-      assert.equal(existsSync(ownerPath), false);
+      const lockPath = join(directory, "session.lock");
+      const ownerPath = `${lockPath}.owner`;
+      const owner = await captureLockOwnerWithIdentity(lockPath, reusedPid);
+      owner.processStartIdentity = `${owner.processStartIdentity}-reused`;
+      writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`);
+      let releaseReplacement: (() => void) | undefined;
+
+      try {
+        releaseReplacement = acquireNodeStoreLock(lockPath, "worker-1");
+        releaseReplacement();
+        releaseReplacement = undefined;
+        assert.equal(existsSync(ownerPath), false);
+      } finally {
+        if (releaseReplacement) releaseReplacement();
+      }
     } finally {
-      if (releaseReplacement) releaseReplacement();
-      else if (existsSync(lockPath)) releaseOwner();
+      rmSync(directory, { force: true, recursive: true });
     }
-  });
+  } finally {
+    await stopChildProcess(reusedProcess);
+  }
 });
 
 test("node store lock preserves an old identity-less live owner", () => {
