@@ -71,7 +71,7 @@ jobs:
         run: npm run build
 
       - name: Test run storage
-        run: node --import tsx --test tests/run-storage.test.ts
+        run: node --import tsx --test tests/run-storage.test.ts tests/run-storage-process.test.ts
 
   python:
     name: Python ${{ matrix.python-version }}
