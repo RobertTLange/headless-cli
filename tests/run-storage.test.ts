@@ -24,7 +24,7 @@ function withTemporaryDirectory(callback: (directory: string) => void): void {
   }
 }
 
-function agePath(path: string, milliseconds = 20_000): void {
+function agePath(path: string, milliseconds = 30_000): void {
   const stale = new Date(Date.now() - milliseconds);
   utimesSync(path, stale, stale);
 }
@@ -182,6 +182,17 @@ test("node store lock does not remove an unexpected lock directory", () => {
   withTemporaryDirectory((directory) => {
     const lockPath = join(directory, "session.lock");
     mkdirSync(lockPath);
+
+    assert.throws(() => acquireNodeStoreLock(lockPath, "worker-1"), /node is locked: worker-1/);
+    assert.equal(statSync(lockPath).isDirectory(), true);
+  });
+});
+
+test("node store lock preserves a lease inside the stale window", () => {
+  withTemporaryDirectory((directory) => {
+    const lockPath = join(directory, "session.lock");
+    mkdirSync(lockPath);
+    agePath(lockPath, 15_000);
 
     assert.throws(() => acquireNodeStoreLock(lockPath, "worker-1"), /node is locked: worker-1/);
     assert.equal(statSync(lockPath).isDirectory(), true);

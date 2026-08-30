@@ -20,11 +20,13 @@ const privateDirMode = 0o700;
 const legacyInitializationGraceMs = 1_000;
 const runLockStaleMs = 5_000;
 const runLockUpdateMs = 2_500;
-const nodeLockStaleMs = 10_000;
+const nodeLockStaleMs = 20_000;
 const nodeLockUpdateMs = 5_000;
 const runLockTimeoutMs = 30_000;
 const runLockRetryMs = 10;
 const maximumProcessId = 0xffff_ffff;
+const windowsProcessTreeTimeoutMs = 3_000;
+const windowsProcessIdentityTimeoutMs = 5_000;
 const windowsRenameAttempts = 40;
 const windowsRenameRetryMs = 25;
 const windowsRenameRetryCodes = new Set(["EACCES", "EBUSY", "EPERM"]);
@@ -165,6 +167,7 @@ function acquireStoreLock(
 ): () => void {
   if (leaseOwnerBlocksAcquisition(lockPath)) throw lockContentionError(lockPath);
   if (legacyLockBlocksAcquisition(lockPath)) throw lockContentionError(lockPath);
+  const storedOwner = owner ? createStoredLockOwner(owner) : undefined;
 
   let compromisedError: Error | undefined;
   const release = loadLockSync()(lockPath, {
@@ -190,7 +193,7 @@ function acquireStoreLock(
       throw lockContentionError(lockPath);
     }
     rmSync(lockOwnerPath(lockPath), { force: true });
-    if (owner) writeLockOwner(lockPath, owner);
+    if (storedOwner) writeStoredLockOwner(lockPath, storedOwner);
   } catch (error) {
     releaseLease();
     throw error;
@@ -243,13 +246,20 @@ function validProcessId(pid: number): boolean {
 }
 
 function writeLockOwner(lockPath: string, owner: NodeStoreLockOwner): void {
-  const path = lockOwnerPath(lockPath);
-  const temporaryPath = `${path}.tmp-${randomUUID()}`;
-  const storedOwner: StoredNodeStoreLockOwner = {
+  writeStoredLockOwner(lockPath, createStoredLockOwner(owner));
+}
+
+function createStoredLockOwner(owner: NodeStoreLockOwner): StoredNodeStoreLockOwner {
+  return {
     ...owner,
     createdAtMs: Date.now(),
     processStartIdentity: processStartIdentity(owner.processTreeRootPid),
   };
+}
+
+function writeStoredLockOwner(lockPath: string, storedOwner: StoredNodeStoreLockOwner): void {
+  const path = lockOwnerPath(lockPath);
+  const temporaryPath = `${path}.tmp-${randomUUID()}`;
   let descriptor: number | undefined;
   try {
     descriptor = openSync(temporaryPath, "wx", 0o600);
@@ -371,7 +381,8 @@ export function windowsProcessTreeAlive(
   options: WindowsProcessTreeProbeOptions = {},
 ): boolean {
   if (!validProcessId(rootPid)) return true;
-  const execute = options.execute ?? executeWindowsPowerShell;
+  const execute = options.execute
+    ?? ((command, args) => executeWindowsPowerShell(command, args, windowsProcessTreeTimeoutMs));
   try {
     const output = execute(windowsPowerShellPath(options.systemRoot), [
       "-NoProfile",
@@ -390,7 +401,8 @@ export function windowsProcessStartIdentity(
   options: WindowsProcessTreeProbeOptions = {},
 ): string | undefined {
   if (!validProcessId(pid)) return undefined;
-  const execute = options.execute ?? executeWindowsPowerShell;
+  const execute = options.execute
+    ?? ((command, args) => executeWindowsPowerShell(command, args, windowsProcessIdentityTimeoutMs));
   try {
     const output = execute(windowsPowerShellPath(options.systemRoot), [
       "-NoProfile",
@@ -405,10 +417,10 @@ export function windowsProcessStartIdentity(
   }
 }
 
-function executeWindowsPowerShell(command: string, args: string[]): string {
+function executeWindowsPowerShell(command: string, args: string[], timeout: number): string {
   return execFileSync(command, args, {
     encoding: "utf8",
-    timeout: 3_000,
+    timeout,
     windowsHide: true,
   });
 }

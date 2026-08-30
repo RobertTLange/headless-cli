@@ -24,7 +24,7 @@ function withTemporaryDirectory(callback: (directory: string) => void): void {
 }
 
 function agePath(path: string): void {
-  const stale = new Date(Date.now() - 20_000);
+  const stale = new Date(Date.now() - 30_000);
   utimesSync(path, stale, stale);
 }
 
