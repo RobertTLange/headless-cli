@@ -27,6 +27,7 @@ const runLockRetryMs = 10;
 const maximumProcessId = 0xffff_ffff;
 const windowsProcessTreeTimeoutMs = 3_000;
 const windowsProcessIdentityTimeoutMs = 5_000;
+const windowsOwnerIdentityTimeoutMs = 10_000;
 const windowsRenameAttempts = 40;
 const windowsRenameRetryMs = 25;
 const windowsRenameRetryCodes = new Set(["EACCES", "EBUSY", "EPERM"]);
@@ -167,7 +168,7 @@ function acquireStoreLock(
 ): () => void {
   if (leaseOwnerBlocksAcquisition(lockPath)) throw lockContentionError(lockPath);
   if (legacyLockBlocksAcquisition(lockPath)) throw lockContentionError(lockPath);
-  const storedOwner = owner ? createStoredLockOwner(owner) : undefined;
+  const storedOwner = owner ? createStoredLockOwner(owner, windowsOwnerIdentityTimeoutMs) : undefined;
 
   let compromisedError: Error | undefined;
   const release = loadLockSync()(lockPath, {
@@ -246,14 +247,17 @@ function validProcessId(pid: number): boolean {
 }
 
 function writeLockOwner(lockPath: string, owner: NodeStoreLockOwner): void {
-  writeStoredLockOwner(lockPath, createStoredLockOwner(owner));
+  writeStoredLockOwner(lockPath, createStoredLockOwner(owner, windowsProcessIdentityTimeoutMs));
 }
 
-function createStoredLockOwner(owner: NodeStoreLockOwner): StoredNodeStoreLockOwner {
+function createStoredLockOwner(
+  owner: NodeStoreLockOwner,
+  windowsIdentityTimeoutMs: number,
+): StoredNodeStoreLockOwner {
   return {
     ...owner,
     createdAtMs: Date.now(),
-    processStartIdentity: processStartIdentity(owner.processTreeRootPid),
+    processStartIdentity: processStartIdentity(owner.processTreeRootPid, windowsIdentityTimeoutMs),
   };
 }
 
@@ -400,9 +404,17 @@ export function windowsProcessStartIdentity(
   pid: number,
   options: WindowsProcessTreeProbeOptions = {},
 ): string | undefined {
+  return probeWindowsProcessStartIdentity(pid, options, windowsProcessIdentityTimeoutMs);
+}
+
+function probeWindowsProcessStartIdentity(
+  pid: number,
+  options: WindowsProcessTreeProbeOptions,
+  timeoutMs: number,
+): string | undefined {
   if (!validProcessId(pid)) return undefined;
   const execute = options.execute
-    ?? ((command, args) => executeWindowsPowerShell(command, args, windowsProcessIdentityTimeoutMs));
+    ?? ((command, args) => executeWindowsPowerShell(command, args, timeoutMs));
   try {
     const output = execute(windowsPowerShellPath(options.systemRoot), [
       "-NoProfile",
@@ -425,7 +437,7 @@ function executeWindowsPowerShell(command: string, args: string[], timeout: numb
   });
 }
 
-function processStartIdentity(pid: number): string | undefined {
+function processStartIdentity(pid: number, windowsTimeoutMs = windowsProcessIdentityTimeoutMs): string | undefined {
   if (process.platform === "linux") {
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -439,7 +451,7 @@ function processStartIdentity(pid: number): string | undefined {
     return macosProcessStartIdentity(pid);
   }
   if (process.platform === "win32") {
-    return windowsProcessStartIdentity(pid);
+    return probeWindowsProcessStartIdentity(pid, {}, windowsTimeoutMs);
   }
   return undefined;
 }
