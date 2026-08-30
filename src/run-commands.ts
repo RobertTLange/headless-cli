@@ -1,6 +1,7 @@
 import { closeSync, openSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { extractFinalMessage } from "./output.js";
 import { deriveNativeTranscriptActivity, nativeTranscriptKey, resolveLatestNativeTranscripts } from "./native-transcripts.js";
@@ -10,7 +11,6 @@ import {
   acquireNodeLock,
   appendNodeLog,
   listRuns,
-  nodeLockPath,
   readRun,
   recordMessage,
   runDirectory,
@@ -22,6 +22,7 @@ import { quoteCommand } from "./shell.js";
 import { renderSdkResult, type SdkFormat } from "./sdk.js";
 import type { AgentName, Env } from "./types.js";
 import type { RunStatus } from "./roles.js";
+import type { AsyncRunMessageRequest, AsyncRunMessageResponse, AsyncRunMessageTask } from "./async-run-message.js";
 
 export interface RunCommandInput {
   command: "list" | "view" | "mark" | "message" | "wait";
@@ -195,14 +196,14 @@ async function handleRunMessage(
 
   if (input.printCommand) {
     const command = input.async
-      ? buildAsyncRunMessageCommand(handlers.env, runId, nodeId, node, prompt.prompt)
+      ? buildAsyncMessageCliCommand(handlers.env, runId, nodeId, prompt.prompt)
       : buildNodeInvocationCommand(handlers.env, runId, nodeId, node, prompt.prompt);
     handlers.stdout(`${quoteCommand(command)}\n`);
     return 0;
   }
 
   if (input.async) {
-    return startAsyncRunMessage(handlers, runId, nodeId, node, prompt.prompt);
+    return await startAsyncRunMessage(handlers, runId, nodeId, node, prompt.prompt);
   }
 
   const releaseLock = acquireNodeLock(handlers.env, runId, nodeId);
@@ -301,39 +302,145 @@ function tmuxTranscriptScope(agent: AgentName, workDir: string | undefined): str
   return `${agent}\t${workDir ?? ""}`;
 }
 
-function startAsyncRunMessage(
+async function startAsyncRunMessage(
   handlers: RunCommandHandlers,
   runId: string,
   nodeId: string,
   node: RunNode,
   prompt: string,
-): number {
-  const releaseLock = acquireNodeLock(handlers.env, runId, nodeId);
+): Promise<number> {
   const stderrLog = node.logs?.stderr ?? join(runDirectory(handlers.env, runId), "nodes", nodeId, "latest.stderr.log");
-  recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt);
-  updateNodeStatus(handlers.env, runId, nodeId, "busy");
-  appendNodeLog(handlers.env, runId, nodeId, "stdout", `\n===== async message ${new Date().toISOString()} =====\n`);
-  appendNodeLog(handlers.env, runId, nodeId, "stderr", `\n===== async message ${new Date().toISOString()} =====\n`);
-  const command = buildAsyncRunMessageCommand(handlers.env, runId, nodeId, node, prompt);
-
   const errFd = openSync(stderrLog, "a");
+  let worker: ChildProcess;
   try {
-    const childProcess = spawn(command.command, command.args, {
-      cwd: node.workDir,
+    worker = fork(asyncRunMessageWorkerPath(), [], {
       env: handlers.env as NodeJS.ProcessEnv,
       detached: true,
-      stdio: ["ignore", "ignore", errFd],
+      stdio: ["ignore", "ignore", errFd, "ipc"],
     });
-    childProcess.unref();
-  } catch (error) {
-    releaseLock();
-    updateNodeStatus(handlers.env, runId, nodeId, "failed", error instanceof Error ? error.message : String(error));
-    throw error;
   } finally {
     closeSync(errFd);
   }
+
+  const task: AsyncRunMessageTask = {
+    command: buildNodeInvocationCommand(handlers.env, runId, nodeId, node, prompt),
+    cwd: node.workDir,
+    runId,
+    nodeId,
+  };
+  await prepareAsyncWorker(worker, task);
+  try {
+    recordMessage(handlers.env, runId, handlers.env.HEADLESS_RUN_NODE || "cli", nodeId, prompt);
+    updateNodeStatus(handlers.env, runId, nodeId, "busy");
+    const timestamp = new Date().toISOString();
+    appendNodeLog(handlers.env, runId, nodeId, "stdout", `\n===== async message ${timestamp} =====\n`);
+    appendNodeLog(handlers.env, runId, nodeId, "stderr", `\n===== async message ${timestamp} =====\n`);
+    await startPreparedAsyncWorker(worker);
+  } catch (error) {
+    try {
+      updateNodeStatus(
+        handlers.env,
+        runId,
+        nodeId,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    } catch {
+      // Preserve the startup error when rollback storage also fails.
+    }
+    cancelAsyncWorker(worker);
+    throw error;
+  }
+  if (worker.connected) worker.disconnect();
+  worker.unref();
   handlers.stdout(`started: ${runId}/${nodeId}\n`);
   return 0;
+}
+
+function prepareAsyncWorker(worker: ChildProcess, task: AsyncRunMessageTask): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => fail(new Error("async message worker did not become ready")), 5_000);
+    timeout.unref();
+    const cleanup = () => {
+      clearTimeout(timeout);
+      worker.off("message", onMessage);
+      worker.off("error", fail);
+      worker.off("exit", onExit);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      cancelAsyncWorker(worker);
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      fail(new Error(`async message worker exited before startup (${signal ?? code ?? "unknown"})`));
+    };
+    const onMessage = (message: AsyncRunMessageResponse) => {
+      if (message.type === "error") {
+        fail(new Error(message.message));
+        return;
+      }
+      cleanup();
+      resolve();
+    };
+    worker.once("error", fail);
+    worker.once("exit", onExit);
+    worker.on("message", onMessage);
+    void sendWorkerRequest(worker, { type: "task", task }).catch(fail);
+  });
+}
+
+function sendWorkerRequest(worker: ChildProcess, request: AsyncRunMessageRequest): Promise<void> {
+  return new Promise((resolve, reject) => {
+    worker.send(request, (error) => error ? reject(error) : resolve());
+  });
+}
+
+function startPreparedAsyncWorker(worker: ChildProcess): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => fail(new Error("async message worker did not start its agent")), 5_000);
+    timeout.unref();
+    const cleanup = () => {
+      clearTimeout(timeout);
+      worker.off("message", onMessage);
+      worker.off("error", fail);
+      worker.off("exit", onExit);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      fail(new Error(`async message worker exited before agent startup (${signal ?? code ?? "unknown"})`));
+    };
+    const onMessage = (message: AsyncRunMessageResponse) => {
+      if (message.type === "error") {
+        fail(new Error(message.message));
+      } else if (message.type === "started") {
+        cleanup();
+        resolve();
+      }
+    };
+    worker.once("error", fail);
+    worker.once("exit", onExit);
+    worker.on("message", onMessage);
+    void sendWorkerRequest(worker, { type: "start" }).catch(fail);
+  });
+}
+
+function cancelAsyncWorker(worker: ChildProcess): void {
+  worker.once("error", () => undefined);
+  if (worker.connected) {
+    worker.send({ type: "cancel" } satisfies AsyncRunMessageRequest, () => {
+      if (worker.connected) worker.disconnect();
+    });
+  }
+  worker.unref();
+}
+
+function asyncRunMessageWorkerPath(): string {
+  const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
+  return fileURLToPath(new URL(`./async-run-message.${extension}`, import.meta.url));
 }
 
 function buildNodeInvocationCommand(env: Env, runId: string, nodeId: string, node: RunNode, prompt: string): {
@@ -366,27 +473,14 @@ function buildNodeInvocationCommand(env: Env, runId: string, nodeId: string, nod
   };
 }
 
-function buildAsyncRunMessageCommand(env: Env, runId: string, nodeId: string, node: RunNode, prompt: string): {
+function buildAsyncMessageCliCommand(env: Env, runId: string, nodeId: string, prompt: string): {
   command: string;
   args: string[];
 } {
-  const stderrLog = node.logs?.stderr ?? join(runDirectory(env, runId), "nodes", nodeId, "latest.stderr.log");
-  const child = quoteCommand(buildNodeInvocationCommand(env, runId, nodeId, node, prompt));
-  const cli = headlessCli(env);
-  const success = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "idle"] });
-  const failure = quoteCommand({ command: cli, args: ["run", "mark", runId, nodeId, "--status", "failed"] });
-  const unlock = quoteCommand({ command: "rm", args: ["-f", nodeLockPath(env, runId, nodeId)] });
-  const quotedStderrLog = quotePath(stderrLog);
-  const signalFailure = `${failure} >/dev/null 2>> ${quotedStderrLog}; ${unlock}; exit 143`;
-  const script = [
-    `trap "${signalFailure}" INT TERM HUP`,
-    `trap "${unlock}" EXIT`,
-    `${child} >/dev/null 2>> ${quotedStderrLog}`,
-    "code=$?",
-    `if [ "$code" -eq 0 ]; then ${success} >/dev/null 2>> ${quotedStderrLog}; else printf '%s\\n' "async child exited with code $code" >> ${quotedStderrLog}; ${failure} >/dev/null 2>> ${quotedStderrLog}; fi`,
-    'exit "$code"',
-  ].join("; ");
-  return { command: "sh", args: ["-c", script] };
+  return {
+    command: headlessCli(env),
+    args: ["run", "message", runId, nodeId, "--prompt", prompt, "--async"],
+  };
 }
 
 function headlessCli(env: Env): string {
@@ -399,10 +493,6 @@ function parseDelayMs(value: string | undefined, fallback: number): number {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function quotePath(path: string): string {
-  return quoteCommand({ command: path, args: [] });
 }
 
 function requireValue(value: string | undefined, label: string): string {

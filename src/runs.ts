@@ -3,17 +3,24 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  fchmodSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 
 import type { CoordinationMode, Role, RunStatus } from "./roles.js";
+import {
+  acquireNodeStoreLock,
+  acquireRunStoreLock,
+  replaceRunStateFile,
+  type NodeStoreLockOwner,
+} from "./run-storage.js";
 import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
 
 const privateDirMode = 0o700;
@@ -361,21 +368,10 @@ export function recordMessage(
   });
 }
 
-export function acquireNodeLock(env: Env, runId: string, nodeId: string): () => void {
+export function acquireNodeLock(env: Env, runId: string, nodeId: string, owner?: NodeStoreLockOwner): () => void {
   const lockPath = nodeLockPath(env, runId, nodeId);
   ensurePrivateDir(dirname(lockPath));
-  let fd: number;
-  try {
-    fd = openSync(lockPath, "wx", privateFileMode);
-    chmodSync(lockPath, privateFileMode);
-  } catch {
-    throw new Error(`node is locked: ${nodeId}`);
-  }
-  writeFileSync(fd, `${process.pid}\n`);
-  return () => {
-    closeSync(fd);
-    rmSync(lockPath, { force: true });
-  };
+  return acquireNodeStoreLock(lockPath, nodeId, owner);
 }
 
 export function writeRun(env: Env, run: RunRecord): void {
@@ -386,10 +382,19 @@ export function writeRun(env: Env, run: RunRecord): void {
   }
   run.updatedAt = new Date().toISOString();
   const path = join(dir, "run.json");
-  const tmpPath = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmpPath, `${JSON.stringify(run, null, 2)}\n`, { mode: privateFileMode });
-  chmodSync(tmpPath, privateFileMode);
-  renameSync(tmpPath, path);
+  const tmpPath = `${path}.tmp-${randomUUID()}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(tmpPath, "wx", privateFileMode);
+    writeFileSync(descriptor, `${JSON.stringify(run, null, 2)}\n`);
+    fchmodSync(descriptor, privateFileMode);
+    closeSync(descriptor);
+    descriptor = undefined;
+    replaceRunStateFile(tmpPath, path);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    rmSync(tmpPath, { force: true });
+  }
   chmodSync(path, privateFileMode);
   const eventsPath = join(dir, "events.jsonl");
   const event = run.events.at(-1);
@@ -411,29 +416,7 @@ function acquireRunLock(env: Env, runId: string): () => void {
   const dir = runDirectory(env, runId);
   ensurePrivateDir(dir);
   const lockPath = join(dir, "run.lock");
-  const deadline = Date.now() + 30000;
-  let fd: number;
-  while (true) {
-    try {
-      fd = openSync(lockPath, "wx", privateFileMode);
-      chmodSync(lockPath, privateFileMode);
-      break;
-    } catch {
-      if (Date.now() >= deadline) {
-        throw new Error(`run is locked: ${runId}`);
-      }
-      sleepSync(10);
-    }
-  }
-  writeFileSync(fd, `${process.pid}\n`);
-  return () => {
-    closeSync(fd);
-    rmSync(lockPath, { force: true });
-  };
-}
-
-function sleepSync(milliseconds: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+  return acquireRunStoreLock(lockPath, runId);
 }
 
 function requireRun(env: Env, runId: string): RunRecord {

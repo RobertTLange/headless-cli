@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.ts";
-import { acquireNodeLock, appendNodeLog, nodeLockPath, readRun, registerNode, updateNodeStatus } from "../src/runs.ts";
+import {
+  acquireNodeLock,
+  appendNodeLog,
+  nodeLockPath,
+  readRun,
+  registerNode,
+  runDirectory,
+  updateNodeStatus,
+  writeRun,
+} from "../src/runs.ts";
 import { expandTeamSpecs, parseTeamSpec } from "../src/teams.ts";
 
 async function writeExecutable(path: string, source: string): Promise<void> {
@@ -185,12 +194,38 @@ test("run store writes private run files, logs, and locks", () => {
 
     const release = acquireNodeLock(env, "auth", "worker-1");
     try {
-      assert.equal(modeOf(nodeLockPath(env, "auth", "worker-1")), 0o600);
+      assert.equal(modeOf(nodeLockPath(env, "auth", "worker-1")), 0o700);
     } finally {
       release();
     }
   } finally {
     process.umask(previousUmask);
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("run store removes its temporary state file after replacement fails", () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
+  try {
+    const env = { ...process.env, HOME: join(dir, "home") };
+    registerNode(env, {
+      runId: "auth",
+      nodeId: "worker-1",
+      role: "worker",
+      agent: "codex",
+      coordination: "oneshot",
+      status: "idle",
+      planned: true,
+    });
+    const run = readRun(env, "auth");
+    assert.ok(run);
+    const statePath = join(runDirectory(env, "auth"), "run.json");
+    rmSync(statePath);
+    mkdirSync(statePath);
+
+    assert.throws(() => writeRun(env, run));
+    assert.equal(readdirSync(runDirectory(env, "auth")).some((name) => name.startsWith("run.json.tmp-")), false);
+  } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
@@ -1321,6 +1356,7 @@ test("run message --async records busy status, logs output, and marks completion
     const binDir = join(dir, "bin");
     const fakeHeadless = join(binDir, "headless");
     const captureFile = join(dir, "headless-args.jsonl");
+    const childStartedFile = join(dir, "child-started");
     mkdirSync(home);
     await writeExecutable(
       fakeHeadless,
@@ -1345,12 +1381,20 @@ test("run message --async records busy status, logs output, and marks completion
         "  const dir = path.join(process.env.HOME, '.headless', 'runs', runId, 'nodes', nodeId);",
         "  fs.mkdirSync(dir, { recursive: true });",
         "  fs.appendFileSync(path.join(dir, 'latest.stdout.log'), 'async child output\\n');",
+        "  fs.writeFileSync(process.env.HEADLESS_CHILD_STARTED, 'started\\n');",
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);",
         "}",
         "console.log('async child output should not be wrapper-redirected');",
         "",
       ].join("\n"),
     );
-    const env = { ...process.env, HEADLESS_CAPTURE: captureFile, HEADLESS_CLI_BIN: fakeHeadless, HOME: home };
+    const env = {
+      ...process.env,
+      HEADLESS_CAPTURE: captureFile,
+      HEADLESS_CHILD_STARTED: childStartedFile,
+      HEADLESS_CLI_BIN: fakeHeadless,
+      HOME: home,
+    };
     registerNode(env, {
       runId: "auth",
       nodeId: "worker-1",
@@ -1371,6 +1415,17 @@ test("run message --async records busy status, logs output, and marks completion
       0,
     );
     assert.equal(readRun(env, "auth")?.nodes["worker-1"].status, "busy");
+    await waitFor(() => existsSync(childStartedFile));
+    const lockedStderr: string[] = [];
+    assert.equal(
+      await runCli(["run", "message", "auth", "worker-1", "--prompt", "overlap", "--async"], {
+        env,
+        stdout: () => undefined,
+        stderr: (text) => lockedStderr.push(text),
+      }),
+      2,
+    );
+    assert.match(lockedStderr.join(""), /node is locked: worker-1/);
     await waitFor(() => readRun(env, "auth")?.nodes["worker-1"].status === "idle");
     const stdoutLog = readRun(env, "auth")?.nodes["worker-1"].logs?.stdout ?? "";
     await waitFor(() => existsSync(stdoutLog) && readFileSync(stdoutLog, "utf8").includes("async child output"));
@@ -1378,6 +1433,11 @@ test("run message --async records busy status, logs output, and marks completion
     assert.match(stdoutText, /previous output/);
     assert.doesNotMatch(stdoutText, /marked fake/);
     assert.doesNotMatch(stdoutText, /wrapper-redirected/);
+    await waitFor(
+      () => !existsSync(nodeLockPath(env, "auth", "worker-1"))
+        && !existsSync(`${nodeLockPath(env, "auth", "worker-1")}.owner`),
+    );
+    acquireNodeLock(env, "auth", "worker-1")();
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -1494,13 +1554,13 @@ test("run message --async uses HEADLESS_BIN for detached child invocations", asy
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(calls[0].slice(0, 7), ["codex", "--role", "worker", "--coordination", "oneshot", "--run", "auth"]);
     assert.equal(calls[0].includes("--fast"), true);
-    assert.deepEqual(calls.at(-1), ["run", "mark", "auth", "worker-1", "--status", "idle"]);
+    assert.equal(calls.length, 1);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }
 });
 
-test("run message --async print-command uses a non-login shell to preserve PATH", async () => {
+test("run message --async print-command renders an executable async invocation without mutating state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-run-test-"));
   try {
     const env = { ...process.env, HOME: join(dir, "home") };
@@ -1524,9 +1584,8 @@ test("run message --async print-command uses a non-login shell to preserve PATH"
       0,
     );
     const output = stdout.join("");
-    assert.match(output, /^sh -c /);
-    assert.match(output, /trap /);
-    assert.doesNotMatch(output, /^sh -lc /);
+    assert.match(output, /^headless run message auth explorer-1 --prompt continue --async/);
+    assert.doesNotMatch(output, /^sh /);
     assert.equal(readRun(env, "auth")?.nodes["explorer-1"].status, "idle");
     assert.equal(readRun(env, "auth")?.nodes["explorer-1"].lastMessage, undefined);
   } finally {

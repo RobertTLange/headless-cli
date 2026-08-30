@@ -44,6 +44,35 @@ jobs:
           npm pack --pack-destination /tmp
           npx -y --package /tmp/roberttlange-headless-*.tgz headless --help
 
+  windows-run-storage:
+    name: Windows run storage / Node ${{ matrix.node-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 22
+          - 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test run storage
+        run: node --import tsx --test tests/run-storage.test.ts tests/run-storage-process.test.ts
+
   python:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

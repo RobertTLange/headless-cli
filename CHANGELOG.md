@@ -2,6 +2,8 @@
 
 ## TBD
 
+- Fixed run coordination to recover stale run and node locks after owner crashes, retain async ownership for the full detached process tree, and handle Windows process probing and state replacement safely (#28).
+
 ## 0.6.1 - 2026-08-12
 
 - Fixed Modal runs to use the immutable, verified v0.6.0 runtime image digest instead of a stale cached `latest` tag.

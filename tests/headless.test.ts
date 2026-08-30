@@ -1558,6 +1558,66 @@ test("CLI forwards parent signals to timeout-enabled agents", async () => {
   }
 });
 
+test("CLI forwards parent signals for async message workers without a timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  const agentPidFile = join(dir, "agent.pid");
+  const signalFile = join(dir, "signal.txt");
+  let agentPid: number | undefined;
+  try {
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir);
+    const binary = join(binDir, "codex");
+    writeFileSync(
+      binary,
+      [
+        "#!/usr/bin/env node",
+        "const { writeFileSync } = require('node:fs');",
+        "writeFileSync(process.env.HEADLESS_TEST_AGENT_PID, String(process.pid));",
+        "process.on('SIGTERM', () => {",
+        "  writeFileSync(process.env.HEADLESS_TEST_SIGNAL_FILE, 'SIGTERM');",
+        "  process.exit(143);",
+        "});",
+        "setInterval(() => {}, 1000);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+
+    const headless = spawn(
+      process.execPath,
+      ["--import", "tsx", join(repoRoot, "src", "cli.ts"), "codex", "--prompt", "hello", "--json"],
+      {
+        env: {
+          ...process.env,
+          HEADLESS_ASYNC_MESSAGE_WORKER: "1",
+          HEADLESS_TEST_AGENT_PID: agentPidFile,
+          HEADLESS_TEST_SIGNAL_FILE: signalFile,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdio: "ignore",
+      },
+    );
+    await waitFor(() => existsSync(agentPidFile));
+
+    headless.kill("SIGTERM");
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      headless.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+
+    assert.deepEqual(exit, { code: null, signal: "SIGTERM" });
+    await waitFor(() => existsSync(signalFile));
+    assert.equal(readFileSync(signalFile, "utf8"), "SIGTERM");
+  } finally {
+    try {
+      agentPid = Number(readFileSync(agentPidFile, "utf8"));
+      if (Number.isInteger(agentPid) && agentPid > 0 && processIsAlive(agentPid)) process.kill(agentPid, "SIGKILL");
+    } catch {
+      // The wrapper may fail before launching its agent.
+    }
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("CLI forwards parent signals while holding a durable Docker session lock", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   const dockerPidFile = join(dir, "docker.pid");
