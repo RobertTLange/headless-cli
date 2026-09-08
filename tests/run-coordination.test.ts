@@ -1093,6 +1093,8 @@ test("run wait reconciles completed tmux nodes from native transcripts", async (
         "",
       ].join("\n"),
     );
+    const transcriptTime = new Date(Date.now() + 1000);
+    utimesSync(transcriptPath, transcriptTime, transcriptTime);
 
     const stdout: string[] = [];
     assert.equal(
