@@ -4543,7 +4543,7 @@ test("CLI --usage splits Pi provider/model specs", async () => {
   }
 });
 
-test("CLI --usage reports OpenCode hard default model", async () => {
+test("CLI --usage reports OpenCode hard default model and sums completed steps", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
     const binDir = join(dir, "bin");
@@ -4556,6 +4556,7 @@ test("CLI --usage reports OpenCode hard default model", async () => {
           "#!/usr/bin/env node",
           "console.log(JSON.stringify({ role: 'assistant', parts: [{ type: 'text', text: 'final answer' }] }));",
           "console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 100, output: 10, reasoning: 5, cache: { read: 0, write: 0 } }, cost: 0.5 } }));",
+          "console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 200, output: 20, reasoning: 10, cache: { read: 30, write: 4 } }, cost: 1 } }));",
           "",
         ].join("\n"),
       );
@@ -4574,6 +4575,9 @@ test("CLI --usage reports OpenCode hard default model", async () => {
     assert.equal(usage.model, "gpt-5.4");
     assert.equal(usage.pricingStatus, "native");
     assert.equal(usage.costBasis, "native-reported");
+    assert.equal(usage.cost.total, 1.5);
+    assert.equal(usage.inputTokens, 300);
+    assert.equal(usage.totalTokens, 379);
   } finally {
     rmSync(dir, { force: true, recursive: true });
   }

@@ -97,6 +97,7 @@ import {
 } from "./launch-lock.js";
 import { forceKillWindowsProcessTree } from "./process-tree.js";
 import { compactOversizedTraceLine } from "./relevant-trace.js";
+import { OpencodeUsageAccumulator } from "./opencode-usage.js";
 import { handleRunCommand as handleRunCommandImpl } from "./run-commands.js";
 import { handleCronCommand as handleCronCommandImpl, type CronCommand } from "./cron-commands.js";
 import { runCronDaemon } from "./cron.js";
@@ -1769,6 +1770,7 @@ async function executeCommand(
       let traceBuffer = "";
       let traceRowDiscarded = false;
       const relevantTrace: string[] = [];
+      const opencodeUsage = agent === "opencode" ? new OpencodeUsageAccumulator() : undefined;
       let relevantTraceBytes = 0;
       const finalMessageTrace: string[] = [];
       let finalMessageTraceBytes = 0;
@@ -1793,6 +1795,7 @@ async function executeCommand(
       const codexIdentityPattern = /"type"\s*:\s*"thread\.started"/;
       const appendRelevantTrace = (line: string) => {
         let trimmed = line.trim();
+        if (opencodeUsage?.addLine(trimmed)) return;
         if (!trimmed || !relevantTracePattern.test(trimmed)) return;
         let entryBytes = Buffer.byteLength(trimmed, "utf8") + 1;
         if (entryBytes > maxRelevantTraceBytes) {
@@ -1858,7 +1861,7 @@ async function executeCommand(
         traceBuffer = "";
       };
       const readRelevantTrace = () => {
-        const rollingTrace = relevantTrace.join("");
+        const rollingTrace = relevantTrace.join("") + (opencodeUsage?.trace() ?? "");
         return pinnedIdentityTrace && !rollingTrace.includes(pinnedIdentityTrace)
           ? `${pinnedIdentityTrace}${rollingTrace}`
           : rollingTrace;
