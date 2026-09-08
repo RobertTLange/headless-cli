@@ -638,6 +638,46 @@ test("prices Cursor effort model variants with base model rates", () => {
   assert.equal(summary.pricingStatus, "priced");
 });
 
+test("prices Cursor parameterized effort models with base model rates", () => {
+  const trace = JSON.stringify({
+    type: "result",
+    usage: {
+      inputTokens: 1000,
+      outputTokens: 20,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+    },
+  });
+
+  const summary = priceUsageSummary(
+    extractUsageSummary("cursor", trace, { model: "gpt-5.6[effort=max]" }),
+    {
+      openai: {
+        models: {
+          "gpt-5.6": {
+            cost: {
+              input: 4,
+              cache_read: 0.4,
+              output: 20,
+            },
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(summary.model, "gpt-5.6[effort=max]");
+  assert.deepEqual(summary.cost, {
+    input: 0.004,
+    cacheRead: 0.00016,
+    cacheWrite: 0,
+    output: 0.0004,
+    total: 0.00456,
+  });
+  assert.equal(summary.costBasis, "api-list-price-estimate");
+  assert.equal(summary.pricingStatus, "priced");
+});
+
 test("extracts Gemini multi-model usage and sums priced costs", () => {
   const trace = JSON.stringify({
     type: "result",

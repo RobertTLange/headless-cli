@@ -285,7 +285,7 @@ function usage(): string {
     "  --profile <name>      Codex configuration profile.",
     "  --fast                Enable Fast mode for Codex or Claude.",
     "  --no-fast             Disable ambient Fast mode for Codex or Claude.",
-    "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
+    "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, xhigh, or max.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --acp-agent <id>      With acp, resolve an ACP server from the registry by id or name.",
     "  --acp-command <cmd>   With acp, run a custom ACP server command, e.g. 'atlas alta agent run'.",
@@ -736,7 +736,7 @@ function validateSafeName(value: string | undefined, label: string): string {
 }
 
 function parseReasoningEffort(value: string): ReasoningEffort {
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") {
     return value;
   }
   throw new CliError(`unsupported reasoning effort: ${value}`);

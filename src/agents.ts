@@ -85,8 +85,33 @@ function withCursorAllow(args: string[], allow: AllowMode | undefined): string[]
   return allow === "yolo" || allow === undefined ? [...args, "--force"] : args;
 }
 
+function cursorBaseModel(model: string): string {
+  return model.replace(/-(low|medium|high|xhigh|extra-high|max)(-fast)?$/i, "");
+}
+
 function isCursorReasoningVariant(model: string): boolean {
-  return /-(low|medium|high|xhigh|extra-high)(-fast)?$/i.test(model);
+  return cursorBaseModel(model) !== model;
+}
+
+function withCursorReasoningEffort(model: string, effort: ReasoningEffort): string {
+  const openBracket = model.lastIndexOf("[");
+  if (openBracket === -1 || !model.endsWith("]")) {
+    return `${model}[effort=${effort}]`;
+  }
+
+  const baseModel = model.slice(0, openBracket);
+  const parameters = model
+    .slice(openBracket + 1, -1)
+    .split(",")
+    .map((parameter) => parameter.trim())
+    .filter(Boolean);
+  const effortIndex = parameters.findIndex((parameter) => /^effort\s*=/i.test(parameter));
+  if (effortIndex >= 0) {
+    parameters[effortIndex] = `effort=${effort}`;
+  } else {
+    parameters.push(`effort=${effort}`);
+  }
+  return `${baseModel}[${parameters.join(",")}]`;
 }
 
 function supportsCursorReasoningVariants(model: string): boolean {
@@ -120,10 +145,13 @@ function cursorReasoningVariant(model: string, effort: ReasoningEffort): string 
 
 export function cursorModel(options: Pick<BuildOptions, "model" | "reasoningEffort">): string {
   const model = options.model ?? DEFAULT_CURSOR_MODEL;
-  if (isCursorReasoningVariant(model)) return model;
-  if (!supportsCursorReasoningVariants(model)) return model;
   const effort = options.reasoningEffort ?? (options.model ? undefined : "medium");
   if (!effort) return model;
+  if (effort === "max") {
+    return withCursorReasoningEffort(isCursorReasoningVariant(model) ? cursorBaseModel(model) : model, effort);
+  }
+  if (isCursorReasoningVariant(model)) return model;
+  if (!supportsCursorReasoningVariants(model)) return model;
   return cursorReasoningVariant(model, effort) ?? model;
 }
 

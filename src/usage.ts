@@ -583,9 +583,13 @@ function findPricingModel(
 
 function pricingModelCandidates(model: string): string[] {
   const candidates = [model];
-  const cursorVariant = model.match(/^(.+?)-(extra-high|xhigh|medium|high|low)(-fast)?$/i);
+  const cursorVariant = model.match(/^(.+?)-(extra-high|xhigh|medium|high|low|max)(-fast)?$/i);
   if (cursorVariant?.[1]) {
     candidates.push(cursorVariant[1]);
+  }
+  const cursorParameterized = model.match(/^(.+?)\[[^\]]*\]$/);
+  if (cursorParameterized?.[1]) {
+    candidates.push(cursorParameterized[1]);
   }
   return candidates;
 }

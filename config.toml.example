@@ -19,7 +19,7 @@ model = "claude-opus-4-6"
 
 [agents.codex]
 model = "gpt-5.5"
-# reasoning_effort = "xhigh"
+# reasoning_effort = "max" # Use only with a model/backend that supports max.
 
 [agents.cursor]
 model = "gpt-5.5"

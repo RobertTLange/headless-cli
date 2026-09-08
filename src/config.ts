@@ -227,7 +227,7 @@ function parseRoleName(value: string, lineNumber: number): Role {
 }
 
 function parseConfigReasoningEffort(value: string, lineNumber: number): ReasoningEffort {
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") {
     return value;
   }
   throw new Error(`unsupported headless config reasoning_effort at line ${lineNumber}: ${value}`);

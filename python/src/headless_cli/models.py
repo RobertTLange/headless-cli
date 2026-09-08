@@ -14,7 +14,7 @@ Agent = Literal[
     "acp",
 ]
 AllowMode = Literal["read-only", "yolo"]
-ReasoningEffort = Literal["low", "medium", "high", "xhigh"]
+ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 Role = Literal["orchestrator", "explorer", "worker", "reviewer"]
 Coordination = Literal["session", "tmux", "oneshot"]
 RunStatus = Literal[

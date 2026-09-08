@@ -4,7 +4,7 @@ export type PromptFileMode = "argument" | "stdin";
 
 export type AllowMode = "read-only" | "yolo";
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type Env = Record<string, string | undefined>;
 
