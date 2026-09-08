@@ -1,5 +1,6 @@
 import type { AgentName } from "./types.js";
 import type { ModelsDevPricingData } from "./models-dev.js";
+import { OpencodeUsageAccumulator } from "./opencode-usage.js";
 
 export { fetchModelsDevPricing } from "./models-dev.js";
 
@@ -417,31 +418,44 @@ function extractGeminiUsage(records: JsonRecord[], context: UsageContext): Usage
 }
 
 function extractOpencodeUsage(records: JsonRecord[], context: UsageContext): UsageSummary | undefined {
-  const record = latestRecordWith(records, (item) => {
-    const tokens = asRecord(asRecord(item.part).tokens);
-    const cache = asRecord(tokens.cache);
-    return hasNumericField(tokens, ["input", "output", "reasoning"]) || hasNumericField(cache, ["read", "write"]);
-  });
-  if (!record) return undefined;
-  const part = asRecord(record.part);
-  const tokens = asRecord(part.tokens);
-  const cache = asRecord(tokens.cache);
+  const steps = new OpencodeUsageAccumulator();
+  for (const record of records) steps.add(record);
+  const parts = steps.parts();
+  if (parts.length === 0) return undefined;
+  const tokens = parts.map((part) => asRecord(part.tokens));
+  const sumTokens = (field: string) => tokens.reduce((sum, token) => sum + asNumber(token[field]), 0);
+  const sumCache = (field: string) => tokens.reduce((sum, token) => sum + asNumber(asRecord(token.cache)[field]), 0);
+  const costs = parts.map((part) => asOptionalNumber(part.cost));
+  const totalCost = costs.every((cost) => cost !== undefined)
+    ? roundCost(costs.reduce((sum, cost) => sum + cost, 0))
+    : undefined;
   const requested = requestedProviderModel(context);
-  const totalCost = asOptionalNumber(part.cost);
+  const model = extractModel(records, context);
+  const usage = {
+    inputTokens: sumTokens("input"),
+    cacheReadTokens: sumCache("read"),
+    cacheWriteTokens: sumCache("write"),
+    outputTokens: sumTokens("output"),
+    reasoningOutputTokens: sumTokens("reasoning"),
+  };
   return summarizeUsage({
     agent: "opencode",
     provider: requested.provider,
-    model: extractModel(records, context),
-    inputTokens: asNumber(tokens.input),
-    cacheReadTokens: asNumber(cache.read),
-    cacheWriteTokens: asNumber(cache.write),
-    outputTokens: asNumber(tokens.output),
-    reasoningOutputTokens: asNumber(tokens.reasoning),
+    model,
+    ...usage,
     reasoningOutputIncludedInOutput: false,
     cost: totalCost === undefined ? null : nativeCost(totalCost),
     costBasis: totalCost === undefined ? null : "native-reported",
     pricingSource: totalCost === undefined ? null : "native",
     pricingStatus: totalCost === undefined ? "missing" : "native",
+    modelBreakdowns: totalCost === undefined ? [{
+      provider: requested.provider,
+      model,
+      inputTokens: usage.inputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
+      outputTokens: usage.outputTokens + usage.reasoningOutputTokens,
+    }] : undefined,
   });
 }
 
