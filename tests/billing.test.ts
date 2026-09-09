@@ -344,6 +344,16 @@ for (const [relativePath, customDir] of [
       assert.equal(readFileSync(join(home.env.HOME!, relativePath), "utf8"), JSON.stringify({ primaryApiKey: "must-not-leak" }));
     } finally { home.cleanup(); }
   });
+
+  test(`Claude subscription rejects paid environment in ${relativePath}`, () => {
+    const home = credentialHome({ [relativePath]: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } });
+    try {
+      const env = { ...home.env, CLAUDE_CODE_OAUTH_TOKEN: "subscription",
+        ...(customDir ? { CLAUDE_CONFIG_DIR: join(home.env.HOME!, customDir) } : {}) };
+      assert.throws(() => prepareBillingAttempt("claude", prompt, env, "subscription"),
+        /subscription billing conflicts/);
+    } finally { home.cleanup(); }
+  });
 }
 
 test("explicit Claude subscription token takes precedence over a saved managed API key", () => {
@@ -357,7 +367,7 @@ test("explicit Claude subscription token takes precedence over a saved managed A
 });
 
 test("Claude global config lookup respects custom directory and legacy file precedence", () => {
-  const home = credentialHome({ ".claude.json": { primaryApiKey: "unused-api" }, "custom/.config.json": {} });
+  const home = credentialHome({ ".claude.json": { primaryApiKey: "unused-api", env: { CLAUDE_CODE_USE_BEDROCK: "1" } }, "custom/.config.json": {} });
   try {
     const env = { ...home.env, CLAUDE_CONFIG_DIR: join(home.env.HOME!, "custom") };
     assert.equal(prepareBillingAttempt("claude", prompt, env, "subscription").route, "subscription");

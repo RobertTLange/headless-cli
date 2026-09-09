@@ -231,6 +231,7 @@ function uninspectableToml(): BillingError {
 
 function rejectClaudePaidSettings(options: BuildOptions, env: Env): void {
   const configDir = claudeConfigDir(env);
+  if (configDir) rejectClaudePaidConfiguration(claudeGlobalConfig(env, configDir));
   const paths = configDir ? [join(configDir, "settings.json"), join(configDir, "settings.local.json")] : [];
   let directory = resolve(options.workDir ?? process.cwd());
   while (true) {
@@ -240,11 +241,14 @@ function rejectClaudePaidSettings(options: BuildOptions, env: Env): void {
     directory = parent;
   }
   for (const path of paths) {
-    const settings = readJson(path);
-    const configuredEnv = asRecord(settings.env);
-    if (nonempty(settings.apiKeyHelper) || claudePaidVariables.some((key) => isPaidSetting(key, configuredEnv[key]))) {
-      throw new BillingError("subscription billing conflicts with Claude apiKeyHelper or paid backend settings; remove those settings for this invocation");
-    }
+    rejectClaudePaidConfiguration(readJson(path));
+  }
+}
+
+function rejectClaudePaidConfiguration(settings: Record<string, unknown>): void {
+  const configuredEnv = asRecord(settings.env);
+  if (nonempty(settings.apiKeyHelper) || claudePaidVariables.some((key) => isPaidSetting(key, configuredEnv[key]))) {
+    throw new BillingError("subscription billing conflicts with Claude apiKeyHelper or paid backend settings; remove those settings for this invocation");
   }
 }
 
