@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { PiCompletionObserver } from "./pi-completion.js";
 
 import {
   buildAgentCommand,
@@ -4560,6 +4561,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     waitingSpinner?.start();
     let result: ExecuteResult | undefined;
     let billingResult: BillingRunResult | undefined;
+    const piCompletion = parsed.agent === "pi" ? new PiCompletionObserver() : undefined;
     let antigravityUsageTrace = "";
     let antigravityUsageCapture: AntigravityUsageCapture | undefined;
     if (parsed.agent === "antigravity" && parsed.usage && !parsed.docker && !parsed.modal) {
@@ -4622,7 +4624,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             invoke: (execute) => runBilling((attempt) => execute(
               buildAttemptCommand(attempt.env, attempt.options), attempt.env,
               attempt.timeoutSeconds ?? modalTimeoutSeconds,
-              (text) => { attempt.observe(text); if (stdoutHandling === "capture") commandStdoutLog?.(text); },
+              (text) => {
+                piCompletion?.write(text);
+                attempt.observe(text);
+                if (stdoutHandling === "capture") commandStdoutLog?.(text);
+              },
             )),
           })
           : await runBilling(async (attempt) => {
@@ -4648,7 +4654,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               ? buildAttemptCommand(attempt.env, attempt.options) : command,
             cwd, attempt.env, displayStderr, {
               stdout: commandStdout, stdoutHandling,
-              stdoutLog: (text) => { attempt.observe(text); commandStdoutLog?.(text); }, stderr: commandStderr,
+              stdoutLog: (text) => {
+                piCompletion?.write(text);
+                attempt.observe(text);
+                commandStdoutLog?.(text);
+              }, stderr: commandStderr,
               timeoutSeconds,
               captureFinalMessageTrace: Boolean(parsed.sdkFormat) || (parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId)),
               captureRelevantTrace: Boolean(parsed.sdkFormat) || parsed.usage || (parsed.json && (Boolean(parsed.runId) || Boolean(parsed.sessionAlias))),
@@ -4659,6 +4669,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             );
           });
       } finally {
+        piCompletion?.end();
         waitingSpinner?.stop();
         antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
         antigravityUsageCapture?.cleanup();
@@ -4671,8 +4682,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (!result) {
         throw new CliError("agent execution did not produce a result");
       }
-      billingHomeCompleted = result.code === 0;
       const commandTrace = result.stdout || result.finalMessageTrace || result.usageTrace || "";
+      const piOutcome = piCompletion?.outcome;
+      const piError = piOutcome?.status === "error" ? `pi error: ${piOutcome.error}`
+        : piOutcome?.status === "unknown" && piCompletion?.observedLifecycle
+          ? "pi error: native invocation ended without a successful final completion"
+          : undefined;
+      const piFinalMessage = piOutcome?.status === "success" ? piOutcome.finalMessage : undefined;
+      if (piError && result.code === 0) result = { ...result, code: 1 };
+      billingHomeCompleted = result.code === 0;
       const usageCommandTrace = result.stdout || result.usageTrace || result.finalMessageTrace || "";
       const usageTrace = antigravityUsageTrace
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
@@ -4700,26 +4718,27 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       }
       if (parsed.runId && parsed.role && nodeId) {
         const finalMessage =
-          extractFinalMessage(parsed.agent, commandTrace) ||
+          piFinalMessage ?? (extractFinalMessage(parsed.agent, commandTrace) ||
           (result.usageTrace && result.usageTrace !== commandTrace
             ? extractFinalMessage(parsed.agent, result.usageTrace)
-            : "");
+            : ""));
         const metrics = extractRunNodeMetrics(
           parsed.agent,
           usageTrace,
           usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
         );
-        updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", finalMessage || undefined, metrics);
-        if (result.code === 0 && parsed.role === "orchestrator" && finalMessage) {
-          completeIdleRunNodes(env, parsed.runId, nodeId, finalMessage);
+        const runMessage = piFinalMessage ?? (finalMessage || undefined);
+        updateNodeStatus(env, parsed.runId, nodeId, result.code === 0 ? "idle" : "failed", runMessage, metrics);
+        if (result.code === 0 && parsed.role === "orchestrator" && (finalMessage || piFinalMessage === "")) {
+          completeIdleRunNodes(env, parsed.runId, nodeId, runMessage);
         }
       }
       if (parsed.sdkFormat) {
         const finalMessage =
-          extractFinalMessage(parsed.agent, commandTrace) ||
-          sdkTraceWriter?.finalMessage;
-        const agentError = extractAgentError(parsed.agent, commandTrace);
-        if (!finalMessage) {
+          piFinalMessage ?? (extractFinalMessage(parsed.agent, commandTrace) ||
+          sdkTraceWriter?.finalMessage);
+        const agentError = piError ?? extractAgentError(parsed.agent, commandTrace);
+        if (piError || (!finalMessage && !(piFinalMessage === "" && result.code === 0))) {
           const exitCode = result.code || 1;
           stdout(
             renderSdkError(
@@ -4751,6 +4770,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         return result.code;
       }
       if (parsed.json) {
+        if (piError) stderr(`headless: ${piError}\n`);
         if (parsed.usage) {
           const stdoutEndsWithNewline = result.stdoutEndsWithNewline ?? result.stdout.endsWith("\n");
           const stdoutReceived = result.stdoutReceived ?? Boolean(result.stdout);
@@ -4764,14 +4784,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         return result.code;
       }
 
-      const finalMessage = extractFinalMessage(parsed.agent, result.stdout);
-      if (finalMessage) {
-        if (parsed.debug) {
+      const finalMessage = piFinalMessage ?? extractFinalMessage(parsed.agent, result.stdout);
+      if (!piError && (finalMessage || piFinalMessage === "")) {
+        if (parsed.debug && finalMessage) {
           if (!result.stdout.endsWith("\n")) {
             stdout("\n");
           }
           stdout(`--- final message ---\n${finalMessage}\n`);
-        } else {
+        } else if (finalMessage) {
           stdout(`${finalMessage}\n`);
         }
         if (parsed.usage) {
@@ -4781,7 +4801,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
         return result.code;
       }
-      const agentError = extractAgentError(parsed.agent, result.stdout);
+      if (piCompletion && parsed.usage) stdout(await finalUsageOutput());
+      const agentError = piError ?? extractAgentError(parsed.agent, result.stdout);
       if (agentError) {
         stderr(`headless: ${agentError}\n`);
         return result.code === 0 ? 1 : result.code;
