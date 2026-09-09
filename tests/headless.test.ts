@@ -5135,13 +5135,17 @@ test("CLI --tmux --delete bounds cleanup of a stuck tmux server", async () => {
   }
 });
 
-test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () => {
+async function verifyTmuxSignalCleanup(signalWhen: "launched" | "probe-started"): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
+  let child: ReturnType<typeof spawn> | undefined;
   try {
     const home = join(dir, "home");
     const binDir = join(dir, "bin");
     const workDir = join(dir, "work");
     const captureFile = join(dir, "tmux.jsonl");
+    const sessionFile = join(dir, "session");
+    const probeReadyFile = join(dir, "probe-ready");
+    const probeDrainedFile = join(dir, "probe-drained");
     mkdirSync(home);
     mkdirSync(binDir);
     mkdirSync(workDir);
@@ -5152,14 +5156,25 @@ test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () =
         "#!/usr/bin/env node",
         "const fs = require('node:fs');",
         "const args = process.argv.slice(2);",
+        "const session = process.env.HEADLESS_TMUX_SESSION_FILE;",
+        "if (args[0] === 'new-session') fs.writeFileSync(session, args[3]);",
+        "if (args[0] === 'has-session' && process.env.HEADLESS_TMUX_PROBE_READY) {",
+        "  fs.writeFileSync(process.env.HEADLESS_TMUX_PROBE_READY, 'ready');",
+        "  const deadline = Date.now() + 5000;",
+        "  while (fs.existsSync(session) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);",
+        "}",
         "fs.appendFileSync(process.env.HEADLESS_TMUX_CAPTURE, JSON.stringify(args) + '\\n');",
-        "if (args[0] === 'has-session') process.exit(0);",
+        "if (args[0] === 'kill-session' && fs.readFileSync(session, 'utf8') === args[2]) fs.unlinkSync(session);",
+        "if (args[0] === 'has-session') {",
+        "  if (process.env.HEADLESS_TMUX_PROBE_DRAINED) fs.writeFileSync(process.env.HEADLESS_TMUX_PROBE_DRAINED, 'drained');",
+        "  process.exit(fs.existsSync(session) ? 0 : 1);",
+        "}",
         "",
       ].join("\n"),
     );
     chmodSync(tmux, 0o755);
 
-    const child = spawn(
+    child = spawn(
       process.execPath,
       [
         "--import",
@@ -5180,6 +5195,11 @@ test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () =
         env: {
           ...process.env,
           HEADLESS_TMUX_CAPTURE: captureFile,
+          HEADLESS_TMUX_SESSION_FILE: sessionFile,
+          ...(signalWhen === "probe-started" ? {
+            HEADLESS_TMUX_PROBE_READY: probeReadyFile,
+            HEADLESS_TMUX_PROBE_DRAINED: probeDrainedFile,
+          } : {}),
           HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
           HOME: home,
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -5187,19 +5207,39 @@ test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () =
         stdio: "ignore",
       },
     );
-    await waitFor(() => existsSync(captureFile) && readFileSync(captureFile, "utf8").includes("new-session"));
     const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.on("close", (code, signal) => resolve({ code, signal }));
+      child!.on("close", (code, signal) => resolve({ code, signal }));
     });
+    await waitFor(() => signalWhen === "probe-started"
+      ? existsSync(probeReadyFile)
+      : existsSync(captureFile) && readFileSync(captureFile, "utf8").includes("new-session"));
     child.kill("SIGTERM");
     const result = await completion;
 
     assert.equal(result.signal, "SIGTERM");
+    if (signalWhen === "probe-started") await waitFor(() => existsSync(probeDrainedFile));
     const calls = readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(calls.at(-1), ["kill-session", "-t", calls[0][3]]);
+    assert.deepEqual(calls.filter((call) => call[0] === "kill-session"), [["kill-session", "-t", calls[0][3]]]);
+    assert.equal(existsSync(sessionFile), false);
+    if (signalWhen === "probe-started") {
+      assert.deepEqual(calls.at(-1), ["has-session", "-t", calls[0][3]]);
+    }
   } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const completion = new Promise((resolve) => child!.once("close", resolve));
+      child.kill("SIGKILL");
+      await completion;
+    }
     rmSync(dir, { force: true, recursive: true });
   }
+}
+
+test("CLI --tmux --wait --delete kills its named session on SIGTERM", async () => {
+  await verifyTmuxSignalCleanup("launched");
+});
+
+test("CLI --tmux --wait --delete permits an in-flight probe to finish after SIGTERM cleanup", async () => {
+  await verifyTmuxSignalCleanup("probe-started");
 });
 
 test("CLI --tmux --wait pins the Claude session id instead of injecting a marker", async () => {
