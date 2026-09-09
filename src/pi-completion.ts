@@ -1,3 +1,5 @@
+import { PiTerminalJson } from "./pi-terminal-json.js";
+
 export type PiCompletionOutcome =
   | { status: "unknown" }
   | { status: "success"; finalMessage: string }
@@ -37,7 +39,7 @@ export class PiCompletionObserver {
   outcome: PiCompletionOutcome = { status: "unknown" };
   private pending = "";
   private pendingBytes = 0;
-  private skipping = false;
+  private oversizedRecord?: PiTerminalJson;
   private lifecycleSeen = false;
   private compactionCompletion?: Extract<PiCompletionOutcome, { status: "success" }>;
 
@@ -50,33 +52,47 @@ export class PiCompletionObserver {
     while (start < chunk.length) {
       const newline = chunk.indexOf("\n", start);
       const end = newline < 0 ? chunk.length : newline;
-      if (!this.skipping) {
-        const segment = chunk.slice(start, end);
+      const segment = chunk.slice(start, end);
+      if (!this.oversizedRecord) {
         this.pendingBytes += Buffer.byteLength(segment);
         if (this.pendingBytes > MAX_LINE_BYTES) {
+          this.oversizedRecord = new PiTerminalJson();
+          this.oversizedRecord.write(this.pending);
           this.pending = "";
-          this.skipping = true;
           this.invalidateSuccess();
         } else {
           this.pending += segment;
         }
       }
+      this.oversizedRecord?.write(segment);
       if (newline < 0) break;
-      if (!this.skipping) this.consume(this.pending);
+      this.finishLine();
       this.resetLine();
       start = newline + 1;
     }
   }
 
   end(): void {
-    if (!this.skipping && this.pending) this.consume(this.pending);
+    this.finishLine();
     this.resetLine();
   }
 
   private resetLine(): void {
     this.pending = "";
     this.pendingBytes = 0;
-    this.skipping = false;
+    this.oversizedRecord = undefined;
+  }
+
+  private finishLine(): void {
+    if (!this.oversizedRecord && !this.pending.trim()) return;
+    let event: JsonRecord | undefined;
+    if (this.oversizedRecord) {
+      event = this.oversizedRecord.end();
+      if (event?.type !== "agent_end") event = undefined;
+    } else {
+      try { event = record(JSON.parse(this.pending)); } catch { /* Incomplete native evidence cannot preserve success. */ }
+    }
+    this.consume(event);
   }
 
   private invalidateSuccess(): void {
@@ -101,10 +117,7 @@ export class PiCompletionObserver {
     return true;
   }
 
-  private consume(line: string): void {
-    if (!line.trim()) return;
-    let event: JsonRecord | undefined;
-    try { event = record(JSON.parse(line)); } catch { /* Incomplete native evidence cannot preserve success. */ }
+  private consume(event: JsonRecord | undefined): void {
     if (!event || typeof event.type !== "string") {
       this.invalidateSuccess();
       return;

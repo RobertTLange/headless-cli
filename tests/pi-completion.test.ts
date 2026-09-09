@@ -244,3 +244,34 @@ test("compaction cannot revive an absent, failed, or interrupted completion", ()
   ];
   for (const trace of traces) assert.notEqual(observe(...trace).outcome.status, "success");
 });
+
+test("accepts a small final answer after cumulative terminal history exceeds the capture limit", () => {
+  const history = Array.from({ length: 5 }, () => ({
+    role: "toolResult", content: [{ type: "text", text: "x".repeat(1024 * 1024) }],
+  }));
+  for (const text of ["", "done"]) {
+    const trace = line({ type: "agent_start" }) + line(terminal(assistant(text), {
+      messages: [...history, assistant(text)],
+    })) + line({ type: "agent_settled" });
+    const observer = new PiCompletionObserver();
+    for (let start = 0; start < trace.length; start += 65536) observer.write(trace.slice(start, start + 65536));
+    observer.end();
+    assert.deepEqual(observer.outcome, { status: "success", finalMessage: text });
+  }
+});
+
+test("large terminal history does not hide errors, retries, or malformed tails", () => {
+  const history = { role: "toolResult", content: [{ type: "text", text: "x".repeat(4 * 1024 * 1024) }] };
+  for (const extra of [{ willRetry: true }, { messages: [history] }]) {
+    assert.notEqual(observe(terminal(assistant(), { messages: [history, assistant()], ...extra })).outcome.status, "success");
+  }
+  const failure = assistant("", { stopReason: "error", errorMessage: "provider failed" });
+  assert.deepEqual(observe(terminal(failure, { messages: [history, failure] })).outcome,
+    { status: "error", error: "provider failed" });
+  for (const suffix of ["", ",broken}", '} trailing']) {
+    const observer = new PiCompletionObserver();
+    observer.write(JSON.stringify(terminal(assistant(), { messages: [history, assistant()] })).slice(0, -1) + suffix);
+    observer.end();
+    assert.notEqual(observer.outcome.status, "success");
+  }
+});

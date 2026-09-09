@@ -280,3 +280,23 @@ for (const text of ["", "done"]) {
     });
   }
 }
+
+for (const text of ["", "done"]) {
+  for (const flags of [[], ["--sdk-format", "json"]]) {
+    test(`Pi cumulative terminal history preserves ${JSON.stringify(text)} in ${flags.join(" ") || "plain"}`, async () => {
+      const final = assistant("stop", text, 4, 6);
+      const records = completedTrace(final);
+      records[records.length - 2].messages = [
+        ...Array.from({ length: 5 }, () => ({ role: "toolResult",
+          content: [{ type: "text", text: "x".repeat(1024 * 1024) }] })), final,
+      ];
+      const f = fixture(records);
+      try {
+        const result = await f.run([...flags, "--session", "large-history"]);
+        assert.equal(result.code, 0, result.stderr || result.stdout);
+        assert.equal(flags.length ? jsonRows(result.stdout).at(-1)!.data.finalMessage : result.stdout.trim(), text);
+        assert.equal(readStoredSession(f.env, "pi", "large-history")?.nativeId, f.nativeSession);
+      } finally { f.cleanup(); }
+    });
+  }
+}
