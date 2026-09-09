@@ -50,6 +50,7 @@ export interface DockerAgentCommandOptions {
   hostUser?: string;
   image: string;
   persistentHome?: string;
+  persistentVolume?: string;
   profile?: string;
   runDirHost?: string;
   runId?: string;
@@ -320,12 +321,16 @@ function isContainedRelativePath(path: string): boolean {
 }
 
 export function buildDockerAgentCommand(options: DockerAgentCommandOptions): BuiltCommand {
+  if (options.persistentHome && options.persistentVolume) {
+    throw new Error("Docker home must use either a host directory or a volume");
+  }
+  const persistentHome = options.persistentHome ?? options.persistentVolume;
   const args = ["run", "--rm"];
   if (options.command.stdinText !== undefined || options.command.stdinFile !== undefined) {
     args.push("--interactive");
   }
-  if (options.persistentHome) {
-    args.push("--volume", `${options.persistentHome}:${containerHome}:rw`);
+  if (persistentHome) {
+    args.push("--volume", `${persistentHome}:${containerHome}:rw`);
   } else {
     args.push("--tmpfs", `${containerHome}:rw,mode=1777`);
   }
@@ -350,7 +355,7 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
     options.image,
     "sh",
     "-lc",
-    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap, options.profile, maskedEnvNames),
+    bootstrapScript(options.agent, Boolean(persistentHome), options.sessionBootstrap, options.profile, maskedEnvNames),
     "headless-agent",
     options.command.command,
     ...options.command.args,

@@ -159,6 +159,9 @@ provider limits still apply; Headless does not impose a local dollar cap.
 The policy applies locally, in Docker, and in Modal. Docker keeps an anonymous
 private home across both attempts, removes it after native success, and reports
 its retained path on failure for recovery. `--session` homes remain durable.
+On Windows, anonymous Docker runs share a Docker-managed volume across attempts;
+success removes it and failure reports its name for recovery. Named durable
+Docker sessions remain unsupported on Windows.
 Interactive/tmux invocations use native authentication; explicit `--billing`
 with `--tmux` is rejected.
 

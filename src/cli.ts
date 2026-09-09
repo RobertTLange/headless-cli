@@ -39,6 +39,7 @@ import {
 import { prepareAntigravityUsageCapture, type AntigravityUsageCapture } from "./antigravity-usage.js";
 import { BillingError, prepareBillingAttempt, prepareBillingPreview, resolveBillingMode } from "./billing.js";
 import { runWithBilling, type BillingExecutionAttempt, type BillingRunResult } from "./billing-run.js";
+import { buildDockerBillingVolumeInitCommand, removeDockerBillingVolume } from "./docker-billing.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
@@ -3424,6 +3425,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
   let dockerSessionLock: { release: () => Promise<Error | undefined> } | undefined;
   let temporaryBillingRoot: string | undefined;
+  let temporaryBillingVolume: string | undefined;
+  let billingVolumeInitialized = false;
   let billingHomeCompleted = false;
 
   if (argv[0] === "acp-stdio") {
@@ -4418,7 +4421,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     if (parsed.docker && !parsed.printCommand && !sessionAlias && billingMode === "auto" &&
         prepareBillingAttempt(parsed.agent, billingPreviewOptions, billingEnv, billingMode).route === "subscription") {
-      temporaryBillingRoot = mkdtempSync(join(tmpdir(), "headless-billing-"));
+      if (process.platform === "win32") temporaryBillingVolume = `headless-billing-${randomUUID()}`;
+      else temporaryBillingRoot = mkdtempSync(join(tmpdir(), "headless-billing-"));
     }
     let dockerSessionHome = temporaryBillingRoot
       ? join(temporaryBillingRoot, parsed.agent, "home")
@@ -4476,7 +4480,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             return !Object.hasOwn(masks, name) && attemptEnv[name] === billingEnv[name];
           }),
           env: attemptEnv, hostUser: detectDockerHostUser(), image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
-          persistentHome: dockerSessionHome, profile: effectiveProfile,
+          persistentHome: dockerSessionHome, persistentVolume: temporaryBillingVolume, profile: effectiveProfile,
           runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined, runId: parsed.runId,
           sessionBootstrap: parsed.agent === "cursor" && sessionPlan?.mode === "new" && dockerSessionHome ? "initialize-cursor" : undefined,
           workDir: cwd ?? process.cwd(),
@@ -4621,20 +4625,39 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
               (text) => { attempt.observe(text); if (stdoutHandling === "capture") commandStdoutLog?.(text); },
             )),
           })
-          : await runBilling((attempt) => executeCommand(
+          : await runBilling(async (attempt) => {
+            let timeoutSeconds = attempt.timeoutSeconds;
+            if (temporaryBillingVolume && !billingVolumeInitialized) {
+              const started = Date.now();
+              const initialized = await executeCommand(parsed.agent!,
+                buildDockerBillingVolumeInitCommand(temporaryBillingVolume, parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE),
+                cwd, env, displayStderr, { stdout: () => {}, stdoutHandling: "capture",
+                  timeoutSeconds, inheritedSignalListeners });
+              if (initialized.code !== 0) {
+                displayStderr("headless: could not initialize Docker billing volume\n");
+                return initialized;
+              }
+              billingVolumeInitialized = true;
+              if (timeoutSeconds !== undefined) {
+                timeoutSeconds -= (Date.now() - started) / 1000;
+                if (timeoutSeconds <= 0) return { code: 124, stdout: "" };
+              }
+            }
+            return executeCommand(
             parsed.agent!, parsed.agent === "codex" || parsed.agent === "claude"
               ? buildAttemptCommand(attempt.env, attempt.options) : command,
             cwd, attempt.env, displayStderr, {
               stdout: commandStdout, stdoutHandling,
               stdoutLog: (text) => { attempt.observe(text); commandStdoutLog?.(text); }, stderr: commandStderr,
-              timeoutSeconds: attempt.timeoutSeconds,
+              timeoutSeconds,
               captureFinalMessageTrace: Boolean(parsed.sdkFormat) || (parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId)),
               captureRelevantTrace: Boolean(parsed.sdkFormat) || parsed.usage || (parsed.json && (Boolean(parsed.runId) || Boolean(parsed.sessionAlias))),
               maxFinalMessageTraceBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
               waitForStdoutDrain: parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
               cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup, inheritedSignalListeners,
             },
-          ));
+            );
+          });
       } finally {
         waitingSpinner?.stop();
         antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
@@ -4812,6 +4835,10 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       } else {
         stderr(`headless: retained native session files for recovery: ${temporaryBillingRoot}\n`);
       }
+    }
+    if (temporaryBillingVolume &&
+        (!billingHomeCompleted || !removeDockerBillingVolume(temporaryBillingVolume, env))) {
+      stderr(`headless: retained native session volume for recovery: ${temporaryBillingVolume}\n`);
     }
   }
 }
