@@ -5093,9 +5093,11 @@ test("CLI --tmux --delete kills a partially launched session", async () => {
 test("CLI --tmux --delete bounds cleanup of a stuck tmux server", async () => {
   const dir = mkdtempSync(join(tmpdir(), "headless-test-"));
   try {
+    const home = join(dir, "home");
     const binDir = join(dir, "bin");
     const workDir = join(dir, "work");
     const captureFile = join(dir, "tmux.jsonl");
+    mkdirSync(home);
     mkdirSync(binDir);
     mkdirSync(workDir);
     const tmux = join(binDir, "tmux");
@@ -5121,6 +5123,8 @@ test("CLI --tmux --delete bounds cleanup of a stuck tmux server", async () => {
         HEADLESS_TMUX_CAPTURE: captureFile,
         HEADLESS_TMUX_WAIT_FORCE_MARKER: "1",
         HEADLESS_TMUX_WAIT_INTERVAL_MS: "10",
+        HOME: home,
+        CODEX_HOME: join(home, ".codex"),
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       },
       },
