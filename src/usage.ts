@@ -295,14 +295,18 @@ function extractClaudeUsage(records: JsonRecord[], context: UsageContext): Usage
   const usage = asRecord(record.usage);
   const model = extractModel(records, context) ?? firstModelFromUsage(record);
   const totalCost = asOptionalNumber(record.total_cost_usd);
-  return summarizeUsage({
-    agent: "claude",
-    provider: "anthropic",
-    model,
+  const tokens = {
     inputTokens: asNumber(usage.input_tokens),
     cacheReadTokens: asNumber(usage.cache_read_input_tokens),
     cacheWriteTokens: asNumber(usage.cache_creation_input_tokens),
     outputTokens: asNumber(usage.output_tokens),
+  };
+  return summarizeUsage({
+    agent: "claude",
+    provider: context.provider ?? "anthropic",
+    model,
+    ...tokens,
+    ...(context.provider ? { modelBreakdowns: [{ ...tokens, provider: context.provider, model, allowProviderSearch: false }] } : {}),
     cost: totalCost === undefined ? null : nativeCost(totalCost),
     costBasis: totalCost === undefined ? null : "native-reported",
     pricingSource: totalCost === undefined ? null : "native",
@@ -613,7 +617,9 @@ function addCost(left: UsageCostBreakdown, right: UsageCostBreakdown): UsageCost
 
 function priceUsagePart(part: UsagePart, pricingData: PricingData): UsageCostBreakdown | undefined {
   if (!part.provider && part.allowProviderSearch === false) return undefined;
-  const pricing = findPricingModel(pricingData, part.provider ?? null, part.model ?? null);
+  const providers = part.allowProviderSearch === false && part.provider
+    ? { [part.provider]: pricingData[part.provider] ?? {} } : pricingData;
+  const pricing = findPricingModel(providers, part.provider ?? null, part.model ?? null);
   const cost = pricing?.model.cost;
   if (!cost) return undefined;
   const input = priceTokens(part.inputTokens, cost.input);

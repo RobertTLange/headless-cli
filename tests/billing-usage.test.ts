@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { aggregateBillingUsage, type BillingAttempt } from "../src/billing-usage.ts";
-import type { UsageSummary } from "../src/usage.ts";
+import { extractUsageSummary, priceUsageSummary, type UsageSummary } from "../src/usage.ts";
 
 function usage(values: Partial<UsageSummary> = {}): UsageSummary {
   return { agent: "codex", provider: "openai", model: "gpt-test", inputTokens: 10,
@@ -50,4 +50,38 @@ test("partial cost components stay null; enforce bounded attempts", () => {
   assert.equal(aggregateBillingUsage([attempt, attempt]).cost?.total, 20);
   assert.throws(() => aggregateBillingUsage([]));
   assert.throws(() => aggregateBillingUsage([attempt, attempt, attempt]));
+});
+
+const claudeResult = {
+  type: "result", usage: { input_tokens: 1000, output_tokens: 100 },
+};
+const bedrockContext = { provider: "amazon-bedrock", model: "claude-test" };
+const anthropicPricing = { models: { "claude-test": { cost: { input: 1, output: 2 } } } };
+
+test("Bedrock native usage retains its provider through the billing report", () => {
+  const summary = priceUsageSummary(extractUsageSummary("claude",
+    JSON.stringify({ ...claudeResult, total_cost_usd: 0.25 }), bedrockContext), {});
+  const result = aggregateBillingUsage([{ route: "bedrock", usage: summary }]);
+  assert.equal(result.provider, "amazon-bedrock");
+  assert.equal(result.billing.attempts[0].usage.provider, "amazon-bedrock");
+  assert.equal(result.cost?.total, 0.25);
+  assert.equal(result.costBasis, "native-reported");
+});
+
+test("Bedrock estimates use its provider's prices", () => {
+  const summary = priceUsageSummary(extractUsageSummary("claude", JSON.stringify(claudeResult), bedrockContext), {
+    anthropic: anthropicPricing,
+    "amazon-bedrock": { models: { "claude-test": { cost: { input: 5, output: 10 } } } },
+  });
+  assert.equal(summary.provider, "amazon-bedrock");
+  assert.equal(summary.cost?.total, 0.006);
+});
+
+test("missing Bedrock prices cannot fall back to another provider", () => {
+  const summary = priceUsageSummary(extractUsageSummary("claude", JSON.stringify(claudeResult), bedrockContext), {
+    anthropic: anthropicPricing,
+  });
+  assert.equal(summary.provider, "amazon-bedrock");
+  assert.equal(summary.cost, null);
+  assert.equal(summary.pricingStatus, "missing");
 });
