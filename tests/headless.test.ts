@@ -3790,7 +3790,11 @@ test("CLI --usage prints final message and normalized usage JSON", async () => {
     assert.equal(fetchCount, 1);
     const lines = stdout.join("").trim().split("\n");
     assert.equal(lines[0], "final answer");
-    assert.deepEqual(JSON.parse(lines[1]), {
+    const report = JSON.parse(lines[1]);
+    const { billing, ...usage } = report.usage;
+    assert.equal(billing.attempts.length, 1);
+    assert.deepEqual(billing.attempts[0].usage, usage);
+    assert.deepEqual({ usage }, {
       usage: {
         agent: "codex",
         provider: "openai",

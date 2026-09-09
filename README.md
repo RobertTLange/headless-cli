@@ -120,6 +120,55 @@ headless --check
 
 When no agent is specified, Headless selects the first installed agent in this order: `codex`, `claude`, `pi`, `opencode`, `gemini`, `antigravity`, `cursor`. ACP-compatible agents are explicit-only: use `headless acp --acp-agent ...` or `headless acp --acp-command ...`.
 
+## Billing and subscription fallback
+
+Noninteractive Claude and Codex invocations default to `--billing auto`: use an
+available subscription, then switch once to paid authentication after a native
+subscription limit or a subscription-specific Codex model rejection. GPT-5.4
+and `gpt-5.4-2026-03-05` use OpenAI API billing directly. Other harnesses keep
+their native authentication.
+
+```bash
+headless codex --prompt "Run the experiment"                     # subscription first
+headless codex --model gpt-5.4 --prompt "Run the experiment"      # OpenAI API
+headless claude --billing subscription --prompt "Review results" # never switch to paid
+headless claude --billing api --prompt "Continue the experiment" # Amazon Bedrock
+```
+
+Codex API billing needs `CODEX_API_KEY` or `OPENAI_API_KEY`. Claude's paid route
+uses Amazon Bedrock, with an AWS region and credentials available to the native
+CLI; it retains the requested model and native Bedrock model mapping. An
+Anthropic API key alone does not configure this backup. For Docker/Modal, supply
+credentials accessible inside the container (for example AWS access key, secret,
+session token, and region); a host AWS profile or credential-file path alone is
+not portable.
+
+Policy precedence: `--billing` > `HEADLESS_BILLING` > `billing` in
+`[agents.claude]`/`[agents.codex]` > `auto`. Choose `subscription` to disallow paid
+fallback. Explicit custom Codex profiles/providers keep native auth under `auto`
+and cannot be combined with explicit subscription/API routing. With no detected
+subscription or configured backup, `auto` preserves native authentication.
+
+Fallback preserves the workspace, native session, permissions, reasoning effort,
+and original deadline. Completed work resumes with a continuation prompt; the
+original task is not replayed after partial execution. If safe resumption or
+backup credentials are unavailable, Headless exits with status 78. Generic
+errors, tool output, interruptions, and timeouts do not trigger fallback. Paid
+provider limits still apply; Headless does not impose a local dollar cap.
+
+The policy applies locally, in Docker, and in Modal. Docker keeps an anonymous
+private home across both attempts, removes it after native success, and reports
+its retained path on failure for recovery. `--session` homes remain durable.
+Interactive/tmux invocations use native authentication; explicit `--billing`
+with `--tmux` is rejected.
+
+`--usage` includes `billing.attempts` with route, transition reason, and each
+attempt's usage/cost provenance. The top-level token counts aggregate attempts;
+mixed or missing cost bases leave aggregate cost unavailable instead of mixing
+estimates with reported charges. Subscription cost estimates are API list-price
+comparisons, not subscription charges. Auth changes affect child environments
+only; Headless never replaces shared login files.
+
 ## Native TUI Completion
 
 Use `--tmux --wait --delete` when you want Headless to launch the agent in its native TUI, wait for the final native transcript message, print that message, and then terminate the tmux session after the prompt completes.

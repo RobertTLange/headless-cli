@@ -910,3 +910,48 @@ class FakeChunkedReadStream<R extends string | Uint8Array> implements ModalReadS
     } as ReadableStreamDefaultReader<R>;
   }
 }
+
+test("Modal billing retries share sandbox, observe captured output and mask inherited secrets", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-billing-"));
+  try {
+    const work = join(dir, "work");
+    const remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    const sandbox = new FakeSandbox(remote);
+    const client = new FakeModalClient(sandbox);
+    const observed: string[] = [];
+    let calls = 0;
+    const result = await executeModalAgent({
+      agent: "codex", appName: "test", command: { command: "codex", args: [] },
+      cpu: 1, env: { HOME: join(dir, "home"), OPENAI_API_KEY: "subscription-must-mask" },
+      image: DEFAULT_MODAL_IMAGE, includeGit: false, memoryMiB: 1024,
+      modalEnv: ["OPENAI_API_KEY=explicit-must-mask"], modalSecrets: ["secret"],
+      stdout: () => assert.fail("capture mode must not stream"), stderr: () => {},
+      stdoutHandling: "capture", timeoutSeconds: 60, workDir: work, clientFactory: async () => client,
+      invoke: async (execute) => {
+        await execute({ command: "codex", args: ["first"] }, { OPENAI_API_KEY: undefined }, 50, (text) => observed.push(text));
+        calls++;
+        assert.equal(sandbox.agentEnv?.OPENAI_API_KEY, undefined);
+        const first = sandbox.agentCommand!;
+        assert.ok(first.includes("-u"));
+        assert.match(first[2], /headless-host-home/);
+        const second = await execute({ command: "codex", args: ["resume"] }, { OPENAI_API_KEY: "paid" }, 20, (text) => observed.push(text));
+        calls++;
+        assert.equal(sandbox.agentEnv?.OPENAI_API_KEY, "paid");
+        assert.doesNotMatch(sandbox.agentCommand![2], /headless-host-home/);
+        return second;
+      },
+    });
+    assert.equal(calls, 2);
+    assert.equal(observed.length, 2);
+    assert.equal(result.code, 0);
+    assert.equal(sandbox.commands.filter((command) => command[0] === "/usr/bin/tar" && command[1] === "-czf").length, 1);
+    assert.equal(sandbox.terminated, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("explicit undefined command credentials cannot be reintroduced by forwarding", () => {
+  assert.equal(collectModalEnv({ OPENAI_API_KEY: "parent" }, { OPENAI_API_KEY: undefined }, ["OPENAI_API_KEY=explicit"]).OPENAI_API_KEY, undefined);
+});

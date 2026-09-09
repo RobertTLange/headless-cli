@@ -3,6 +3,7 @@ import type { Env } from "./types.js";
 export const defaultForwardedEnvNames = [
   "ANTHROPIC_API_KEY",
   "AWS_ACCESS_KEY_ID",
+  "AWS_BEARER_TOKEN_BEDROCK",
   "AWS_DEFAULT_REGION",
   "AWS_PROFILE",
   "AWS_REGION",
@@ -11,6 +12,7 @@ export const defaultForwardedEnvNames = [
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_ENDPOINT",
   "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
   "CODEX_API_KEY",
   "CURSOR_API_KEY",
   "GEMINI_API_KEY",
@@ -55,6 +57,9 @@ export function collectForwardedEnvEntries(env: Env, commandEnv: Env | undefined
         actualValue: item.slice(equals + 1),
       });
     }
+  }
+  for (const [name, value] of Object.entries(commandEnv ?? {})) {
+    if (value === undefined) entries.delete(name);
   }
   return [...entries.values()];
 }

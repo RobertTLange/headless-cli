@@ -4,10 +4,12 @@ import {
   closeSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -15,6 +17,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { runAcpClient, runAcpStdioAgent } from "./acp.js";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -34,6 +37,8 @@ import {
   waitTierForAgent,
 } from "./agents.js";
 import { prepareAntigravityUsageCapture, type AntigravityUsageCapture } from "./antigravity-usage.js";
+import { BillingError, prepareBillingAttempt, prepareBillingPreview, resolveBillingMode } from "./billing.js";
+import { runWithBilling, type BillingExecutionAttempt, type BillingRunResult } from "./billing-run.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
   BUILTIN_AGENT_DEFAULTS,
@@ -144,9 +149,10 @@ import {
   type RunStatus,
 } from "./roles.js";
 import { expandTeamSpecs } from "./teams.js";
-import type { AgentName, AllowMode, BuildOptions, BuiltCommand, Env, ReasoningEffort } from "./types.js";
+import type { AgentName, AllowMode, BillingMode, BuildOptions, BuiltCommand, Env, ReasoningEffort } from "./types.js";
 
 interface ParsedArgs {
+  billing?: BillingMode;
   capabilities: boolean;
   attach: boolean;
   attachSession?: string;
@@ -286,6 +292,7 @@ function usage(): string {
     "  --fast                Enable Fast mode for Codex or Claude.",
     "  --no-fast             Disable ambient Fast mode for Codex or Claude.",
     "  --reasoning-effort, --effort <level> Reasoning effort: low, medium, high, or xhigh.",
+    "  --billing <auto|subscription|api> Subscription first (default); Claude API uses Bedrock.",
     "  --allow <mode>        Permission mode: read-only or yolo.",
     "  --acp-agent <id>      With acp, resolve an ACP server from the registry by id or name.",
     "  --acp-command <cmd>   With acp, run a custom ACP server command, e.g. 'atlas alta agent run'.",
@@ -455,6 +462,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--profile":
         parsed.profile = parseProfile(takeValue(args, arg));
         break;
+      case "--billing": {
+        const value = takeValue(args, arg);
+        if (value !== "auto" && value !== "subscription" && value !== "api") {
+          throw new CliError("--billing must be auto, subscription, or api");
+        }
+        parsed.billing = value;
+        break;
+      }
       case "--fast":
         if (parsed.fast === false) throw new CliError("--fast and --no-fast are mutually exclusive");
         parsed.fast = true;
@@ -1153,10 +1168,6 @@ function usageContext(
     return { model: cursorModel(defaults) };
   }
   return { model: defaults.model };
-}
-
-async function buildUsageOutput(agent: AgentName, stdout: string, context: UsageContext, env: Env): Promise<string> {
-  return `${JSON.stringify({ usage: await buildUsageReport(agent, stdout, context, env) })}\n`;
 }
 
 async function buildUsageReport(
@@ -3412,6 +3423,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   );
   let registeredRunNode: { runId: string; nodeId: string } | undefined;
   let dockerSessionLock: { release: () => Promise<Error | undefined> } | undefined;
+  let temporaryBillingRoot: string | undefined;
+  let billingHomeCompleted = false;
 
   if (argv[0] === "acp-stdio") {
     await runAcpStdioAgent();
@@ -3967,6 +3980,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.tmux && parsed.docker) {
       throw new CliError("--docker cannot be used with --tmux");
     }
+    if (parsed.tmux && parsed.billing !== undefined) {
+      throw new CliError("--billing is supported only for noninteractive invocations; remove --tmux");
+    }
     if (parsed.tmux && parsed.modal) {
       throw new CliError("--modal cannot be used with --tmux");
     }
@@ -4383,6 +4399,19 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       return value.code;
     }
 
+    if (parsed.docker && !parsed.printCommand && !commandExists("docker", env)) {
+      throw new CliError("docker not found on PATH");
+    }
+    const billingMode = resolveBillingMode(parsed.agent, parsed.billing, env, config);
+    const billingEnv = { ...env };
+    for (const entry of [...parsed.dockerEnv, ...parsed.modalEnv]) {
+      const split = entry.indexOf("=");
+      if (split > 0) billingEnv[entry.slice(0, split)] = entry.slice(split + 1);
+    }
+    const billingPreviewOptions = { model: configuredDefaults.model, profile, prompt: composedPrompt, workDir: cwd };
+    const initialBilling = parsed.printCommand
+      ? prepareBillingPreview(parsed.agent, billingPreviewOptions, billingEnv, billingMode)
+      : prepareBillingAttempt(parsed.agent, billingPreviewOptions, billingEnv, billingMode);
     let sessionAlias = parsed.sessionAlias;
     if (parsed.runId && parsed.role && coordination === "session" && !parsed.sessionAlias) {
       sessionAlias = nodeId;
@@ -4390,8 +4419,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.runId && parsed.role && coordination === "oneshot") {
       sessionAlias = undefined;
     }
-    let dockerSessionHome = parsed.docker && sessionAlias
-      ? dockerSessionHomePath(parsed.agent, sessionAlias, env)
+    if (parsed.docker && !parsed.printCommand && !sessionAlias && billingMode === "auto" && initialBilling.route === "subscription") {
+      temporaryBillingRoot = mkdtempSync(join(tmpdir(), "headless-billing-"));
+    }
+    let dockerSessionHome = temporaryBillingRoot
+      ? join(temporaryBillingRoot, parsed.agent, "home")
+      : parsed.docker && sessionAlias ? dockerSessionHomePath(parsed.agent, sessionAlias, env)
       : undefined;
     if (parsed.docker && sessionAlias && !dockerSessionHome) {
       throw new CliError("HOME is required for --session");
@@ -4422,47 +4455,39 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       ? { ...sessionPlan, nativeId: dockerSessionNativeId(parsed.agent, sessionPlan.nativeId, dockerSessionHome) }
       : sessionPlan;
     const effectiveProfile = sessionPlan?.profile ?? profile;
-    let command = withRunEnvironment(buildAgentCommand(
-      parsed.agent,
-      applySessionPlan({
-        prompt: composedPrompt,
-        promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
-        workDir: cwd ?? process.cwd(),
-        model: configuredDefaults.model,
-        profile: effectiveProfile,
-        allow,
-        fast,
-        reasoningEffort: configuredDefaults.reasoningEffort,
-        timeoutSeconds: parsed.modal ? modalTimeoutSeconds : commandTimeoutSeconds,
-      }, commandSessionPlan),
-      env,
-    ), parsed.runId, nodeId);
+    const nativeOptions = applySessionPlan({
+      prompt: composedPrompt,
+      promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
+      workDir: cwd ?? process.cwd(), model: configuredDefaults.model, profile: effectiveProfile,
+      allow, fast, reasoningEffort: configuredDefaults.reasoningEffort,
+      timeoutSeconds: parsed.modal ? modalTimeoutSeconds : commandTimeoutSeconds,
+    }, commandSessionPlan);
+    const buildAttemptCommand = (attemptEnv: Env, options: BuildOptions): BuiltCommand => {
+      let built = withRunEnvironment(buildAgentCommand(parsed.agent!, options, attemptEnv), parsed.runId, nodeId);
+      const masks = Object.fromEntries(Object.entries(attemptEnv).filter(([, value]) => value === undefined));
+      if (Object.keys(masks).length) built = { ...built, env: { ...built.env, ...masks } };
+      if (parsed.docker) {
+        built = buildDockerAgentCommand({
+          agent: parsed.agent!, command: built, dockerArgs: parsed.dockerArgs,
+          dockerEnv: parsed.dockerEnv.filter((entry) => {
+            const name = entry.split("=")[0];
+            return !Object.hasOwn(masks, name) && attemptEnv[name] === billingEnv[name];
+          }),
+          env: attemptEnv, hostUser: detectDockerHostUser(), image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
+          persistentHome: dockerSessionHome, profile: effectiveProfile,
+          runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined, runId: parsed.runId,
+          sessionBootstrap: parsed.agent === "cursor" && sessionPlan?.mode === "new" && dockerSessionHome ? "initialize-cursor" : undefined,
+          workDir: cwd ?? process.cwd(),
+        });
+      }
+      return built;
+    };
+    let command = buildAttemptCommand(initialBilling.env, nativeOptions);
     const reasoningWarning = unsupportedReasoningEffortWarning(parsed.agent, configuredDefaults.reasoningEffort, "headless");
-    if (reasoningWarning) {
-      stderr(reasoningWarning);
-    }
-    if (parsed.docker) {
-      command = buildDockerAgentCommand({
-        agent: parsed.agent,
-        command,
-        dockerArgs: parsed.dockerArgs,
-        dockerEnv: parsed.dockerEnv,
-        env,
-        hostUser: detectDockerHostUser(),
-        image: parsed.dockerImage ?? DEFAULT_DOCKER_IMAGE,
-        persistentHome: dockerSessionHome,
-        profile: effectiveProfile,
-        runDirHost: parsed.runId ? runDirectory(env, parsed.runId) : undefined,
-        runId: parsed.runId,
-        sessionBootstrap:
-          parsed.agent === "cursor" && sessionPlan?.mode === "new" && dockerSessionHome
-            ? "initialize-cursor"
-            : undefined,
-        workDir: cwd ?? process.cwd(),
-      });
-    }
+    if (reasoningWarning) stderr(reasoningWarning);
 
     if (parsed.printCommand) {
+      billingHomeCompleted = true;
       const printableCommand = parsed.modal
         ? buildModalRunSummary({
             appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
@@ -4478,9 +4503,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         : command;
       stdout(parsed.json ? renderPrintCommandJson(parsed.agent, configuredDefaults, env, printableCommand, effectiveProfile) : `${quoteCommand(printableCommand)}\n`);
       return 0;
-    }
-    if (parsed.docker && !commandExists("docker", env)) {
-      throw new CliError("docker not found on PATH");
     }
 
     const sdkTraceWriter =
@@ -4531,6 +4553,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     statusReporter?.start();
     waitingSpinner?.start();
     let result: ExecuteResult | undefined;
+    let billingResult: BillingRunResult | undefined;
     let antigravityUsageTrace = "";
     let antigravityUsageCapture: AntigravityUsageCapture | undefined;
     if (parsed.agent === "antigravity" && parsed.usage && !parsed.docker && !parsed.modal) {
@@ -4554,59 +4577,62 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
         const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
         const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
+        const runBilling = async (execute: (attempt: BillingExecutionAttempt) => Promise<ExecuteResult>) => {
+          billingResult = await runWithBilling({
+            agent: parsed.agent!, mode: billingMode, env: billingEnv, options: nativeOptions,
+            timeoutSeconds: parsed.modal ? modalTimeoutSeconds : commandTimeoutSeconds,
+            execute,
+            reportUsage: parsed.usage && (parsed.agent === "claude" || parsed.agent === "codex") ? async (trace, route) => {
+              const context = usageContext(parsed.agent!, configuredDefaults, env, effectiveProfile);
+              if (route === "bedrock") context.provider = "amazon-bedrock";
+              return buildUsageReport(parsed.agent!, trace, context, env);
+            } : undefined,
+            onTransition: (event) => {
+              displayStderr(`headless: billing ${event.from} -> ${event.to} (${event.reason})\n`);
+              const line = `${JSON.stringify(event)}\n`;
+              commandStdoutLog?.(line);
+              if (stdoutHandling !== "capture") commandStdout(line);
+            },
+          });
+          if (billingResult.error) displayStderr(`headless: ${billingResult.error}\n`);
+          return billingResult.result;
+        };
         result = parsed.modal
           ? await executeModalAgent({
-            agent: parsed.agent,
-            appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
-            command,
-            cpu: parsed.modalCpu ?? DEFAULT_MODAL_CPU,
-            env,
-            image: parsed.modalImage ?? DEFAULT_MODAL_IMAGE,
-            imageSecret: parsed.modalImageSecret,
-            includeGit: parsed.modalIncludeGit,
-            memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
-            modalEnv: parsed.modalEnv,
-            modalSecrets: parsed.modalSecrets,
-            profile: effectiveProfile,
+            agent: parsed.agent, appName: parsed.modalApp ?? DEFAULT_MODAL_APP,
+            command, cpu: parsed.modalCpu ?? DEFAULT_MODAL_CPU, env: billingEnv,
+            image: parsed.modalImage ?? DEFAULT_MODAL_IMAGE, imageSecret: parsed.modalImageSecret,
+            includeGit: parsed.modalIncludeGit, memoryMiB: parsed.modalMemoryMiB ?? DEFAULT_MODAL_MEMORY_MIB,
+            modalEnv: parsed.modalEnv, modalSecrets: parsed.modalSecrets, profile: effectiveProfile,
             maxCapturedStdoutBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
-            waitForStdoutDrain:
-              parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
+            waitForStdoutDrain: parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
             stderr: (text) => {
               commandStderr?.(text);
               const filtered = suppressKnownStderr(parsed.agent as AgentName, text);
-              if (filtered) {
-                displayStderr(filtered);
-              }
+              if (filtered) displayStderr(filtered);
             },
-            stdout: (text) => {
-              commandStdoutLog?.(text);
-              return commandStdout(text);
-            },
-            stdoutHandling,
-            timeoutSeconds: modalTimeoutSeconds,
-            workDir: cwd ?? process.cwd(),
-            })
-          : await executeCommand(parsed.agent, command, cwd, env, displayStderr, {
-              stdout: commandStdout,
-              stdoutHandling,
-              stdoutLog: commandStdoutLog,
-              stderr: commandStderr,
-              timeoutSeconds: commandTimeoutSeconds,
-              captureFinalMessageTrace:
-                Boolean(parsed.sdkFormat) ||
-                (parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId)),
-              captureRelevantTrace:
-                Boolean(parsed.sdkFormat) ||
-                (parsed.json && (parsed.usage || Boolean(parsed.runId) || Boolean(parsed.sessionAlias))),
+            stdout: (text) => { commandStdoutLog?.(text); return commandStdout(text); },
+            stdoutHandling, timeoutSeconds: modalTimeoutSeconds, workDir: cwd ?? process.cwd(),
+            invoke: (execute) => runBilling((attempt) => execute(
+              buildAttemptCommand(attempt.env, attempt.options), attempt.env,
+              attempt.timeoutSeconds ?? modalTimeoutSeconds,
+              (text) => { attempt.observe(text); if (stdoutHandling === "capture") commandStdoutLog?.(text); },
+            )),
+          })
+          : await runBilling((attempt) => executeCommand(
+            parsed.agent!, parsed.agent === "codex" || parsed.agent === "claude"
+              ? buildAttemptCommand(attempt.env, attempt.options) : command,
+            cwd, attempt.env, displayStderr, {
+              stdout: commandStdout, stdoutHandling,
+              stdoutLog: (text) => { attempt.observe(text); commandStdoutLog?.(text); }, stderr: commandStderr,
+              timeoutSeconds: attempt.timeoutSeconds,
+              captureFinalMessageTrace: Boolean(parsed.sdkFormat) || (parsed.agent === "antigravity" && parsed.json && Boolean(parsed.runId)),
+              captureRelevantTrace: Boolean(parsed.sdkFormat) || parsed.usage || (parsed.json && (Boolean(parsed.runId) || Boolean(parsed.sessionAlias))),
               maxFinalMessageTraceBytes: parsed.sdkFormat ? sdkCaptureLimitBytes : undefined,
-              waitForStdoutDrain:
-                parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
-              cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup,
-              inheritedSignalListeners,
-            });
-        if (result && parsed.modal && parsed.runId && nodeId && stdoutHandling === "capture") {
-          appendNodeLog(env, parsed.runId, nodeId, "stdout", result.stdout);
-        }
+              waitForStdoutDrain: parsed.sdkFormat === "ndjson" ? waitForSdkStdoutDrain : undefined,
+              cleanupBeforeParentSignalExit: antigravityUsageCapture?.cleanup, inheritedSignalListeners,
+            },
+          ));
       } finally {
         waitingSpinner?.stop();
         antigravityUsageTrace = antigravityUsageCapture?.read() ?? "";
@@ -4620,16 +4646,21 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (!result) {
         throw new CliError("agent execution did not produce a result");
       }
+      billingHomeCompleted = result.code === 0;
       const commandTrace = result.stdout || result.finalMessageTrace || result.usageTrace || "";
       const usageCommandTrace = result.stdout || result.usageTrace || result.finalMessageTrace || "";
       const usageTrace = antigravityUsageTrace
         ? `${usageCommandTrace}\n${antigravityUsageTrace}`
         : usageCommandTrace;
       const capturedNativeSessionId =
-        sdkTraceWriter?.nativeSessionId ||
+        billingResult?.nativeSessionId || sdkTraceWriter?.nativeSessionId ||
         ((parsed.sdkFormat || sessionPlan) &&
           extractNativeSessionId(parsed.agent, result.usageTrace ?? commandTrace)) ||
         undefined;
+      const finalUsage = async () => billingResult?.usage && (parsed.agent === "claude" || parsed.agent === "codex")
+        ? billingResult.usage
+        : buildUsageReport(parsed.agent!, usageTrace, usageContext(parsed.agent!, configuredDefaults, env, effectiveProfile), env);
+      const finalUsageOutput = async () => `${JSON.stringify({ usage: await finalUsage() })}\n`;
       sdkTraceWriter?.flush();
       if (result.code === 0 && sessionPlan) {
         await persistSessionPlan(
@@ -4688,7 +4719,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             finalMessage,
             nativeSessionId: capturedNativeSessionId,
             ...(parsed.usage
-              ? { usage: await buildUsageReport(parsed.agent, usageTrace, context, env) }
+              ? { usage: await finalUsage() }
               : {}),
           }, result.code),
         );
@@ -4702,12 +4733,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             stdout("\n");
           }
           stdout(
-            await buildUsageOutput(
-              parsed.agent,
-              usageTrace,
-              usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
-              env,
-            ),
+            await finalUsageOutput(),
           );
         }
         return result.code;
@@ -4725,12 +4751,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         }
         if (parsed.usage) {
           stdout(
-            await buildUsageOutput(
-              parsed.agent,
-              usageTrace,
-              usageContext(parsed.agent, configuredDefaults, env, effectiveProfile),
-              env,
-            ),
+            await finalUsageOutput(),
           );
         }
         return result.code;
@@ -4762,6 +4783,11 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         // Preserve the original CLI error.
       }
     }
+    if (error instanceof BillingError) {
+      if (requestedSdkOutput) stdout(renderSdkError(error.message, error.exitCode, activeSdkCommand));
+      else stderr(`headless: ${error.message}\n`);
+      return error.exitCode;
+    }
     if (error instanceof CliError || error instanceof Error) {
       if (requestedSdkOutput) {
         const message = error instanceof CliError ? error.sdkMessage : "headless command failed";
@@ -4776,6 +4802,14 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     const releaseError = await dockerSessionLock?.release();
     if (releaseError) {
       stderr(`headless: Docker session lock release failed: ${releaseError.message}\n`);
+    }
+    if (temporaryBillingRoot) {
+      if (billingHomeCompleted && !releaseError) {
+        try { rmSync(temporaryBillingRoot, { recursive: true, force: true }); }
+        catch { stderr(`headless: could not remove temporary billing home: ${temporaryBillingRoot}\n`); }
+      } else {
+        stderr(`headless: retained native session files for recovery: ${temporaryBillingRoot}\n`);
+      }
     }
   }
 }
