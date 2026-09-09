@@ -213,3 +213,34 @@ test("nested lifecycle envelopes do not disable legacy trace compatibility", () 
   const observer = observe({ type: "tool_execution_end", result: terminal() });
   assert.equal(observer.observedLifecycle, false);
 });
+
+const compactionStart = { type: "compaction_start", reason: "threshold" };
+const compactionEnd = {
+  type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+  result: { summary: "Compacted history", firstKeptEntryId: "entry", tokensBefore: 100000 },
+};
+
+test("restores the terminal answer after successful threshold compaction", () => {
+  for (const text of ["", "done"]) {
+    const observer = observe(terminal(assistant(text)), compactionStart);
+    assert.deepEqual(observer.outcome, { status: "unknown" });
+    observer.write(line(compactionEnd) + line({ type: "agent_settled" }));
+    observer.end();
+    assert.deepEqual(observer.outcome, { status: "success", finalMessage: text });
+  }
+});
+
+test("compaction cannot revive an absent, failed, or interrupted completion", () => {
+  const failure = terminal(assistant("", { stopReason: "error" }));
+  const traces = [
+    [compactionStart, compactionEnd], [terminal(), compactionEnd],
+    [failure, compactionStart, compactionEnd],
+    [terminal(), compactionStart],
+    ...[{ aborted: true }, { willRetry: true }, { reason: "overflow" }, { result: undefined },
+      { errorMessage: "compaction failed" }].map((extra) =>
+      [terminal(), compactionStart, { ...compactionEnd, ...extra }]),
+    ...[{ type: "agent_start" }, { type: "auto_retry_start" }, null].map((event) =>
+      [terminal(), compactionStart, event, compactionEnd]),
+  ];
+  for (const trace of traces) assert.notEqual(observe(...trace).outcome.status, "success");
+});

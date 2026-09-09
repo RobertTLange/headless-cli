@@ -261,3 +261,22 @@ test("Pi empty completion persists its native session and resumes that session",
     assert.equal(calls[1][calls[1].indexOf("--session") + 1], f.nativeSession);
   } finally { f.cleanup(); }
 });
+
+for (const text of ["", "done"]) {
+  for (const flags of [[], ["--sdk-format", "json"]]) {
+    test(`Pi threshold compaction preserves ${JSON.stringify(text)} in ${flags.join(" ") || "plain"}`, async () => {
+      const records = completedTrace(assistant("stop", text, 4, 6));
+      records.splice(-1, 0,
+        { type: "compaction_start", reason: "threshold" },
+        { type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+          result: { summary: "Compacted history", firstKeptEntryId: "entry", tokensBefore: 100000 } });
+      const f = fixture(records);
+      try {
+        const result = await f.run([...flags, "--session", "compacted"]);
+        assert.equal(result.code, 0, result.stderr || result.stdout);
+        assert.equal(flags.length ? jsonRows(result.stdout).at(-1)!.data.finalMessage : result.stdout.trim(), text);
+        assert.equal(readStoredSession(f.env, "pi", "compacted")?.nativeId, f.nativeSession);
+      } finally { f.cleanup(); }
+    });
+  }
+}

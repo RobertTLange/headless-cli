@@ -39,6 +39,7 @@ export class PiCompletionObserver {
   private pendingBytes = 0;
   private skipping = false;
   private lifecycleSeen = false;
+  private compactionCompletion?: Extract<PiCompletionOutcome, { status: "success" }>;
 
   get observedLifecycle(): boolean {
     return this.lifecycleSeen;
@@ -79,7 +80,25 @@ export class PiCompletionObserver {
   }
 
   private invalidateSuccess(): void {
+    this.compactionCompletion = undefined;
     if (this.outcome.status === "success") this.outcome = { status: "unknown" };
+  }
+
+  private observeCompaction(event: JsonRecord): boolean {
+    if (event.type === "compaction_start" && event.reason === "threshold" && this.outcome.status === "success") {
+      const completion = this.outcome;
+      this.invalidateSuccess();
+      this.compactionCompletion = completion;
+      return true;
+    }
+    if (event.type !== "compaction_end" || !this.compactionCompletion) return false;
+    const completion = this.compactionCompletion;
+    this.invalidateSuccess();
+    if (event.reason === "threshold" && event.aborted === false && event.willRetry === false
+      && record(event.result) && event.errorMessage === undefined) {
+      this.outcome = completion;
+    }
+    return true;
   }
 
   private consume(line: string): void {
@@ -92,6 +111,7 @@ export class PiCompletionObserver {
     }
     if (["agent_start", "agent_end", "agent_settled"].includes(event.type)) this.lifecycleSeen = true;
     if (event.type === "agent_settled") return;
+    if (this.observeCompaction(event)) return;
     this.invalidateSuccess();
     let message: JsonRecord | undefined;
     if (event.type === "agent_end" && Array.isArray(event.messages)) {
