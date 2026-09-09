@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runCli } from "../src/cli.ts";
+import { dockerSessionHomePath, ensureDockerSessionHome, ensureDockerSessionStoreDirectory } from "../src/docker.ts";
+import { SECURE_SESSION_STORE_ENV, writeStoredSession } from "../src/sessions.ts";
 
 test("Codex CLI resumes after quota with invocation-local API authentication", async () => {
   const home = mkdtempSync(join(tmpdir(), "billing-cli-"));
@@ -51,6 +53,45 @@ test("explicit API billing without a key returns reserved terminal status", asyn
   });
   assert.equal(code, 78);
   assert.match(errors.join(""), /API.*key/i);
+});
+
+test("unsupported billing is rejected before creating a native session", async () => {
+  const home = mkdtempSync(join(tmpdir(), "billing-cursor-"));
+  try {
+    const errors: string[] = [];
+    const code = await runCli(["cursor", "--session", "new", "--billing", "api", "--prompt", "task"], {
+      env: { HOME: home, PATH: process.env.PATH, CURSOR_CLI_BIN: join(home, "must-not-run") },
+      stdout: () => {}, stderr: (text) => errors.push(text),
+    });
+    assert.equal(code, 78, errors.join(""));
+    assert.match(errors.join(""), /billing selection is supported only/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("Docker resumes the stored Codex profile before selecting billing", { skip: process.platform === "win32" }, async () => {
+  const home = mkdtempSync(join(tmpdir(), "billing-docker-profile-"));
+  try {
+    const env = { HOME: home, PATH: `${home}:${process.env.PATH}` };
+    mkdirSync(join(home, ".codex"));
+    writeFileSync(join(home, ".codex/custom.config.toml"), 'model_provider = "custom"\n');
+    const sessionHome = ensureDockerSessionHome(dockerSessionHomePath("codex", "work", env)!);
+    ensureDockerSessionStoreDirectory(sessionHome);
+    const nativeId = "12345678-1234-1234-1234-123456789abc";
+    writeStoredSession({ HOME: sessionHome, [SECURE_SESSION_STORE_ENV]: "1" },
+      { agent: "codex", alias: "work", profile: "custom", nativeId });
+    writeFileSync(join(home, "docker"), `#!/usr/bin/env node
+require('node:fs').writeFileSync(process.env.HOME + '/docker-args', JSON.stringify(process.argv.slice(2)));
+console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}}));
+`, { mode: 0o755 });
+    const errors: string[] = [];
+    const code = await runCli(["codex", "--docker", "--session", "work", "--model", "gpt-5.4", "--prompt", "continue"], {
+      env, stdout: () => {}, stderr: (text) => errors.push(text),
+    });
+    assert.equal(code, 0, errors.join(""));
+    const args: string[] = JSON.parse(readFileSync(join(home, "docker-args"), "utf8"));
+    assert.equal(args[args.indexOf("--profile") + 1], "custom");
+    assert.ok(args.includes("resume") && args.includes(nativeId));
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test("explicit billing policy rejects interactive tmux execution", async () => {

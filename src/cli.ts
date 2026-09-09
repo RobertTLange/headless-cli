@@ -4409,9 +4409,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       if (split > 0) billingEnv[entry.slice(0, split)] = entry.slice(split + 1);
     }
     const billingPreviewOptions = { model: configuredDefaults.model, profile, prompt: composedPrompt, workDir: cwd };
-    const initialBilling = parsed.printCommand
-      ? prepareBillingPreview(parsed.agent, billingPreviewOptions, billingEnv, billingMode)
-      : prepareBillingAttempt(parsed.agent, billingPreviewOptions, billingEnv, billingMode);
     let sessionAlias = parsed.sessionAlias;
     if (parsed.runId && parsed.role && coordination === "session" && !parsed.sessionAlias) {
       sessionAlias = nodeId;
@@ -4419,7 +4416,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.runId && parsed.role && coordination === "oneshot") {
       sessionAlias = undefined;
     }
-    if (parsed.docker && !parsed.printCommand && !sessionAlias && billingMode === "auto" && initialBilling.route === "subscription") {
+    if (parsed.docker && !parsed.printCommand && !sessionAlias && billingMode === "auto" &&
+        prepareBillingAttempt(parsed.agent, billingPreviewOptions, billingEnv, billingMode).route === "subscription") {
       temporaryBillingRoot = mkdtempSync(join(tmpdir(), "headless-billing-"));
     }
     let dockerSessionHome = temporaryBillingRoot
@@ -4448,13 +4446,17 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       ? { ...env, HOME: dockerSessionHome, [SECURE_SESSION_STORE_ENV]: "1" }
       : env;
     let sessionPlan = buildSessionPlan(parsed.agent, sessionAlias, sessionEnv, parsed.profile);
+    const effectiveProfile = sessionPlan?.profile ?? profile;
+    const billingOptions = { ...billingPreviewOptions, profile: effectiveProfile };
+    const initialBilling = parsed.printCommand
+      ? prepareBillingPreview(parsed.agent, billingOptions, billingEnv, billingMode)
+      : prepareBillingAttempt(parsed.agent, billingOptions, billingEnv, billingMode);
     if (!parsed.printCommand) {
       sessionPlan = await prepareSessionPlan(parsed.agent, sessionPlan, cwd, env, parsed.docker ? "docker" : "local");
     }
     const commandSessionPlan = dockerSessionHome && sessionPlan
       ? { ...sessionPlan, nativeId: dockerSessionNativeId(parsed.agent, sessionPlan.nativeId, dockerSessionHome) }
       : sessionPlan;
-    const effectiveProfile = sessionPlan?.profile ?? profile;
     const nativeOptions = applySessionPlan({
       prompt: composedPrompt,
       promptFile: parsed.role || parsed.runId ? undefined : prompt.promptFile,
