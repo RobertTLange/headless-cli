@@ -8,6 +8,8 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type Env = Record<string, string | undefined>;
 
+export type BillingMode = "auto" | "subscription" | "api";
+
 export interface BuildOptions {
   prompt: string;
   promptFile?: string;

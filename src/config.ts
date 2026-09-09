@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { isCoordinationMode, isRole, type CoordinationMode, type Role } from "./roles.js";
-import type { AgentName, AllowMode, Env, ReasoningEffort } from "./types.js";
+import type { AgentName, AllowMode, BillingMode, Env, ReasoningEffort } from "./types.js";
 
 export interface AgentDefaults {
+  billing?: BillingMode;
   model?: string;
   reasoningEffort?: ReasoningEffort;
 }
@@ -162,6 +163,8 @@ export function parseHeadlessConfig(content: string): HeadlessConfig {
         defaults.model = parsedValue.value;
       } else if (key === "reasoning_effort") {
         defaults.reasoningEffort = parseConfigReasoningEffort(parsedValue.value, index + 1);
+      } else if (key === "billing") {
+        defaults.billing = parseConfigBilling(parsedValue.value, index + 1);
       } else {
         throw new Error(`unsupported headless agent config key at line ${index + 1}: ${key}`);
       }
@@ -231,6 +234,11 @@ function parseConfigReasoningEffort(value: string, lineNumber: number): Reasonin
     return value;
   }
   throw new Error(`unsupported headless config reasoning_effort at line ${lineNumber}: ${value}`);
+}
+
+function parseConfigBilling(value: string, lineNumber: number): BillingMode {
+  if (value === "auto" || value === "subscription" || value === "api") return value;
+  throw new Error(`headless config billing must be auto, subscription, or api at line ${lineNumber}`);
 }
 
 function parseConfigAllow(value: string, lineNumber: number): AllowMode {
