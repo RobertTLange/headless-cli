@@ -18,6 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { getAgentConfig } from "./agents.js";
 import { readCodexBaseFiles, readCodexProfileFiles } from "./codex-profile.js";
 import { collectForwardedEnvEntries, type ForwardedEnvEntry } from "./env.js";
+import { quoteArg } from "./shell.js";
 import type { AgentName, BuiltCommand, Env } from "./types.js";
 
 export const DEFAULT_DOCKER_IMAGE = "ghcr.io/roberttlange/headless:latest";
@@ -49,6 +50,7 @@ export interface DockerAgentCommandOptions {
   hostUser?: string;
   image: string;
   persistentHome?: string;
+  persistentVolume?: string;
   profile?: string;
   runDirHost?: string;
   runId?: string;
@@ -319,12 +321,16 @@ function isContainedRelativePath(path: string): boolean {
 }
 
 export function buildDockerAgentCommand(options: DockerAgentCommandOptions): BuiltCommand {
+  if (options.persistentHome && options.persistentVolume) {
+    throw new Error("Docker home must use either a host directory or a volume");
+  }
+  const persistentHome = options.persistentHome ?? options.persistentVolume;
   const args = ["run", "--rm"];
   if (options.command.stdinText !== undefined || options.command.stdinFile !== undefined) {
     args.push("--interactive");
   }
-  if (options.persistentHome) {
-    args.push("--volume", `${options.persistentHome}:${containerHome}:rw`);
+  if (persistentHome) {
+    args.push("--volume", `${persistentHome}:${containerHome}:rw`);
   } else {
     args.push("--tmpfs", `${containerHome}:rw,mode=1777`);
   }
@@ -343,11 +349,13 @@ export function buildDockerAgentCommand(options: DockerAgentCommandOptions): Bui
   args.push(...credentialMountArgs(options.env, dockerEnvEntries, workDir));
   args.push(...dockerEnvArgs(dockerEnvEntries));
   args.push(...options.dockerArgs);
+  const maskedEnvNames = Object.entries(options.command.env ?? {})
+    .filter(([, value]) => value === undefined).map(([name]) => name);
   args.push(
     options.image,
     "sh",
     "-lc",
-    bootstrapScript(options.agent, Boolean(options.persistentHome), options.sessionBootstrap, options.profile),
+    bootstrapScript(options.agent, Boolean(persistentHome), options.sessionBootstrap, options.profile, maskedEnvNames),
     "headless-agent",
     options.command.command,
     ...options.command.args,
@@ -371,6 +379,7 @@ function bootstrapScript(
   persistentHome: boolean,
   sessionBootstrap?: DockerSessionBootstrap,
   profile?: string,
+  maskedEnvNames: string[] = [],
 ): string {
   const copyFlags = persistentHome ? "-R -n" : "-R";
   const commands = [
@@ -403,6 +412,9 @@ function bootstrapScript(
     if (agentHomeVariables.length > 0) {
       commands.push(`unset ${agentHomeVariables.join(" ")}`);
     }
+  }
+  if (maskedEnvNames.length) {
+    commands.push(`unset -- ${maskedEnvNames.map(quoteArg).join(" ")}`);
   }
   if (sessionBootstrap === "initialize-cursor") {
     commands.push(

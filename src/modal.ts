@@ -50,6 +50,18 @@ const bootstrapScript = [
 
 export type StdoutHandling = "capture" | "stream" | "capture-and-stream";
 
+export interface ModalAttemptResult {
+  code: number;
+  stdout: string;
+}
+
+export type ModalAttemptExecutor = (
+  command: BuiltCommand,
+  attemptEnv: Env,
+  timeoutSeconds: number,
+  observe: (chunk: string) => void,
+) => Promise<ModalAttemptResult>;
+
 export interface ExecuteModalOptions {
   agent: AgentName;
   appName: string;
@@ -71,6 +83,7 @@ export interface ExecuteModalOptions {
   waitForStdoutDrain?: (signal: AbortSignal) => Promise<void>;
   workDir: string;
   clientFactory?: () => Promise<ModalClientLike>;
+  invoke?: (execute: ModalAttemptExecutor) => Promise<ModalAttemptResult>;
 }
 
 export interface ExecuteModalResult {
@@ -274,33 +287,60 @@ export async function executeModalAgent(options: ExecuteModalOptions): Promise<E
       await runRemoteTar(sandbox, [remoteTarCommand, "-xzf", "-", "-C", remoteHostHome], timeoutMs, credentialArchive);
     }
 
-    const runProcess = await sandbox.exec(
-      ["sh", "-lc", bootstrapScript, "headless-agent", options.command.command, ...options.command.args],
-      {
-        env,
-        mode: "text",
-        secrets,
-        stderr: "pipe",
-        stdout: "pipe",
-        timeoutMs,
-        workdir: remoteWorkDir,
-      },
-    );
-    const stdoutPromise = readTextStream(
-      runProcess.stdout,
-      async (text) => {
-        if (options.stdoutHandling !== "capture") {
-          const writable = options.stdout(text);
-          if (writable === false) {
-            await options.waitForStdoutDrain?.(stdoutDrainController.signal);
+    let initialized = false;
+    const execute: ModalAttemptExecutor = async (command, attemptEnv, remainingSeconds, observe) => {
+      const overrides = { ...command.env };
+      for (const [name, value] of Object.entries(attemptEnv)) {
+        if (value === undefined) overrides[name] = undefined;
+      }
+      const attemptEnvironment = collectModalEnv(attemptEnv, overrides, options.modalEnv, { workDir });
+      if (options.invoke) {
+        Object.assign(attemptEnvironment, collectModalEnv(attemptEnv, overrides, [], { workDir }));
+      }
+      // An invocation's route overrides also outrank explicit transport environment.
+      for (const [name, value] of Object.entries(command.env ?? {})) {
+        if (value !== undefined) attemptEnvironment[name] = value;
+      }
+      const masked = Object.entries(overrides).filter(([, value]) => value === undefined).map(([name]) => name);
+      for (const name of masked) delete attemptEnvironment[name];
+      const native = masked.length
+        ? ["env", ...masked.flatMap((name) => ["-u", name]), "--", command.command, ...command.args]
+        : [command.command, ...command.args];
+      const setup = initialized ? 'exec runuser -u node -- "$@"' : bootstrapScript;
+      initialized = true;
+      const runProcess = await sandbox!.exec(
+        ["sh", "-lc", setup, "headless-agent", ...native],
+        {
+          env: attemptEnvironment,
+          mode: "text",
+          secrets,
+          stderr: "pipe",
+          stdout: "pipe",
+          timeoutMs: remainingSeconds * 1000,
+          workdir: remoteWorkDir,
+        },
+      );
+      const stdoutPromise = readTextStream(
+        runProcess.stdout,
+        async (text) => {
+          observe(text);
+          if (options.stdoutHandling !== "capture") {
+            const writable = options.stdout(text);
+            if (writable === false) {
+              await options.waitForStdoutDrain?.(stdoutDrainController.signal);
+            }
           }
-        }
-      },
-      options.maxCapturedStdoutBytes,
-    );
-    const stderrPromise = readTextStream(runProcess.stderr, options.stderr);
-    await writeModalStdin(runProcess.stdin, options.command);
-    const [stdout, , code] = await Promise.all([stdoutPromise, stderrPromise, runProcess.wait()]);
+        },
+        options.maxCapturedStdoutBytes,
+      );
+      const stderrPromise = readTextStream(runProcess.stderr, options.stderr);
+      await writeModalStdin(runProcess.stdin, command);
+      const [stdout, , code] = await Promise.all([stdoutPromise, stderrPromise, runProcess.wait()]);
+      return { stdout, code };
+    };
+    const { stdout, code } = options.invoke
+      ? await options.invoke(execute)
+      : await execute(options.command, options.env, options.timeoutSeconds, () => {});
 
     const resultArchive = await captureRemoteArchive(sandbox, timeoutMs);
     extractArchiveLocally(resultArchive, resultDir);

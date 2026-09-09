@@ -15,10 +15,12 @@ list_waiting_after_ms = 15000
 
 [agents.claude]
 model = "claude-opus-4-6"
+# billing = "auto" # Subscription first; Amazon Bedrock after a subscription limit.
 # reasoning_effort = "xhigh"
 
 [agents.codex]
 model = "gpt-5.5"
+# billing = "auto" # Subscription first; OpenAI API after a subscription limit.
 # reasoning_effort = "xhigh"
 
 [agents.cursor]
