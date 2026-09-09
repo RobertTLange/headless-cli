@@ -291,7 +291,7 @@ export function updateNodeStatus(
     const now = new Date().toISOString();
     node.status = status;
     node.updatedAt = now;
-    if (message) {
+    if (message !== undefined) {
       node.lastMessage = message;
     }
     if (metrics && Object.keys(metrics).length > 0) {
@@ -322,7 +322,7 @@ export function completeIdleRunNodes(env: Env, runId: string, orchestratorNodeId
       }
       node.status = "done";
       node.updatedAt = now;
-      if (node.nodeId === orchestratorNodeId && orchestratorMessage) {
+      if (node.nodeId === orchestratorNodeId && orchestratorMessage !== undefined) {
         node.lastMessage = orchestratorMessage;
       }
       addEvent(run, {

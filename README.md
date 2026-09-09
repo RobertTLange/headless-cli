@@ -172,6 +172,16 @@ estimates with reported charges. Subscription cost estimates are API list-price
 comparisons, not subscription charges. Auth changes affect child environments
 only; Headless never replaces shared login files.
 
+### Empty Pi completions
+
+Pi can finish artifact-producing work with an empty final assistant message.
+Headless accepts that as success when Pi's native terminal event confirms a normal
+completion and the process exits successfully. Plain output contains no invented
+answer; `--usage` still reports usage, and SDK results contain `finalMessage: ""`.
+An incomplete lifecycle or native error remains a failure, including when earlier
+assistant progress text exists. Legacy message-only output remains supported.
+Artifact validation remains the caller's responsibility.
+
 ## Native TUI Completion
 
 Use `--tmux --wait --delete` when you want Headless to launch the agent in its native TUI, wait for the final native transcript message, print that message, and then terminate the tmux session after the prompt completes.

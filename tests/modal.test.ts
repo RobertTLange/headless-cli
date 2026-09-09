@@ -26,6 +26,7 @@ import {
   type ModalWriteStreamLike,
 } from "../src/modal.ts";
 import { quoteCommand } from "../src/shell.ts";
+import { PiCompletionObserver } from "../src/pi-completion.ts";
 
 test("default Modal image is immutable", () => {
   assert.equal(
@@ -954,4 +955,38 @@ test("Modal billing retries share sandbox, observe captured output and mask inhe
 
 test("explicit undefined command credentials cannot be reintroduced by forwarding", () => {
   assert.equal(collectModalEnv({ OPENAI_API_KEY: "parent" }, { OPENAI_API_KEY: undefined }, ["OPENAI_API_KEY=explicit"]).OPENAI_API_KEY, undefined);
+});
+
+test("Modal observes empty Pi completion before captured stdout is truncated", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-pi-completion-"));
+  try {
+    const work = join(dir, "work"), remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    const trace = [
+      { type: "agent_start" },
+      { type: "agent_end", messages: [
+        { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "" }] },
+      ] },
+      { type: "agent_settled" },
+    ].map((record) => `${JSON.stringify(record)}\n`);
+    const sandbox = new FakeSandbox(remote, { agentStdoutChunks: trace });
+    const observer = new PiCompletionObserver();
+    const result = await executeModalAgent({
+      agent: "pi", appName: "test", command: { command: "pi", args: ["--mode", "json"] },
+      cpu: 1, env: { HOME: join(dir, "home") }, image: DEFAULT_MODAL_IMAGE,
+      includeGit: false, memoryMiB: 1024, modalEnv: [], modalSecrets: [],
+      stdout: () => assert.fail("capture mode must not stream"), stderr: () => {},
+      stdoutHandling: "capture", maxCapturedStdoutBytes: 30, timeoutSeconds: 60,
+      workDir: work, clientFactory: async () => new FakeModalClient(sandbox),
+      invoke: (execute) => execute({ command: "pi", args: ["--mode", "json"] }, {}, 50,
+        (text) => observer.write(text)),
+    });
+    observer.end();
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stdout, /agent_end/);
+    assert.deepEqual(observer.outcome, { status: "success", finalMessage: "" });
+    assert.equal(sandbox.terminated, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
