@@ -49,7 +49,8 @@ test("partial cost components stay null; enforce bounded attempts", () => {
   assert.equal(aggregateBillingUsage([attempt, attempt]).cost?.input, null);
   assert.equal(aggregateBillingUsage([attempt, attempt]).cost?.total, 20);
   assert.throws(() => aggregateBillingUsage([]));
-  assert.throws(() => aggregateBillingUsage([attempt, attempt, attempt]));
+  assert.equal(aggregateBillingUsage(Array(5).fill(attempt)).totalTokens, 85);
+  assert.throws(() => aggregateBillingUsage(Array(6).fill(attempt)));
 });
 
 const claudeResult = {

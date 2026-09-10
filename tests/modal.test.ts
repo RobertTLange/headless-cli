@@ -27,6 +27,8 @@ import {
 } from "../src/modal.ts";
 import { quoteCommand } from "../src/shell.ts";
 import { PiCompletionObserver } from "../src/pi-completion.ts";
+import { buildAgentCommand } from "../src/agents.ts";
+import { runWithBilling } from "../src/billing-run.ts";
 
 test("default Modal image is immutable", () => {
   assert.equal(
@@ -950,6 +952,53 @@ test("Modal billing retries share sandbox, observe captured output and mask inhe
     assert.equal(result.code, 0);
     assert.equal(sandbox.commands.filter((command) => command[0] === "/usr/bin/tar" && command[1] === "-czf").length, 1);
     assert.equal(sandbox.terminated, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("Modal capacity failure resumes in the same sandbox without repeating bootstrap", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "headless-modal-capacity-"));
+  try {
+    const work = join(dir, "work"), remote = join(dir, "remote");
+    mkdirSync(work);
+    mkdirSync(remote);
+    initGitWorkdir(work);
+    const nativeId = "12345678-1234-1234-1234-123456789abc";
+    const trace = [
+      { type: "thread.started", thread_id: nativeId },
+      { type: "turn.failed", error: { message: "Selected model is at capacity. Please try a different model." } },
+    ].map((event) => `${JSON.stringify(event)}\n`);
+    const sandbox = new FakeSandbox(remote, { agentStdoutChunks: trace });
+    const client = new FakeModalClient(sandbox);
+    const env = { HOME: join(dir, "home"), OPENAI_API_KEY: "test-api" };
+    const delays: number[] = [];
+    const result = await executeModalAgent({
+      agent: "codex", appName: "test", command: buildAgentCommand("codex", { prompt: "task" }, env),
+      cpu: 1, env, image: DEFAULT_MODAL_IMAGE, includeGit: false, memoryMiB: 1024,
+      modalEnv: [], modalSecrets: [], stdout: () => {}, stderr: () => {},
+      stdoutHandling: "capture", timeoutSeconds: 180, workDir: work, clientFactory: async () => client,
+      invoke: async (execute) => (await runWithBilling({
+        agent: "codex", mode: "api", env, options: { prompt: "task" }, timeoutSeconds: 180,
+        random: () => 0.5,
+        sleep: async (delay) => {
+          delays.push(delay);
+          sandbox.options.agentStdoutChunks = [
+            JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "finished" } }) + "\n",
+            JSON.stringify({ type: "turn.completed", usage: {} }) + "\n",
+          ];
+        },
+        execute: (attempt) => execute(buildAgentCommand("codex", attempt.options, attempt.env),
+          attempt.env, attempt.timeoutSeconds!, attempt.observe),
+      })).result,
+    });
+    assert.equal(result.code, 0);
+    assert.deepEqual(delays, [30000]);
+    const executions = sandbox.commands.filter((command) => command[0] === "sh");
+    assert.equal(executions.length, 2);
+    assert.match(executions[0][2], /headless-host-home/);
+    assert.doesNotMatch(executions[1][2], /headless-host-home/);
+    assert.ok(executions[1].includes("resume") && executions[1].includes(nativeId));
+    assert.equal(sandbox.terminated, true);
+    assert.equal(client.closed, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

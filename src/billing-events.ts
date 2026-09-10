@@ -1,4 +1,5 @@
 import { StringDecoder } from "node:string_decoder";
+import { CODEX_CAPACITY_MESSAGE } from "./capacity-retry.js";
 import type { AgentName } from "./types.js";
 
 export type BillingFailureReason = "subscription-quota" | "subscription-model-unsupported";
@@ -55,6 +56,7 @@ export class BillingEventCollector {
   nativeSessionId: string | undefined;
   hasWork = false;
   failed = false;
+  capacityFailure = false;
   private pending = "";
   private pendingBytes = 0;
   private skipping = false;
@@ -106,6 +108,7 @@ export class BillingEventCollector {
   private consumeCodex(event: RecordValue): void {
     if (event.type === "turn.completed") {
       this.failed = false;
+      this.capacityFailure = false;
       this.failureReason = undefined;
     }
     if (event.type === "thread.started") {
@@ -114,6 +117,9 @@ export class BillingEventCollector {
     if (event.type === "item.started" || event.type === "item.completed" || event.type === "item.updated") {
       const item = object(event.item);
       if (typeof item.type === "string" && item.type !== "error") this.hasWork = true;
+    }
+    if (event.type === "turn.failed") {
+      this.capacityFailure = object(event.error).message === CODEX_CAPACITY_MESSAGE;
     }
     if (event.type === "error" || event.type === "turn.failed") {
       this.failureReason ??= codexFailure(event.error) ?? codexFailure(event.message) ??

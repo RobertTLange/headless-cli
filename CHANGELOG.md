@@ -2,6 +2,7 @@
 
 ## TBD
 
+- Added automatic bounded retries for native Codex model-capacity failures in local, Docker, and Modal runs, preserving sessions, billing policy, cancellation, deadlines, and per-attempt usage. Set `HEADLESS_CAPACITY_RETRIES=0` to disable.
 - Fixed run coordination to recover stale run and node locks after owner crashes, retain async ownership for the full detached process tree, and handle Windows process probing and state replacement safely (#28).
 
 ## 0.6.1 - 2026-08-12

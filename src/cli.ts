@@ -17,7 +17,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { runAcpClient, runAcpStdioAgent } from "./acp.js";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { PiCompletionObserver } from "./pi-completion.js";
 
@@ -40,6 +40,7 @@ import {
 import { prepareAntigravityUsageCapture, type AntigravityUsageCapture } from "./antigravity-usage.js";
 import { BillingError, prepareBillingAttempt, prepareBillingPreview, resolveBillingMode } from "./billing.js";
 import { runWithBilling, type BillingExecutionAttempt, type BillingRunResult } from "./billing-run.js";
+import { resolveCapacityRetries, waitForCapacityRetry } from "./capacity-retry.js";
 import { buildDockerBillingVolumeInitCommand, removeDockerBillingVolume } from "./docker-billing.js";
 import { checkAgents, checkDocker, commandExists, commandForAgent, renderAgentChecks, renderDockerCheck } from "./check.js";
 import {
@@ -245,6 +246,8 @@ interface CliDeps {
   stderrIsTTY?: boolean;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
+  capacityRetrySleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+  capacityRetryRandom?: () => number;
 }
 
 class CliError extends Error {
@@ -1122,6 +1125,7 @@ function selectDefaultAgent(env: Env, preferredAgent: AgentName | undefined): Ag
 
 interface ExecuteResult {
   code: number;
+  terminationSignal?: NodeJS.Signals;
   stdout: string;
   finalMessageTrace?: string;
   usageTrace?: string;
@@ -1791,6 +1795,7 @@ async function executeCommand(
       let settled = false;
       let timeout: NodeJS.Timeout | undefined;
       let termination: { code: number } | undefined;
+      let parentTerminationSignal: NodeJS.Signals | undefined;
       let forceKill: NodeJS.Timeout | undefined;
       let forceFinish: NodeJS.Timeout | undefined;
       let forceDrain: NodeJS.Timeout | undefined;
@@ -1903,6 +1908,7 @@ async function executeCommand(
         result.usageTrace = readRelevantTrace() || undefined;
         result.stdoutReceived = stdoutReceived;
         result.stdoutEndsWithNewline = stdoutEndsWithNewline;
+        result.terminationSignal ??= parentTerminationSignal;
         resolve(result);
       };
       const asyncMessageWorker = env.HEADLESS_ASYNC_MESSAGE_WORKER === "1";
@@ -1912,6 +1918,7 @@ async function executeCommand(
       );
       const handlesParentSignals = asyncMessageWorker
         || ownsChildProcessGroup
+        || agent === "codex"
         || options.cleanupBeforeParentSignalExit !== undefined;
       waitForAsyncMessageOwnership(env, command);
       let childEnv = commandEnv(env, command);
@@ -1966,6 +1973,7 @@ async function executeCommand(
           child.stderr?.destroy();
           finish({
             code: signal ? 1 : (code ?? 1),
+            ...(signal ? { terminationSignal: signal } : {}),
             stdout: capturedStdout,
             stdoutReceived,
             stdoutEndsWithNewline,
@@ -1983,6 +1991,7 @@ async function executeCommand(
         };
         for (const signal of parentExitSignals()) {
           const handler = () => {
+            parentTerminationSignal = signal;
             const inheritedListeners = options.inheritedSignalListeners?.get(signal);
             const hasExternalListener = inheritedListeners
               ? process.listeners(signal).some((listener) => inheritedListeners.has(listener))
@@ -2122,7 +2131,8 @@ async function executeCommand(
           signalChildTree("SIGKILL");
         }
         if (signal) {
-          finish({ code: termination?.code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
+          finish({ code: termination?.code ?? 1, terminationSignal: signal,
+            stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
           return;
         }
         finish({ code: termination?.code ?? code ?? 1, stdout: capturedStdout, stdoutReceived, stdoutEndsWithNewline });
@@ -4412,6 +4422,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
       const split = entry.indexOf("=");
       if (split > 0) billingEnv[entry.slice(0, split)] = entry.slice(split + 1);
     }
+    const capacityRetries = resolveCapacityRetries(billingEnv);
     const billingPreviewOptions = { model: configuredDefaults.model, profile, prompt: composedPrompt, workDir: cwd };
     let sessionAlias = parsed.sessionAlias;
     if (parsed.runId && parsed.role && coordination === "session" && !parsed.sessionAlias) {
@@ -4420,8 +4431,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     if (parsed.runId && parsed.role && coordination === "oneshot") {
       sessionAlias = undefined;
     }
-    if (parsed.docker && !parsed.printCommand && !sessionAlias && billingMode === "auto" &&
-        prepareBillingAttempt(parsed.agent, billingPreviewOptions, billingEnv, billingMode).route === "subscription") {
+    const needsRetryHome = parsed.agent === "codex" && capacityRetries > 0;
+    if (parsed.docker && !parsed.printCommand && !sessionAlias && (needsRetryHome || (billingMode === "auto" &&
+        prepareBillingAttempt(parsed.agent, billingPreviewOptions, billingEnv, billingMode).route === "subscription"))) {
       if (process.platform === "win32") temporaryBillingVolume = `headless-billing-${randomUUID()}`;
       else temporaryBillingRoot = mkdtempSync(join(tmpdir(), "headless-billing-"));
     }
@@ -4586,10 +4598,25 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
         const commandStdoutLog = runStdoutLogger(env, parsed.runId, nodeId);
         const commandStderr = runStderrLogger(env, parsed.runId, nodeId);
         const runBilling = async (execute: (attempt: BillingExecutionAttempt) => Promise<ExecuteResult>) => {
+          const retryController = new AbortController();
           billingResult = await runWithBilling({
             agent: parsed.agent!, mode: billingMode, env: billingEnv, options: nativeOptions,
             timeoutSeconds: parsed.modal ? modalTimeoutSeconds : commandTimeoutSeconds,
             execute,
+            signal: retryController.signal,
+            random: deps.capacityRetryRandom,
+            sleep: async (delayMs, signal) => {
+              const handlers = parentExitSignals().map((signalName) => {
+                const handler = () => retryController.abort(128 + osConstants.signals[signalName]);
+                process.on(signalName, handler);
+                return [signalName, handler] as const;
+              });
+              try {
+                await (deps.capacityRetrySleep ?? waitForCapacityRetry)(delayMs, signal);
+              } finally {
+                for (const [signalName, handler] of handlers) process.off(signalName, handler);
+              }
+            },
             reportUsage: parsed.usage && (parsed.agent === "claude" || parsed.agent === "codex") ? async (trace, route) => {
               const context = usageContext(parsed.agent!, configuredDefaults, env, effectiveProfile);
               if (route === "bedrock") context.provider = "amazon-bedrock";
@@ -4597,6 +4624,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
             } : undefined,
             onTransition: (event) => {
               displayStderr(`headless: billing ${event.from} -> ${event.to} (${event.reason})\n`);
+              const line = `${JSON.stringify(event)}\n`;
+              commandStdoutLog?.(line);
+              if (stdoutHandling !== "capture") commandStdout(line);
+            },
+            onCapacityRetry: (event) => {
+              displayStderr(`headless: model capacity retry ${event.retry} in ${(event.delayMs / 1000).toFixed(1)}s (${event.reason})\n`);
               const line = `${JSON.stringify(event)}\n`;
               commandStdoutLog?.(line);
               if (stdoutHandling !== "capture") commandStdout(line);

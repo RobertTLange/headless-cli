@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_ATTEMPTS } from "./capacity-retry.js";
 import type { BillingFailureReason } from "./billing-events.js";
 import type { UsageCostBreakdown, UsageSummary } from "./usage.js";
 
@@ -5,6 +6,7 @@ export type BillingRoute = "subscription" | "openai-api" | "bedrock" | "native";
 export interface BillingAttempt {
   route: BillingRoute;
   reason?: BillingFailureReason;
+  retryReason?: "model-capacity";
   usage: UsageSummary;
 }
 export interface BillingUsageReport extends UsageSummary {
@@ -13,8 +15,8 @@ export interface BillingUsageReport extends UsageSummary {
 
 /** Keep incompatible cost valuations separate rather than suggesting an actual API bill. */
 export function aggregateBillingUsage(attempts: BillingAttempt[]): BillingUsageReport {
-  if (attempts.length < 1 || attempts.length > 2) {
-    throw new Error("Billing usage requires one or two attempts");
+  if (attempts.length < 1 || attempts.length > MAX_EXECUTION_ATTEMPTS) {
+    throw new Error(`Billing usage requires one to ${MAX_EXECUTION_ATTEMPTS} attempts`);
   }
   const summaries = attempts.map((attempt) => attempt.usage);
   const last = summaries[summaries.length - 1];
