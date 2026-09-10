@@ -13,7 +13,7 @@ function fixture(binary = "codex") {
 const fs = require('node:fs');
 const callsFile = process.env.HOME + '/calls';
 const previous = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').trim().split('\\n').length : 0;
-fs.appendFileSync(callsFile, JSON.stringify({args: process.argv.slice(2), paid: !!process.env.CODEX_API_KEY}) + '\\n');
+fs.appendFileSync(callsFile, JSON.stringify({args: process.argv.slice(2), paid: !!process.env.CODEX_API_KEY, pid: process.pid}) + '\\n');
 console.log(JSON.stringify({type:'thread.started', thread_id:'12345678-1234-1234-1234-123456789abc'}));
 if (previous === 0) {
   console.log(JSON.stringify({type:'turn.failed', error:{message:'Selected model is at capacity. Please try a different model.'}}));
@@ -26,7 +26,7 @@ if (previous === 0) {
   return {
     home,
     env: { HOME: home, PATH: `${home}:${process.env.PATH}` },
-    calls: (): Array<{ args: string[]; paid: boolean }> => existsSync(join(home, "calls"))
+    calls: (): Array<{ args: string[]; paid: boolean; pid: number }> => existsSync(join(home, "calls"))
       ? readFileSync(join(home, "calls"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [],
     cleanup: () => rmSync(home, { recursive: true, force: true }),
   };
@@ -157,34 +157,44 @@ test("a signal-terminated Codex process does not retry its preceding capacity fa
   } finally { run.cleanup(); }
 });
 
-test("embedded parent cancellation stays terminal when Codex catches SIGTERM and exits one", { skip: process.platform === "win32" }, async () => {
-  const run = fixture();
-  const inheritedListener = () => {};
-  process.on("SIGTERM", inheritedListener);
-  try {
-    const binary = join(run.home, "codex");
-    writeFileSync(binary, readFileSync(binary, "utf8")
-      .replace("const fs = require('node:fs');", "const fs = require('node:fs');\nprocess.on('SIGTERM', () => process.exit(1));")
-      .replace("process.exitCode = 1;", "setInterval(() => {}, 1000);"));
-    let signalled = false;
-    let delays = 0;
-    const code = await runCli(["codex", "--prompt", "task", "--json", "--timeout", "5"], {
-      env: run.env, stderr: () => {},
-      stdout: (text) => {
-        if (!signalled && text.includes('"turn.failed"')) {
-          signalled = true;
-          process.emit("SIGTERM");
-        }
-      },
-      capacityRetrySleep: async () => { delays++; },
-    });
-    assert.equal(signalled, true);
-    assert.equal(code, 1);
-    assert.equal(run.calls().length, 1);
-    assert.equal(delays, 0);
-    assert.ok(process.listeners("SIGTERM").includes(inheritedListener));
-  } finally {
-    process.off("SIGTERM", inheritedListener);
-    run.cleanup();
-  }
-});
+for (const timeoutArgs of [[], ["--timeout", "5"]]) {
+  const timeoutLabel = timeoutArgs.length ? "with" : "without";
+  test(`embedded parent cancellation stays terminal when Codex catches SIGTERM ${timeoutLabel} a timeout`, { skip: process.platform === "win32" }, async () => {
+    const run = fixture();
+    const listeners = process.listeners("SIGTERM");
+    let inheritedSignals = 0;
+    const inheritedListener = () => {
+      inheritedSignals++;
+      if (!timeoutArgs.length) process.kill(run.calls()[0].pid, "SIGTERM");
+    };
+    process.on("SIGTERM", inheritedListener);
+    try {
+      const binary = join(run.home, "codex");
+      writeFileSync(binary, readFileSync(binary, "utf8")
+        .replace("const fs = require('node:fs');", "const fs = require('node:fs');\nprocess.on('SIGTERM', () => process.exit(1));")
+        .replace("process.exitCode = 1;", "setInterval(() => {}, 1000);"));
+      let signalled = false;
+      let delays = 0;
+      const code = await runCli(["codex", "--prompt", "task", "--json", ...timeoutArgs], {
+        env: run.env, stderr: () => {},
+        stdout: (text) => {
+          if (!signalled && text.includes('"turn.failed"')) {
+            signalled = true;
+            process.emit("SIGTERM");
+          }
+        },
+        capacityRetrySleep: async () => { delays++; },
+      });
+      assert.equal(signalled, true);
+      assert.equal(inheritedSignals, 1);
+      assert.equal(code, 1);
+      assert.equal(run.calls().length, 1);
+      assert.equal(delays, 0);
+      assert.ok(process.listeners("SIGTERM").includes(inheritedListener));
+    } finally {
+      process.off("SIGTERM", inheritedListener);
+      run.cleanup();
+      assert.deepEqual(process.listeners("SIGTERM"), listeners);
+    }
+  });
+}

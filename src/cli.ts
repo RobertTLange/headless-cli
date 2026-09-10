@@ -1918,6 +1918,7 @@ async function executeCommand(
       );
       const handlesParentSignals = asyncMessageWorker
         || ownsChildProcessGroup
+        || agent === "codex"
         || options.cleanupBeforeParentSignalExit !== undefined;
       waitForAsyncMessageOwnership(env, command);
       let childEnv = commandEnv(env, command);
