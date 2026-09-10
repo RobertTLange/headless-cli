@@ -8,6 +8,7 @@ import { CAPACITY_CONTINUATION, MAX_EXECUTION_ATTEMPTS, cancellationCode, capaci
 
 export interface BillingExecutionResult {
   code: number;
+  terminationSignal?: NodeJS.Signals;
   stdout: string;
   usageTrace?: string;
   finalMessageTrace?: string;
@@ -46,7 +47,7 @@ export interface BillingRunResult {
   error?: string;
 }
 
-const terminated = new Set([124, 130, 137, 143]);
+const terminated = new Set([124, 129, 130, 131, 137, 143, 149]);
 const continuation = "Continue from where you left off. Your previous turn was interrupted by a subscription usage limit. Preserve completed work and do not repeat completed commands.";
 
 /** Capacity retries and one billing transition share a deadline and native transcript. */
@@ -95,7 +96,7 @@ export async function runWithBilling(input: BillingRunOptions): Promise<BillingR
       result = { ...result, code: cancelledAfterExecution };
       break;
     }
-    if (terminated.has(result.code)) break;
+    if (result.terminationSignal || terminated.has(result.code)) break;
     if (events.failed && result.code === 0) result = { ...result, code: 1 };
     if (events.capacityFailure && !events.failureReason) {
       if (capacityRetries >= capacityLimit) {

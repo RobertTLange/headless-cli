@@ -144,7 +144,7 @@ test("remaining deadline bounds waiting and prevents another launch", async () =
   assert.equal(outcome.result.code, 124);
 });
 
-for (const code of [124, 130, 137, 143]) {
+for (const code of [124, 129, 130, 131, 137, 143, 149]) {
   test(`terminated execution ${code} never retries capacity`, async () => {
     const outcome = await runWithBilling({ ...base,
       sleep: async () => { assert.fail("unexpected sleep"); },
@@ -218,4 +218,15 @@ test("subscription-only quota remains terminal after a capacity retry", async ()
   });
   assert.equal(calls, 2);
   assert.equal(outcome.result.code, 78);
+});
+
+test("native termination signal after capacity failure never retries", async () => {
+  const outcome = await runWithBilling({ ...base,
+    sleep: async () => { assert.fail("terminated execution must not retry"); },
+    execute: async ({ observe }) => {
+      observe(capacity);
+      return { code: 1, stdout: "retained", terminationSignal: "SIGTERM" };
+    },
+  });
+  assert.equal(outcome.result.code, 1);
 });
