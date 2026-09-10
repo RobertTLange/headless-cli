@@ -157,7 +157,7 @@ errors, tool output, interruptions, and timeouts do not trigger fallback. Paid
 provider limits still apply; Headless does not impose a local dollar cap.
 
 The policy applies locally, in Docker, and in Modal. Docker keeps an anonymous
-private home across both attempts, removes it after native success, and reports
+private home across attempts, removes it after native success, and reports
 its retained path on failure for recovery. `--session` homes remain durable.
 On Windows, anonymous Docker runs share a Docker-managed volume across attempts;
 success removes it and failure reports its name for recovery. Named durable
@@ -171,6 +171,33 @@ mixed or missing cost bases leave aggregate cost unavailable instead of mixing
 estimates with reported charges. Subscription cost estimates are API list-price
 comparisons, not subscription charges. Auth changes affect child environments
 only; Headless never replaces shared login files.
+
+### Temporary Codex capacity failures
+
+Noninteractive Codex runs automatically retry the native terminal error
+`Selected model is at capacity. Please try a different model.` up to three times.
+Delays are 30, 60, and 120 seconds, each with ±20% jitter. Waiting counts against
+the original command timeout, and cancellation stops the wait immediately.
+
+Set `HEADLESS_CAPACITY_RETRIES=0` to disable these retries, or choose `1`, `2`, or
+`3` to set their limit. Other values are rejected before launching the agent.
+Capacity retries keep the same model, profile, permissions, and billing route.
+They resume the native session with a continuation prompt; without a session,
+Headless retries the original prompt only if no work has been observed.
+
+Retries apply to local, Docker, and Modal runs. Unnamed Docker runs keep a private
+native home across attempts, including subscription-only and API billing; success
+removes it and failure reports its location for recovery. Interactive/tmux launches
+remain under the native CLI's control. Assistant text, tool output, generic errors,
+and recoverable error notices do not trigger capacity retries.
+
+Each wait emits a stderr diagnostic and a `capacity_retry` event in streamed
+JSON/log output, with `retry`, `delayMs`, and `reason: "model-capacity"`.
+`--usage` includes every execution once in `billing.attempts`, with
+`retryReason: "model-capacity"` on executions caused by capacity retries. The
+three capacity retries and the existing single billing fallback have independent
+budgets, allowing at most five executions per invocation. Exhausted capacity
+retries preserve the last failure status and transcript.
 
 ### Empty Pi completions
 
