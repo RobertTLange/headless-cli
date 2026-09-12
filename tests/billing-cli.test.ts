@@ -7,7 +7,12 @@ import { runCli } from "../src/cli.ts";
 import { dockerSessionHomePath, ensureDockerSessionHome, ensureDockerSessionStoreDirectory } from "../src/docker.ts";
 import { SECURE_SESSION_STORE_ENV, writeStoredSession } from "../src/sessions.ts";
 
-test("Codex CLI resumes after quota with invocation-local API authentication", async () => {
+for (const scenario of [
+  { name: "resumes through API", mode: "auto", apiKey: "backup-secret", calls: 2, code: 0 },
+  { name: "stops under subscription-only billing", mode: "subscription", apiKey: "backup-secret", calls: 1, code: 78 },
+  { name: "stops without backup credentials", mode: "auto", apiKey: undefined, calls: 1, code: 78 },
+] as const) {
+test(`Codex CLI ordinal-date quota ${scenario.name}`, async () => {
   const home = mkdtempSync(join(tmpdir(), "billing-cli-"));
   try {
     mkdirSync(join(home, ".codex"));
@@ -20,8 +25,10 @@ const input = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(path.join(process.env.HOME,'calls'), JSON.stringify({args:process.argv.slice(2), input, paid:!!process.env.CODEX_API_KEY})+'\\n');
 console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'}));
 if (!process.env.CODEX_API_KEY) {
- console.log(JSON.stringify({type:'error',message:"You\'ve hit your usage limit. Try again later."}));
- console.log(JSON.stringify({type:'turn.failed',error:{message:"You\'ve hit your usage limit. Try again later."}}));
+ console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'fixture work',exit_code:0}}));
+ const message = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 17th, 2026 5:28 PM.";
+ console.log(JSON.stringify({type:'error',message}));
+ console.log(JSON.stringify({type:'turn.failed',error:{message}}));
  process.exitCode=1;
 } else {
  console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'finished'}}));
@@ -30,21 +37,29 @@ if (!process.env.CODEX_API_KEY) {
 `, { mode: 0o755 });
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const code = await runCli(["codex", "--prompt", "original task", "--json"], {
-      env: { PATH: `${home}:${process.env.PATH}`, HOME: home, OPENAI_API_KEY: "backup-secret" },
+    const code = await runCli(["codex", "--billing", scenario.mode, "--prompt", "original task",
+      "--model", "gpt-5.6-sol", "--reasoning-effort", "high", "--json"], {
+      env: { PATH: `${home}:${process.env.PATH}`, HOME: home,
+        ...(scenario.apiKey ? { OPENAI_API_KEY: scenario.apiKey } : {}) },
       stdout: (s) => stdout.push(s), stderr: (s) => stderr.push(s),
     });
-    assert.equal(code, 0, stderr.join(""));
+    assert.equal(code, scenario.code, stderr.join(""));
     const calls = readFileSync(join(home, "calls"), "utf8").trim().split("\n").map(JSON.parse);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, scenario.calls);
     assert.equal(calls[0].paid, false);
-    assert.equal(calls[1].paid, true);
-    assert.ok(calls[1].args.includes("resume"));
-    assert.notEqual(calls[1].input, "original task");
+    if (scenario.code === 0) {
+      assert.equal(calls[1].paid, true);
+      assert.ok(calls[1].args.includes("resume"));
+      assert.ok(calls[1].args.includes("12345678-1234-1234-1234-123456789abc"));
+      assert.equal(calls[1].args[calls[1].args.indexOf("--model") + 1], "gpt-5.6-sol");
+      assert.ok(calls[1].args.includes('model_reasoning_effort="high"'));
+      assert.notEqual(calls[1].input, "original task");
+    }
     assert.equal(readFileSync(join(home, ".codex/auth.json"), "utf8"), auth);
     assert.doesNotMatch(stdout.join("") + stderr.join(""), /backup-secret/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+}
 
 test("explicit API billing without a key returns reserved terminal status", async () => {
   const errors: string[] = [];
