@@ -23,7 +23,7 @@ const codexQuotaPrefixes = [
   "You've hit your usage limit. To get more access now, send a request to your admin",
   "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits",
 ];
-const codexResetSuffix = /^(?: Try again| or try again) (?:later|at (?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [1-3]?\d, \d{4} )?(?:[1-9]|1[0-2]):[0-5]\d [AP]M)\.$/;
+const codexResetSuffix = /^(?: Try again| or try again) (?:later|at (?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [1-3]?\d(?:st|nd|rd|th)?, \d{4} )?(?:[1-9]|1[0-2]):[0-5]\d [AP]M)\.$/;
 
 function codexQuotaMessage(value: string): boolean {
   if (value.length > 512) return false;
